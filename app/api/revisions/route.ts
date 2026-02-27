@@ -3,12 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
 import { listRevisionRowsForUser } from "@/lib/google/sheets";
 import { toRevisionEntry } from "@/lib/revisions";
+import { getOrSetMemoryCache } from "@/lib/cache/memory-cache";
 import { logError } from "@/lib/logger";
 
 const querySchema = z.object({
   date: z.string().optional(),
   q: z.string().optional()
 });
+
+const REVISION_CACHE_TTL_MS = 45_000;
 
 export async function GET(req: NextRequest) {
   const auth = await requireSession();
@@ -24,9 +27,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Invalid query." }, { status: 400 });
     }
 
-    const rows = await listRevisionRowsForUser(auth.session.username);
-    const entries = rows
-      .map(toRevisionEntry)
+    const cacheKey = `revisions:${auth.session.username.trim().toLowerCase()}`;
+    const allEntries = await getOrSetMemoryCache(cacheKey, REVISION_CACHE_TTL_MS, async () => {
+      const rows = await listRevisionRowsForUser(auth.session.username);
+      return rows.map(toRevisionEntry).sort((a, b) => b.fecha.localeCompare(a.fecha));
+    });
+
+    const entries = allEntries
       .filter((entry) => {
         if (parsedQuery.data.date && entry.fecha !== parsedQuery.data.date) {
           return false;
@@ -39,8 +46,7 @@ export async function GET(req: NextRequest) {
           );
         }
         return true;
-      })
-      .sort((a, b) => b.fecha.localeCompare(a.fecha));
+      });
 
     return NextResponse.json({ revisions: entries });
   } catch (error) {

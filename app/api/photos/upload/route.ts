@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/auth/require-session";
 import { getEnv } from "@/lib/env";
 import { uploadPhotoToDrive } from "@/lib/google/drive";
 import { appendRevisionRows } from "@/lib/google/sheets";
+import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { logError, logInfo } from "@/lib/logger";
 
 const allowedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -76,6 +77,7 @@ export async function POST(req: Request) {
     }
 
     await appendRevisionRows(rows);
+    deleteMemoryCache(`revisions:${auth.session.username.trim().toLowerCase()}`);
     logInfo("Photos uploaded and stored", {
       username: auth.session.username,
       files: files.length

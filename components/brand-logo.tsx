@@ -12,7 +12,7 @@ export function BrandLogo({ href = "/dashboard", className, showText = true }: B
   return (
     <Link href={href} className={cn("inline-flex items-center gap-3", className)}>
       <div className="relative h-10 w-10 overflow-hidden rounded-xl border border-brand-accent/40 bg-brand-surface">
-        <Image src="/logo.jpeg" alt="Logo" fill className="object-cover" sizes="40px" priority />
+        <Image src="/logoV1.png" alt="Logo" fill className="object-cover" sizes="40px" priority />
       </div>
       {showText ? (
         <div className="leading-tight">

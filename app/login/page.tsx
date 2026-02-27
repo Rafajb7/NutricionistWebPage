@@ -4,7 +4,7 @@ import { getSessionFromCookies } from "@/lib/auth/session";
 
 export default async function LoginPage() {
   const session = await getSessionFromCookies();
-  if (session) redirect("/dashboard");
+  if (session) redirect(session.mustChangePassword ? "/password/change" : "/dashboard");
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4">

@@ -11,7 +11,7 @@ export function Providers() {
       toastOptions={{
         style: {
           background: "var(--brand-surface)",
-          border: "1px solid rgba(247,204,47,0.25)",
+          border: "1px solid color-mix(in srgb, var(--brand-accent) 35%, transparent)",
           color: "var(--brand-text)"
         }
       }}

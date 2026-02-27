@@ -19,11 +19,11 @@ const config: Config = {
         }
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(247,204,47,0.15), 0 16px 40px -20px rgba(247,204,47,0.7)"
+        glow: "0 0 0 1px var(--brand-shadow-ring), 0 16px 40px -20px var(--brand-shadow-glow)"
       },
       backgroundImage: {
         "brand-gradient":
-          "radial-gradient(circle at 10% 15%, rgba(247, 204, 47, 0.18), transparent 35%), radial-gradient(circle at 85% 5%, rgba(162, 137, 50, 0.14), transparent 38%)"
+          "radial-gradient(circle at 10% 15%, var(--brand-gradient-1), transparent 35%), radial-gradient(circle at 85% 5%, var(--brand-gradient-2), transparent 38%)"
       }
     }
   },

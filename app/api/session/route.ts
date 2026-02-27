@@ -10,7 +10,8 @@ export async function GET() {
     authenticated: true,
     user: {
       username: session.username,
-      name: session.name
+      name: session.name,
+      mustChangePassword: Boolean(session.mustChangePassword)
     }
   });
 }

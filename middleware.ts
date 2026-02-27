@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth/jwt";
 
-const protectedPrefixes = ["/dashboard", "/revision"];
+const protectedPrefixes = ["/dashboard", "/revision", "/tools", "/password/change"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -14,13 +14,25 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  if (session?.mustChangePassword) {
+    const isChangePasswordPath = pathname.startsWith("/password/change");
+    const isProtectedAppPath = ["/dashboard", "/revision", "/tools"].some((prefix) =>
+      pathname.startsWith(prefix)
+    );
+
+    if (isProtectedAppPath && !isChangePasswordPath) {
+      return NextResponse.redirect(new URL("/password/change", req.url));
+    }
+  }
+
   if (pathname === "/login" && session) {
-    return NextResponse.redirect(new URL("/dashboard", req.url));
+    const redirectPath = session.mustChangePassword ? "/password/change" : "/dashboard";
+    return NextResponse.redirect(new URL(redirectPath, req.url));
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/login", "/dashboard/:path*", "/revision/:path*"]
+  matcher: ["/login", "/dashboard/:path*", "/revision/:path*", "/tools/:path*", "/password/change"]
 };

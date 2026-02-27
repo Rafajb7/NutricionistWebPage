@@ -1,10 +1,11 @@
 "use client";
 
 import { motion } from "framer-motion";
-import type { ButtonHTMLAttributes, PropsWithChildren } from "react";
+import type { HTMLMotionProps } from "framer-motion";
+import type { PropsWithChildren } from "react";
 import { cn } from "@/lib/utils";
 
-type BrandButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
+type BrandButtonProps = HTMLMotionProps<"button"> &
   PropsWithChildren<{
     variant?: "accent" | "ghost";
   }>;
@@ -20,7 +21,7 @@ export function BrandButton({
       whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.98 }}
       className={cn(
-        "rounded-xl px-5 py-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center justify-center whitespace-nowrap rounded-xl px-5 py-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
         variant === "accent" &&
           "bg-brand-accent text-black hover:bg-[#ffe169] shadow-[0_8px_25px_-12px_rgba(247,204,47,0.75)]",
         variant === "ghost" &&

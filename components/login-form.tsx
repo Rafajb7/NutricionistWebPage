@@ -1,5 +1,6 @@
-"use client";
+﻿"use client";
 
+import Link from "next/link";
 import { type FormEvent, useState } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
@@ -21,17 +22,17 @@ export function LoginForm() {
         body: JSON.stringify({ username, password })
       });
 
-      const json = (await res.json()) as { error?: string };
+      const json = (await res.json()) as { error?: string; mustChangePassword?: boolean };
       if (!res.ok) {
         toast.error(json.error ?? "No se pudo iniciar sesión.");
         return;
       }
 
       toast.success("Sesión iniciada");
-      window.location.href = "/dashboard";
+      window.location.href = json.mustChangePassword ? "/password/change" : "/dashboard";
     } catch (error) {
       console.error(error);
-      toast.error("Error de conexión.");
+      toast.error("Error de conexion.");
     } finally {
       setLoading(false);
     }
@@ -76,12 +77,20 @@ export function LoginForm() {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             className="w-full rounded-xl border border-white/15 bg-black/25 px-4 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-            placeholder="••••••••"
+            placeholder="********"
           />
         </div>
         <BrandButton className="w-full" disabled={loading}>
           {loading ? "Entrando..." : "Iniciar sesión"}
         </BrandButton>
+        <div className="text-center">
+          <Link
+            href="/password/forgot"
+            className="text-xs text-brand-muted transition hover:text-brand-accent"
+          >
+            He olvidado mi contraseña
+          </Link>
+        </div>
       </form>
     </motion.div>
   );

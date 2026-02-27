@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test": "vitest",
     "test:run": "vitest run",
-    "admin:migrate-passwords": "tsx admin/migrate-passwords.ts"
+    "admin:migrate-passwords": "tsx admin/migrate-passwords.ts",
+    "admin:seed-routine-sheets": "tsx admin/seed-routine-sheets.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -19,6 +20,7 @@
     "jose": "^5.9.6",
     "lucide-react": "^0.453.0",
     "next": "^15.0.0",
+    "nodemailer": "^6.10.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sonner": "^1.7.0",
@@ -26,6 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
+    "@types/nodemailer": "^7.0.11",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.20",

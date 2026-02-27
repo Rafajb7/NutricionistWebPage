@@ -3,5 +3,8 @@ import { getSessionFromCookies } from "@/lib/auth/session";
 
 export default async function HomePage() {
   const session = await getSessionFromCookies();
-  redirect(session ? "/dashboard" : "/login");
+  if (!session) {
+    redirect("/login");
+  }
+  redirect(session.mustChangePassword ? "/password/change" : "/dashboard");
 }

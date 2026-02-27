@@ -2,7 +2,8 @@ import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit } from "@/lib/auth/rate-limit";
 import { createSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth/session";
-import { verifyPassword } from "@/lib/auth/password";
+import { isBcryptHash, verifyPassword } from "@/lib/auth/password";
+import { shouldUseSecureCookie } from "@/lib/auth/cookie";
 import { readUsersFromSheet } from "@/lib/google/sheets";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
@@ -62,13 +63,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Credenciales inválidas." }, { status: 401 });
     }
 
+    const mustChangePassword = !isBcryptHash(user.password);
     const token = await createSessionToken({
       username: user.username.trim().replace(/^@/, ""),
-      name: user.name
+      name: user.name,
+      mustChangePassword
     });
 
     const response = NextResponse.json({
       ok: true,
+      mustChangePassword,
       user: {
         username: user.username,
         name: user.name
@@ -79,7 +83,7 @@ export async function POST(req: NextRequest) {
       name: SESSION_COOKIE_NAME,
       value: token,
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookie(req),
       sameSite: "lax",
       path: "/",
       maxAge: getEnv().SESSION_TTL_HOURS * 60 * 60

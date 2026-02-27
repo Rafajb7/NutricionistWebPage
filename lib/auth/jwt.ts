@@ -6,6 +6,7 @@ export const SESSION_COOKIE_NAME = "mat_session";
 export type SessionUser = {
   username: string;
   name: string;
+  mustChangePassword?: boolean;
 };
 
 export type SessionPayload = SessionUser & {
@@ -32,12 +33,18 @@ export async function createSessionToken(user: SessionUser): Promise<string> {
 export async function verifySessionToken(token: string): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, getJwtSecret());
-    if (typeof payload.username !== "string" || typeof payload.name !== "string") {
+    if (
+      typeof payload.username !== "string" ||
+      typeof payload.name !== "string" ||
+      (payload.mustChangePassword !== undefined &&
+        typeof payload.mustChangePassword !== "boolean")
+    ) {
       return null;
     }
     return {
       username: payload.username,
       name: payload.name,
+      mustChangePassword: payload.mustChangePassword as boolean | undefined,
       iat: payload.iat,
       exp: payload.exp
     };

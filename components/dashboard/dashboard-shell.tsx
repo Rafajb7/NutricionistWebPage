@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Search, LogOut, Calendar, FileText, Download, Eye, BellRing, X } from "lucide-react";
 import { toast } from "sonner";
@@ -72,6 +73,14 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
 };
 
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DASHBOARD_CACHE_TTL_MS = 90 * 1000;
+const DASHBOARD_CACHE_VERSION = 1;
+
+type DashboardClientCache = {
+  timestamp: number;
+  revisions: RevisionEntry[];
+  plans: NutritionPlan[];
+};
 
 function normalizeMetricQuestion(question: string): string {
   return question
@@ -132,49 +141,54 @@ function EvolutionChart({ points }: { points: MetricPoint[] }) {
       y: y(value)
     };
   });
+  const labelStep = Math.max(1, Math.ceil(points.length / 6));
 
   return (
-    <div className="rounded-xl border border-white/10 bg-black/25 p-4">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-64 w-full">
-        {ticks.map((tick, index) => (
-          <g key={`tick-${index}`}>
-            <line
-              x1={paddingX}
-              x2={width - paddingX}
-              y1={tick.y}
-              y2={tick.y}
-              stroke="rgba(255,255,255,0.12)"
-              strokeDasharray="4 6"
-            />
-            <text
-              x={paddingX - 10}
-              y={tick.y + 4}
-              textAnchor="end"
-              fill="rgba(255,255,255,0.65)"
-              fontSize={12}
-            >
-              {tick.value.toFixed(1)}
-            </text>
-          </g>
-        ))}
+    <div className="min-w-0 rounded-xl border border-white/10 bg-black/25 p-4">
+      <div className="min-w-0 overflow-hidden">
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full">
+          {ticks.map((tick, index) => (
+            <g key={`tick-${index}`}>
+              <line
+                x1={paddingX}
+                x2={width - paddingX}
+                y1={tick.y}
+                y2={tick.y}
+                stroke="rgba(255,255,255,0.12)"
+                strokeDasharray="4 6"
+              />
+              <text
+                x={paddingX - 10}
+                y={tick.y + 4}
+                textAnchor="end"
+                fill="rgba(255,255,255,0.65)"
+                fontSize={12}
+              >
+                {tick.value.toFixed(1)}
+              </text>
+            </g>
+          ))}
 
-        <polyline fill="none" stroke="#F7CC2F" strokeWidth={3} points={polyline} />
+          <polyline fill="none" stroke="#F7CC2F" strokeWidth={3} points={polyline} />
 
-        {points.map((item, index) => (
-          <g key={`${item.date}-${index}`}>
-            <circle cx={x(index)} cy={y(item.value)} r={4.5} fill="#F7CC2F" />
-            <text
-              x={x(index)}
-              y={height - 10}
-              textAnchor="middle"
-              fill="rgba(255,255,255,0.7)"
-              fontSize={11}
-            >
-              {formatMetricDate(item.date)}
-            </text>
-          </g>
-        ))}
-      </svg>
+          {points.map((item, index) => (
+            <g key={`${item.date}-${index}`}>
+              <circle cx={x(index)} cy={y(item.value)} r={4.5} fill="#F7CC2F" />
+              {index % labelStep === 0 || index === points.length - 1 ? (
+                <text
+                  x={x(index)}
+                  y={height - 10}
+                  textAnchor="middle"
+                  fill="rgba(255,255,255,0.7)"
+                  fontSize={11}
+                >
+                  {formatMetricDate(item.date)}
+                </text>
+              ) : null}
+            </g>
+          ))}
+        </svg>
+      </div>
     </div>
   );
 }
@@ -213,6 +227,7 @@ function getPlanDisplayDate(plan: NutritionPlan): string {
 }
 
 export function DashboardShell({ user }: DashboardShellProps) {
+  const router = useRouter();
   const [entries, setEntries] = useState<RevisionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [plansLoading, setPlansLoading] = useState(true);
@@ -224,6 +239,11 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const [selectedPlan, setSelectedPlan] = useState<NutritionPlan | null>(null);
   const [newPlanPopup, setNewPlanPopup] = useState<NewPlanPopupState | null>(null);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>("CINTURA");
+  const dashboardCacheKey = useMemo(
+    () =>
+      `mat:dashboard-cache:v${DASHBOARD_CACHE_VERSION}:${user.username.trim().toLowerCase()}`,
+    [user.username]
+  );
 
   const groupedEntries = useMemo(() => {
     const filtered = entries.filter((entry) => {
@@ -277,7 +297,37 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const selectedMetricSeries = metricSeriesByKey[selectedMetric];
 
   useEffect(() => {
+    router.prefetch("/tools");
+    router.prefetch("/revision/new");
+  }, [router]);
+
+  useEffect(() => {
     let active = true;
+
+    try {
+      const cachedRaw = window.localStorage.getItem(dashboardCacheKey);
+      if (cachedRaw) {
+        const cached = JSON.parse(cachedRaw) as DashboardClientCache;
+        const isFresh =
+          typeof cached?.timestamp === "number" &&
+          Date.now() - cached.timestamp <= DASHBOARD_CACHE_TTL_MS;
+
+        if (isFresh) {
+          const cachedRevisions = Array.isArray(cached.revisions) ? cached.revisions : [];
+          const cachedPlans = Array.isArray(cached.plans) ? cached.plans : [];
+          setEntries(cachedRevisions);
+          setPlans(cachedPlans);
+          if (cachedRevisions.length) {
+            setOpenDate(cachedRevisions[0].fecha);
+          }
+          setLoading(false);
+          setPlansLoading(false);
+        }
+      }
+    } catch {
+      // ignore malformed local cache
+    }
+
     async function load() {
       try {
         const [revisionsRes, plansRes] = await Promise.all([
@@ -295,12 +345,25 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
         const revisionsJson = (await revisionsRes.json()) as { revisions: RevisionEntry[] };
         const plansJson = (await plansRes.json()) as { plans: NutritionPlan[] };
+        const nextEntries = revisionsJson.revisions ?? [];
+        const nextPlans = plansJson.plans ?? [];
 
         if (!active) return;
-        setEntries(revisionsJson.revisions ?? []);
-        setPlans(plansJson.plans ?? []);
-        if (revisionsJson.revisions?.length) {
-          setOpenDate(revisionsJson.revisions[0].fecha);
+        setEntries(nextEntries);
+        setPlans(nextPlans);
+        if (nextEntries.length) {
+          setOpenDate(nextEntries[0].fecha);
+        }
+
+        try {
+          const payload: DashboardClientCache = {
+            timestamp: Date.now(),
+            revisions: nextEntries,
+            plans: nextPlans
+          };
+          window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
+        } catch {
+          // ignore local storage errors
         }
       } catch (error) {
         console.error(error);
@@ -312,11 +375,12 @@ export function DashboardShell({ user }: DashboardShellProps) {
         }
       }
     }
+
     load();
     return () => {
       active = false;
     };
-  }, []);
+  }, [dashboardCacheKey, router]);
 
   useEffect(() => {
     if (!availableMetricOptions.length) return;
@@ -387,12 +451,28 @@ export function DashboardShell({ user }: DashboardShellProps) {
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4 backdrop-blur">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
-            <div className="flex items-center gap-3">
-              <div className="text-right">
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                <Link href="/dashboard">
+                  <BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">
+                    Dashboard
+                  </BrandButton>
+                </Link>
+                <Link href="/tools">
+                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                    Herramientas
+                  </BrandButton>
+                </Link>
+              </div>
+              <div className="text-left sm:text-right">
                 <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Hola</p>
                 <p className="font-semibold text-brand-text">{user.name}</p>
               </div>
-              <BrandButton variant="ghost" className="px-4 py-2" onClick={handleLogout}>
+              <BrandButton
+                variant="ghost"
+                className="w-full justify-center px-4 py-2 sm:w-auto"
+                onClick={handleLogout}
+              >
                 <LogOut className="mr-2 h-4 w-4" />
                 Logout
               </BrandButton>
@@ -470,7 +550,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                       <p className="text-xs text-brand-muted">
                         {getPlanDisplayDate(plan)} · {formatPlanSize(plan.sizeBytes)}
                       </p>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
                           onClick={() => setSelectedPlan(plan)}
@@ -522,22 +602,22 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
           <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
             <div className="grid gap-3 md:grid-cols-2">
-              <label className="relative">
+              <label className="relative min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Buscar por pregunta o respuesta"
-                  className="w-full rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  className="min-w-0 w-full max-w-full rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                 />
               </label>
-              <label className="relative">
+              <label className="relative min-w-0 overflow-hidden">
                 <Calendar className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
                 <input
                   type="date"
                   value={date}
                   onChange={(event) => setDate(event.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  className="date-input-responsive block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                 />
               </label>
             </div>
@@ -710,15 +790,15 @@ export function DashboardShell({ user }: DashboardShellProps) {
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.98, opacity: 0 }}
               transition={{ type: "spring", stiffness: 210, damping: 24 }}
-              className="flex h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-brand-accent/35 bg-[#0f0f11]"
+              className="flex h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-brand-accent/35 bg-[#0f0f11] sm:h-[86vh]"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div className="flex flex-col gap-2 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2 text-sm text-brand-text">
                   <FileText className="h-4 w-4 text-brand-accent" />
                   <span className="truncate">{selectedPlan.name}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
                   <a
                     href={`/api/nutrition-plans/${selectedPlan.id}?download=1`}
                     className="inline-flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs text-brand-text transition hover:bg-white/10"

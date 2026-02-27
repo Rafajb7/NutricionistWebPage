@@ -2,6 +2,7 @@ import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
 import { appendRevisionRows } from "@/lib/google/sheets";
+import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { buildRevisionRows } from "@/lib/revisions";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
     });
 
     await appendRevisionRows(rows);
+    deleteMemoryCache(`revisions:${auth.session.username.trim().toLowerCase()}`);
     logInfo("Revision answers stored", {
       username: auth.session.username,
       count: rows.length
