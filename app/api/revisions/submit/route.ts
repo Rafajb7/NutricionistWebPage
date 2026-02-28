@@ -7,6 +7,7 @@ import { buildRevisionRows } from "@/lib/revisions";
 import { logError, logInfo } from "@/lib/logger";
 
 const submitSchema = z.object({
+  revisionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   answers: z
     .array(
       z.object({
@@ -16,6 +17,14 @@ const submitSchema = z.object({
     )
     .min(1)
 });
+
+function getTodayDateString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export async function POST(req: NextRequest) {
   const auth = await requireSession();
@@ -28,7 +37,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
 
-    const fecha = new Date().toISOString().slice(0, 10);
+    const fecha = parsed.data.revisionDate ?? getTodayDateString();
     const rows = buildRevisionRows({
       nombre: auth.session.name,
       usuario: auth.session.username,

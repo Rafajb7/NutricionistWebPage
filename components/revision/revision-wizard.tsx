@@ -18,10 +18,9 @@ export function RevisionWizard() {
   const [loadingQuestions, setLoadingQuestions] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
-  const [savingAnswers, setSavingAnswers] = useState(false);
   const [stage, setStage] = useState<WizardStage>("questions");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [finalizingRevision, setFinalizingRevision] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -67,84 +66,96 @@ export function RevisionWizard() {
     });
   }
 
-  async function submitAnswers() {
-    const normalizedAnswers = questions.map((question, index) => ({
+  function getRevisionDateString(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function getNormalizedAnswers() {
+    return questions.map((question, index) => ({
       question,
       answer: (answers[index] ?? "").trim()
     }));
-
-    if (normalizedAnswers.some((entry) => !entry.answer)) {
-      toast.error("Todas las preguntas son obligatorias.");
-      return;
-    }
-
-    setSavingAnswers(true);
-    try {
-      const res = await fetch("/api/revisions/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answers: normalizedAnswers })
-      });
-      if (res.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-      const json = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        toast.error(json.error ?? "No se pudo guardar la revisión.");
-        return;
-      }
-
-      toast.success("Respuestas guardadas.");
-      setStage("photos");
-    } catch (error) {
-      console.error(error);
-      toast.error("Error al guardar las respuestas.");
-    } finally {
-      setSavingAnswers(false);
-    }
   }
 
-  async function uploadPhotos() {
-    if (!selectedFiles.length) {
-      setStage("done");
-      return;
+  function validateAllAnswers() {
+    const normalizedAnswers = getNormalizedAnswers();
+    if (normalizedAnswers.some((entry) => !entry.answer)) {
+      toast.error("Todas las preguntas son obligatorias.");
+      return null;
     }
+    return normalizedAnswers;
+  }
 
-    if (selectedFiles.length > 4) {
+  function moveToPhotosStage() {
+    const normalizedAnswers = validateAllAnswers();
+    if (!normalizedAnswers) return;
+    setStage("photos");
+  }
+
+  async function finalizeRevision(options?: { skipPhotos?: boolean }) {
+    const normalizedAnswers = validateAllAnswers();
+    if (!normalizedAnswers) return;
+
+    if (!options?.skipPhotos && selectedFiles.length > 4) {
       toast.error("Máximo 4 fotos.");
       return;
     }
 
-    setUploadingPhotos(true);
+    const revisionDate = getRevisionDateString();
+    setFinalizingRevision(true);
     try {
-      const form = new FormData();
-      selectedFiles.forEach((file) => form.append("photos", file));
-      form.append("labels", JSON.stringify(photoLabels.slice(0, selectedFiles.length)));
-
-      const res = await fetch("/api/photos/upload", {
+      const answersRes = await fetch("/api/revisions/submit", {
         method: "POST",
-        body: form
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          revisionDate,
+          answers: normalizedAnswers
+        })
       });
-      if (res.status === 401) {
+      if (answersRes.status === 401) {
         window.location.href = "/login";
         return;
       }
-      const json = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        toast.error(json.error ?? "No se pudieron subir las fotos.");
+      const answersJson = (await answersRes.json()) as { error?: string };
+      if (!answersRes.ok) {
+        toast.error(answersJson.error ?? "No se pudo guardar la revisión.");
         return;
       }
-      toast.success("Fotos subidas correctamente.");
+
+      if (!options?.skipPhotos && selectedFiles.length) {
+        const form = new FormData();
+        selectedFiles.forEach((file) => form.append("photos", file));
+        form.append("labels", JSON.stringify(photoLabels.slice(0, selectedFiles.length)));
+        form.append("revisionDate", revisionDate);
+
+        const photosRes = await fetch("/api/photos/upload", {
+          method: "POST",
+          body: form
+        });
+        if (photosRes.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const photosJson = (await photosRes.json()) as { error?: string };
+        if (!photosRes.ok) {
+          toast.error(photosJson.error ?? "No se pudieron subir las fotos.");
+          return;
+        }
+      }
+
+      toast.success("Revisión completada.");
       setStage("done");
     } catch (error) {
       console.error(error);
-      toast.error("Error subiendo fotos.");
+      toast.error("Error finalizando la revisión.");
     } finally {
-      setUploadingPhotos(false);
+      setFinalizingRevision(false);
     }
   }
-
   return (
     <MotionPage>
       <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-8 md:px-8">
@@ -204,8 +215,8 @@ export function RevisionWizard() {
                 Anterior
               </BrandButton>
               {isLastQuestion ? (
-                <BrandButton disabled={savingAnswers} onClick={submitAnswers}>
-                  {savingAnswers ? "Guardando..." : "Guardar revisión"}
+                <BrandButton onClick={moveToPhotosStage}>
+                  Continuar
                 </BrandButton>
               ) : (
                 <BrandButton
@@ -263,10 +274,10 @@ export function RevisionWizard() {
             ) : null}
 
             <div className="mt-6 flex flex-wrap gap-2">
-              <BrandButton disabled={uploadingPhotos} onClick={uploadPhotos}>
-                {uploadingPhotos ? "Subiendo..." : "Finalizar revisión"}
+              <BrandButton disabled={finalizingRevision} onClick={() => finalizeRevision()}>
+                {finalizingRevision ? "Finalizando..." : "Finalizar revisión"}
               </BrandButton>
-              <BrandButton variant="ghost" disabled={uploadingPhotos} onClick={() => setStage("done")}>
+              <BrandButton variant="ghost" disabled={finalizingRevision} onClick={() => finalizeRevision({ skipPhotos: true })}>
                 Omitir fotos
               </BrandButton>
             </div>
@@ -291,3 +302,5 @@ export function RevisionWizard() {
     </MotionPage>
   );
 }
+
+

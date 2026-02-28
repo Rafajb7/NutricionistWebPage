@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Search, LogOut, Calendar, FileText, Download, Eye, BellRing, X } from "lucide-react";
+import { Search, LogOut, Calendar, FileText, Download, Eye, BellRing, X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
@@ -66,10 +66,15 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
 
 const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
   CINTURA: "CINTURA",
+  CINTURACM: "CINTURA",
   CADERA: "CADERA",
+  CADERACM: "CADERA",
   BRAZORELAJADO: "BRAZO_RELAJADO",
+  BRAZORELAJADOCM: "BRAZO_RELAJADO",
   BRAZOFLEXIONADO: "BRAZO_FLEXIONADO",
-  MUSLO: "MUSLO"
+  BRAZOFLEXIONADOCM: "BRAZO_FLEXIONADO",
+  MUSLO: "MUSLO",
+  MUSLOCM: "MUSLO"
 };
 
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -87,11 +92,30 @@ function normalizeMetricQuestion(question: string): string {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .toUpperCase()
-    .replace(/[:\s]/g, "");
+    .replace(/[^A-Z0-9]/g, "");
 }
 
 function metricKeyFromQuestion(question: string): MetricKey | null {
-  return METRIC_QUESTION_KEY[normalizeMetricQuestion(question)] ?? null;
+  const normalized = normalizeMetricQuestion(question);
+  const direct = METRIC_QUESTION_KEY[normalized];
+  if (direct) return direct;
+
+  const withoutCmSuffix = normalized.replace(/CM$/, "");
+  const withoutCm = METRIC_QUESTION_KEY[withoutCmSuffix];
+  if (withoutCm) return withoutCm;
+
+  // Fallback tolerant to minor copy/text changes in the sheet question label.
+  if (withoutCmSuffix.includes("BRAZO") && withoutCmSuffix.includes("RELAJADO")) {
+    return "BRAZO_RELAJADO";
+  }
+  if (withoutCmSuffix.includes("BRAZO") && withoutCmSuffix.includes("FLEXIONADO")) {
+    return "BRAZO_FLEXIONADO";
+  }
+  if (withoutCmSuffix.includes("CINTURA")) return "CINTURA";
+  if (withoutCmSuffix.includes("CADERA")) return "CADERA";
+  if (withoutCmSuffix.includes("MUSLO")) return "MUSLO";
+
+  return null;
 }
 
 function parseMetricValue(raw: string): number | null {
@@ -235,6 +259,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const [query, setQuery] = useState("");
   const [date, setDate] = useState("");
   const [openDate, setOpenDate] = useState<string | null>(null);
+  const [deletingDate, setDeletingDate] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<NutritionPlan | null>(null);
   const [newPlanPopup, setNewPlanPopup] = useState<NewPlanPopupState | null>(null);
@@ -443,6 +468,57 @@ export function DashboardShell({ user }: DashboardShellProps) {
       return;
     }
     window.location.href = "/login";
+  }
+
+  async function deleteRevisionDate(fecha: string) {
+    const confirmed = window.confirm(
+      "¿Seguro que quieres eliminar este registro? Esta información se borrará definitivamente."
+    );
+    if (!confirmed) return;
+
+    setDeletingDate(fecha);
+    try {
+      const response = await fetch("/api/revisions", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: fecha })
+      });
+
+      if (response.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        toast.error(json.error ?? "No se pudo eliminar el registro.");
+        return;
+      }
+
+      const nextEntries = entries.filter((entry) => entry.fecha !== fecha);
+      setEntries(nextEntries);
+      if (openDate === fecha) {
+        setOpenDate(nextEntries[0]?.fecha ?? null);
+      }
+
+      try {
+        const payload: DashboardClientCache = {
+          timestamp: Date.now(),
+          revisions: nextEntries,
+          plans
+        };
+        window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
+      } catch {
+        // ignore local storage errors
+      }
+
+      toast.success("Registro eliminado.");
+    } catch (error) {
+      console.error(error);
+      toast.error("Error al eliminar el registro.");
+    } finally {
+      setDeletingDate(null);
+    }
   }
 
   return (
@@ -673,6 +749,17 @@ export function DashboardShell({ user }: DashboardShellProps) {
                           className="border-t border-white/10"
                         >
                           <div className="space-y-3 p-4">
+                            <div className="flex justify-end">
+                              <button
+                                type="button"
+                                onClick={() => deleteRevisionDate(fecha)}
+                                disabled={deletingDate === fecha}
+                                className="inline-flex items-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                {deletingDate === fecha ? "Eliminando..." : "Eliminar registro"}
+                              </button>
+                            </div>
                             {textItems.map((item, itemIndex) => (
                               <div
                                 key={`${fecha}-${itemIndex}`}

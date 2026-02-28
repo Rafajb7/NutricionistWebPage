@@ -564,6 +564,74 @@ export async function listRevisionRowsForUser(username: string): Promise<Revisio
     .filter((row) => usernameVariants.has(row.usuario.trim()));
 }
 
+type RevisionSheetRow = RevisionRow & {
+  rowNumber: number;
+};
+
+async function listRevisionSheetRowsForUser(username: string): Promise<RevisionSheetRow[]> {
+  const env = getEnv();
+  const sheets = await getSheetsClient();
+  const spreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_REVISION_SHEET_NAME);
+  const usernameVariants = getUsernameVariants(username);
+
+  const values = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${env.GOOGLE_REVISION_WORKSHEET_NAME}'!A2:E`,
+    valueRenderOption: "FORMULA",
+    dateTimeRenderOption: "FORMATTED_STRING"
+  });
+  const rows = (values.data.values as string[][] | undefined) ?? [];
+
+  return rows
+    .map((row, index) => ({
+      rowNumber: index + 2,
+      nombre: String(row[0] ?? ""),
+      fecha: String(row[1] ?? ""),
+      usuario: String(row[2] ?? ""),
+      pregunta: String(row[3] ?? ""),
+      respuesta: String(row[4] ?? "")
+    }))
+    .filter((row) => usernameVariants.has(row.usuario.trim()));
+}
+
+export async function deleteRevisionRowsByDateForUser(input: {
+  username: string;
+  date: string;
+}): Promise<number> {
+  const env = getEnv();
+  const spreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_REVISION_SHEET_NAME);
+  const allRows = await listRevisionSheetRowsForUser(input.username);
+  const rowsToDelete = allRows.filter(
+    (row) => normalizeComparableValue(row.fecha) === normalizeComparableValue(input.date)
+  );
+  if (!rowsToDelete.length) return 0;
+
+  const worksheetMeta = await getWorksheetMetadataByTitle({
+    spreadsheetId,
+    worksheetName: env.GOOGLE_REVISION_WORKSHEET_NAME
+  });
+
+  const sheets = await getSheetsClient();
+  const sortedRows = [...rowsToDelete].sort((a, b) => b.rowNumber - a.rowNumber);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: sortedRows.map((row) => ({
+        deleteDimension: {
+          range: {
+            sheetId: worksheetMeta.sheetId,
+            dimension: "ROWS",
+            startIndex: row.rowNumber - 1,
+            endIndex: row.rowNumber
+          }
+        }
+      }))
+    }
+  });
+
+  return rowsToDelete.length;
+}
+
 export async function readRoutineExerciseCatalog(): Promise<RoutineExerciseGroup[]> {
   const routineSheets = await ensureRoutineSheetsReady();
   const sheets = await getSheetsClient();

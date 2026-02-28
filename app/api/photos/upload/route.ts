@@ -10,6 +10,15 @@ import { logError, logInfo } from "@/lib/logger";
 const allowedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 const labelsSchema = z.array(z.string().min(1).max(80)).max(10);
+const revisionDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+function getTodayDateString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export async function POST(req: Request) {
   const auth = await requireSession();
@@ -20,6 +29,7 @@ export async function POST(req: Request) {
     const rawFiles = formData.getAll("photos");
     const files = rawFiles.filter((item): item is File => item instanceof File);
     const labelsRaw = formData.get("labels");
+    const revisionDateRaw = formData.get("revisionDate");
 
     if (!files.length) {
       return NextResponse.json({ error: "No files uploaded." }, { status: 400 });
@@ -34,7 +44,9 @@ export async function POST(req: Request) {
     }
 
     const maxBytes = getEnv().MAX_UPLOAD_MB * 1024 * 1024;
-    const fecha = new Date().toISOString().slice(0, 10);
+    const parsedRevisionDate =
+      typeof revisionDateRaw === "string" ? revisionDateSchema.safeParse(revisionDateRaw) : null;
+    const fecha = parsedRevisionDate?.success ? parsedRevisionDate.data : getTodayDateString();
     const rows: Array<{
       nombre: string;
       fecha: string;
