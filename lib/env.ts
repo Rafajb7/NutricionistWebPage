@@ -18,6 +18,10 @@ const envSchema = z.object({
   GOOGLE_ROUTINE_LOGS_SPREADSHEET_ID: z.string().optional(),
   GOOGLE_ROUTINE_EXERCISES_WORKSHEET_NAME: z.string().default("Ejercicios"),
   GOOGLE_ROUTINE_LOGS_WORKSHEET_NAME: z.string().default("Registro"),
+  GOOGLE_ACHIEVEMENTS_SPREADSHEET_ID: z.string().optional(),
+  GOOGLE_ACHIEVEMENTS_SHEET_NAME: z.string().default("Logros"),
+  GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME: z.string().default("Marcas"),
+  GOOGLE_ACHIEVEMENTS_GOALS_WORKSHEET_NAME: z.string().default("Objetivos"),
   GOOGLE_DRIVE_ROOT_FOLDER_ID: z.string().default("1G-QgvfDD-dqMPzjuaA71ii7t6aWn_prX"),
   GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID: z
     .string()

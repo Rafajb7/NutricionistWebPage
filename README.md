@@ -59,6 +59,10 @@ GOOGLE_ROUTINE_EXERCISES_SPREADSHEET_ID=
 GOOGLE_ROUTINE_LOGS_SPREADSHEET_ID=
 GOOGLE_ROUTINE_EXERCISES_WORKSHEET_NAME=Ejercicios
 GOOGLE_ROUTINE_LOGS_WORKSHEET_NAME=Registro
+GOOGLE_ACHIEVEMENTS_SPREADSHEET_ID=
+GOOGLE_ACHIEVEMENTS_SHEET_NAME=Logros
+GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME=Marcas
+GOOGLE_ACHIEVEMENTS_GOALS_WORKSHEET_NAME=Objetivos
 GOOGLE_DRIVE_ROOT_FOLDER_ID=1G-QgvfDD-dqMPzjuaA71ii7t6aWn_prX
 GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID=1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf
 GOOGLE_COMPETITIONS_CALENDAR_ID=
@@ -142,6 +146,10 @@ App:
   - planificador por dias con repeticiones, peso y notas
   - boton Registro que guarda la sesion en Google Sheets por usuario
   - historico y graficas de evolucion en peso y repeticiones por ejercicio
+- Herramientas > Logros:
+  - registro de marcas maximas en sentadilla, press de banca y peso muerto
+  - objetivos por ejercicio con fecha objetivo
+  - grafica comparativa entre marcas logradas y objetivos
 - Herramientas > Competiciones:
   - calendario para registrar fecha de competicion, nombre, ubicacion y descripcion
   - registro automatico en Google Calendar

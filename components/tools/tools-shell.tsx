@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
+  BicepsFlexed,
   Calendar,
   Dumbbell,
   LineChart,
@@ -20,6 +21,10 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  STRENGTH_EXERCISES,
+  type StrengthExercise
+} from "@/lib/achievements/strength-exercises";
 
 type SessionUser = {
   username: string;
@@ -30,7 +35,7 @@ type ToolsShellProps = {
   user: SessionUser;
 };
 
-type ToolSection = "routine" | "competitions";
+type ToolSection = "routine" | "competitions" | "achievements";
 
 type ExerciseGroup = {
   muscleGroup: string;
@@ -101,6 +106,29 @@ type CompetitionEvent = {
 type CompetitionsResponse = {
   events?: CompetitionEvent[];
   warning?: string;
+  error?: string;
+};
+
+type AchievementMark = {
+  id: string;
+  timestamp: string;
+  exercise: StrengthExercise;
+  date: string;
+  weightKg: number;
+};
+
+type AchievementGoal = {
+  id: string;
+  timestamp: string;
+  exercise: StrengthExercise;
+  targetDate: string;
+  targetWeightKg: number;
+};
+
+type AchievementsResponse = {
+  marks?: AchievementMark[];
+  goals?: AchievementGoal[];
+  exercises?: StrengthExercise[];
   error?: string;
 };
 
@@ -287,6 +315,168 @@ function ProgressChart(props: {
   );
 }
 
+function StrengthComparisonChart(props: {
+  title: string;
+  marks: ProgressPoint[];
+  goals: ProgressPoint[];
+}) {
+  const { title, marks, goals } = props;
+  const hasMarks = marks.length > 0;
+  const hasGoals = goals.length > 0;
+
+  if (!hasMarks && !hasGoals) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+        Aun no hay datos para esta grafica.
+      </div>
+    );
+  }
+
+  const width = 760;
+  const height = 280;
+  const paddingX = 52;
+  const paddingY = 34;
+
+  const toTimestamp = (date: string): number => {
+    const parsed = new Date(`${date}T00:00:00`).getTime();
+    return Number.isFinite(parsed) ? parsed : Date.now();
+  };
+
+  const marksSorted = [...marks]
+    .map((item) => ({ ...item, ts: toTimestamp(item.date) }))
+    .sort((a, b) => a.ts - b.ts);
+
+  const goalsSorted = [...goals]
+    .map((item) => ({ ...item, ts: toTimestamp(item.date) }))
+    .sort((a, b) => a.ts - b.ts);
+
+  const allSeries = [...marksSorted, ...goalsSorted];
+  const minValue = Math.min(...allSeries.map((item) => item.value));
+  const maxValue = Math.max(...allSeries.map((item) => item.value));
+  const range = Math.max(maxValue - minValue, 1);
+
+  const minTs = Math.min(...allSeries.map((item) => item.ts));
+  const maxTs = Math.max(...allSeries.map((item) => item.ts));
+  const tsRange = Math.max(maxTs - minTs, 1);
+
+  const x = (ts: number) => paddingX + ((ts - minTs) * (width - paddingX * 2)) / tsRange;
+  const y = (value: number) =>
+    height - paddingY - ((value - minValue) * (height - paddingY * 2)) / range;
+
+  const marksPolyline = marksSorted.map((item) => `${x(item.ts)},${y(item.value)}`).join(" ");
+  const goalsPolyline = goalsSorted.map((item) => `${x(item.ts)},${y(item.value)}`).join(" ");
+
+  const ticks = Array.from({ length: 5 }).map((_, index) => {
+    const value = minValue + ((maxValue - minValue) * index) / 4;
+    return {
+      value,
+      y: y(value)
+    };
+  });
+
+  const uniqueDates = Array.from(
+    new Map(
+      [...allSeries]
+        .sort((a, b) => a.ts - b.ts)
+        .map((item) => [item.date, { date: item.date, ts: item.ts }])
+    ).values()
+  );
+  const labelStep = Math.max(1, Math.ceil(uniqueDates.length / 6));
+
+  return (
+    <div className="min-w-0 rounded-xl border border-white/10 bg-black/20 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">{title}</p>
+        <div className="flex items-center gap-3 text-[11px] text-brand-muted">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-[#F7CC2F]" />
+            Marca lograda
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-[#fb7185]" />
+            Objetivo
+          </span>
+        </div>
+      </div>
+
+      <div className="min-w-0 overflow-hidden">
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full">
+          {ticks.map((tick, index) => (
+            <g key={`strength-tick-${index}`}>
+              <line
+                x1={paddingX}
+                x2={width - paddingX}
+                y1={tick.y}
+                y2={tick.y}
+                stroke="rgba(255,255,255,0.12)"
+                strokeDasharray="4 5"
+              />
+              <text
+                x={paddingX - 8}
+                y={tick.y + 4}
+                textAnchor="end"
+                fill="rgba(255,255,255,0.65)"
+                fontSize={11}
+              >
+                {tick.value.toFixed(1)}kg
+              </text>
+            </g>
+          ))}
+
+          {marksSorted.length ? (
+            <polyline fill="none" stroke="#F7CC2F" strokeWidth={3} points={marksPolyline} />
+          ) : null}
+          {goalsSorted.length ? (
+            <polyline
+              fill="none"
+              stroke="#fb7185"
+              strokeWidth={3}
+              strokeDasharray="7 6"
+              points={goalsPolyline}
+            />
+          ) : null}
+
+          {marksSorted.map((item, index) => (
+            <circle
+              key={`mark-point-${index}-${item.date}`}
+              cx={x(item.ts)}
+              cy={y(item.value)}
+              r={4}
+              fill="#F7CC2F"
+            />
+          ))}
+
+          {goalsSorted.map((item, index) => (
+            <rect
+              key={`goal-point-${index}-${item.date}`}
+              x={x(item.ts) - 3.2}
+              y={y(item.value) - 3.2}
+              width={6.4}
+              height={6.4}
+              fill="#fb7185"
+            />
+          ))}
+
+          {uniqueDates.map((item, index) =>
+            index % labelStep === 0 || index === uniqueDates.length - 1 ? (
+              <text
+                key={`x-label-${item.date}-${index}`}
+                x={x(item.ts)}
+                y={height - 8}
+                textAnchor="middle"
+                fill="rgba(255,255,255,0.66)"
+                fontSize={11}
+              >
+                {formatDateLabel(item.date)}
+              </text>
+            ) : null
+          )}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 export function ToolsShell({ user }: ToolsShellProps) {
   const router = useRouter();
   const [catalog, setCatalog] = useState<ExerciseGroup[]>([]);
@@ -306,6 +496,22 @@ export function ToolsShell({ user }: ToolsShellProps) {
   const [editingDayLabel, setEditingDayLabel] = useState("");
   const [editingEntries, setEditingEntries] = useState<RoutineEntryForm[]>([]);
   const [activeTool, setActiveTool] = useState<ToolSection>("routine");
+  const [achievementMarks, setAchievementMarks] = useState<AchievementMark[]>([]);
+  const [achievementGoals, setAchievementGoals] = useState<AchievementGoal[]>([]);
+  const [achievementLoading, setAchievementLoading] = useState(true);
+  const [achievementSaving, setAchievementSaving] = useState(false);
+  const [goalSaving, setGoalSaving] = useState(false);
+  const [achievementExercise, setAchievementExercise] = useState<StrengthExercise>(
+    STRENGTH_EXERCISES[0]
+  );
+  const [achievementDate, setAchievementDate] = useState(() => formatDateForInput(new Date()));
+  const [achievementWeight, setAchievementWeight] = useState("");
+  const [goalExercise, setGoalExercise] = useState<StrengthExercise>(STRENGTH_EXERCISES[0]);
+  const [goalDate, setGoalDate] = useState("");
+  const [goalWeight, setGoalWeight] = useState("");
+  const [chartAchievementExercise, setChartAchievementExercise] = useState<StrengthExercise>(
+    STRENGTH_EXERCISES[0]
+  );
   const [competitions, setCompetitions] = useState<CompetitionEvent[]>([]);
   const [competitionsLoading, setCompetitionsLoading] = useState(true);
   const [competitionSaving, setCompetitionSaving] = useState(false);
@@ -419,6 +625,34 @@ export function ToolsShell({ user }: ToolsShellProps) {
 
     return upcoming[0] ?? null;
   }, [competitions]);
+
+  const achievementMarksForChart = useMemo(() => {
+    return achievementMarks
+      .filter((item) => item.exercise === chartAchievementExercise)
+      .sort((a, b) => {
+        const byDate = a.date.localeCompare(b.date);
+        if (byDate !== 0) return byDate;
+        return a.timestamp.localeCompare(b.timestamp);
+      })
+      .map((item) => ({
+        date: item.date,
+        value: item.weightKg
+      }));
+  }, [achievementMarks, chartAchievementExercise]);
+
+  const achievementGoalsForChart = useMemo(() => {
+    return achievementGoals
+      .filter((item) => item.exercise === chartAchievementExercise)
+      .sort((a, b) => {
+        const byDate = a.targetDate.localeCompare(b.targetDate);
+        if (byDate !== 0) return byDate;
+        return a.timestamp.localeCompare(b.timestamp);
+      })
+      .map((item) => ({
+        date: item.targetDate,
+        value: item.targetWeightKg
+      }));
+  }, [achievementGoals, chartAchievementExercise]);
 
   useEffect(() => {
     router.prefetch("/dashboard");
@@ -550,6 +784,31 @@ export function ToolsShell({ user }: ToolsShellProps) {
     }
   }, [sessionsForSelectedDate, selectedHistorySessionId, editingSessionId]);
 
+  async function reloadAchievements() {
+    setAchievementLoading(true);
+    try {
+      const res = await fetch("/api/tools/achievements");
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as AchievementsResponse;
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudieron cargar los logros.");
+        return;
+      }
+
+      setAchievementMarks(Array.isArray(json.marks) ? json.marks : []);
+      setAchievementGoals(Array.isArray(json.goals) ? json.goals : []);
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudieron cargar los logros.");
+    } finally {
+      setAchievementLoading(false);
+    }
+  }
+
   async function reloadCompetitions() {
     setCompetitionsLoading(true);
     try {
@@ -577,6 +836,10 @@ export function ToolsShell({ user }: ToolsShellProps) {
 
   useEffect(() => {
     reloadCompetitions();
+  }, []);
+
+  useEffect(() => {
+    reloadAchievements();
   }, []);
 
   async function reloadHistory() {
@@ -891,6 +1154,102 @@ export function ToolsShell({ user }: ToolsShellProps) {
     }
   }
 
+  async function registerAchievementMark() {
+    if (!achievementDate) {
+      toast.error("Debes indicar la fecha de la marca.");
+      return;
+    }
+
+    const weightKg = parseEntryNumber(achievementWeight);
+    if (weightKg === null || weightKg <= 0 || weightKg > 800) {
+      toast.error("Introduce un peso valido entre 1 y 800 kg.");
+      return;
+    }
+
+    setAchievementSaving(true);
+    try {
+      const res = await fetch("/api/tools/achievements", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          exercise: achievementExercise,
+          date: achievementDate,
+          weightKg
+        })
+      });
+
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudo guardar la marca.");
+        return;
+      }
+
+      toast.success("Marca maxima registrada.");
+      setAchievementWeight("");
+      await reloadAchievements();
+    } catch (error) {
+      console.error(error);
+      toast.error("Error guardando la marca.");
+    } finally {
+      setAchievementSaving(false);
+    }
+  }
+
+  async function saveAchievementGoal() {
+    if (!goalDate) {
+      toast.error("Debes indicar la fecha objetivo.");
+      return;
+    }
+
+    const targetWeightKg = parseEntryNumber(goalWeight);
+    if (targetWeightKg === null || targetWeightKg <= 0 || targetWeightKg > 800) {
+      toast.error("Introduce un objetivo valido entre 1 y 800 kg.");
+      return;
+    }
+
+    setGoalSaving(true);
+    try {
+      const res = await fetch("/api/tools/achievements", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          exercise: goalExercise,
+          targetDate: goalDate,
+          targetWeightKg
+        })
+      });
+
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudo guardar el objetivo.");
+        return;
+      }
+
+      toast.success("Objetivo guardado.");
+      setGoalWeight("");
+      await reloadAchievements();
+    } catch (error) {
+      console.error(error);
+      toast.error("Error guardando el objetivo.");
+    } finally {
+      setGoalSaving(false);
+    }
+  }
+
   async function deleteSelectedSession() {
     if (!selectedHistorySession) return;
 
@@ -1038,7 +1397,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
               onClick={() => setActiveTool("routine")}
             >
               <Dumbbell className="mr-2 h-4 w-4" />
-              Gestion de rutina
+              Gestión de entreno
             </BrandButton>
             <BrandButton
               variant={activeTool === "competitions" ? "accent" : "ghost"}
@@ -1047,6 +1406,14 @@ export function ToolsShell({ user }: ToolsShellProps) {
             >
               <Trophy className="mr-2 h-4 w-4" />
               Competiciones
+            </BrandButton>
+            <BrandButton
+              variant={activeTool === "achievements" ? "accent" : "ghost"}
+              className="w-full justify-center px-4 py-2 sm:w-auto"
+              onClick={() => setActiveTool("achievements")}
+            >
+              <BicepsFlexed className="mr-2 h-4 w-4" />
+              Logros
             </BrandButton>
           </div>
         </section>
@@ -1060,13 +1427,13 @@ export function ToolsShell({ user }: ToolsShellProps) {
           className="rounded-3xl border border-brand-accent/20 bg-brand-surface/80 p-6 shadow-glow"
         >
           <p className="text-xs uppercase tracking-[0.24em] text-brand-muted">Herramientas</p>
-          <h1 className="mt-2 text-3xl font-bold text-brand-text">Gestion de rutina</h1>
+          <h1 className="mt-2 text-3xl font-bold text-brand-text">Gestión de entreno</h1>
           <p className="mt-3 max-w-3xl text-sm text-brand-muted">
             Define rutinas para todos los dias que necesites, registra repeticiones y peso por
             ejercicio, y revisa tu evolucion historica.
           </p>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-[220px,auto,auto] md:items-end">
+          <div className="mt-5 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-end">
             <label className="min-w-0 text-sm text-brand-muted">
               Fecha de sesion
               <div className="relative mt-2 min-w-0">
@@ -1075,7 +1442,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                   type="date"
                   value={sessionDate}
                   onChange={(event) => setSessionDate(event.target.value)}
-                  className="block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  className="date-input-responsive block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                 />
               </div>
             </label>
@@ -1400,7 +1767,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                           type="date"
                           value={editingSessionDate}
                           onChange={(event) => setEditingSessionDate(event.target.value)}
-                          className="mt-2 block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          className="date-input-responsive mt-2 block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
                       <label className="text-sm text-brand-muted">
@@ -1533,7 +1900,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
           </div>
         </section>
           </>
-        ) : (
+        ) : activeTool === "competitions" ? (
           <>
             <motion.section
               initial={{ opacity: 0, y: 16 }}
@@ -1560,7 +1927,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                 </div>
               ) : null}
 
-              <div className="mt-5">
+              <div className="mt-5 grid gap-3 md:grid-cols-2">
                 <label className="min-w-0 text-sm text-brand-muted">
                   Fecha de inicio
                   <div className="relative mt-2 min-w-0">
@@ -1569,14 +1936,12 @@ export function ToolsShell({ user }: ToolsShellProps) {
                       type="date"
                       value={competitionDate}
                       onChange={(event) => setCompetitionDate(event.target.value)}
-                      className="block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      className="date-input-responsive block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
                   </div>
                 </label>
-              </div>
 
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <label className="text-sm text-brand-muted">
+                <label className="min-w-0 text-sm text-brand-muted">
                   Nombre de la competicion
                   <input
                     value={competitionName}
@@ -1586,7 +1951,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                   />
                 </label>
 
-                <label className="text-sm text-brand-muted">
+                <label className="min-w-0 text-sm text-brand-muted">
                   Hora de pesaje
                   <input
                     type="time"
@@ -1596,7 +1961,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                   />
                 </label>
 
-                <label className="text-sm text-brand-muted">
+                <label className="min-w-0 text-sm text-brand-muted">
                   Ubicacion
                   <input
                     value={competitionLocation}
@@ -1671,6 +2036,230 @@ export function ToolsShell({ user }: ToolsShellProps) {
                   })}
                 </div>
               )}
+            </section>
+          </>
+        ) : (
+          <>
+            <motion.section
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.45 }}
+              className="rounded-3xl border border-brand-accent/20 bg-brand-surface/80 p-6 shadow-glow"
+            >
+              <p className="text-xs uppercase tracking-[0.24em] text-brand-muted">Herramientas</p>
+              <h1 className="mt-2 text-3xl font-bold text-brand-text">Logros</h1>
+              <p className="mt-3 max-w-3xl text-sm text-brand-muted">
+                Registra tus marcas maximas de sentadilla, press de banca y peso muerto, y define
+                objetivos para comparar la evolucion real frente al plan.
+              </p>
+
+              <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                <article className="rounded-xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                    Nueva marca maxima
+                  </p>
+
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="min-w-0 text-sm text-brand-muted">
+                      Ejercicio
+                      <select
+                        value={achievementExercise}
+                        onChange={(event) =>
+                          setAchievementExercise(event.target.value as StrengthExercise)
+                        }
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      >
+                        {STRENGTH_EXERCISES.map((exercise) => (
+                          <option key={`mark-${exercise}`} value={exercise}>
+                            {exercise}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="min-w-0 text-sm text-brand-muted">
+                      Fecha de marca
+                      <input
+                        type="date"
+                        value={achievementDate}
+                        onChange={(event) => setAchievementDate(event.target.value)}
+                        className="date-input-responsive mt-2 block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-brand-muted md:col-span-2">
+                      Peso levantado (kg)
+                      <input
+                        type="number"
+                        min={1}
+                        max={800}
+                        step="0.5"
+                        value={achievementWeight}
+                        onChange={(event) => setAchievementWeight(event.target.value)}
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        placeholder="Ejemplo: 180"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-3">
+                    <BrandButton onClick={registerAchievementMark} disabled={achievementSaving}>
+                      <Save className="mr-1 h-4 w-4" />
+                      {achievementSaving ? "Guardando..." : "Guardar marca"}
+                    </BrandButton>
+                  </div>
+                </article>
+
+                <article className="rounded-xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                    Objetivo de rendimiento
+                  </p>
+
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="min-w-0 text-sm text-brand-muted">
+                      Ejercicio
+                      <select
+                        value={goalExercise}
+                        onChange={(event) => setGoalExercise(event.target.value as StrengthExercise)}
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      >
+                        {STRENGTH_EXERCISES.map((exercise) => (
+                          <option key={`goal-${exercise}`} value={exercise}>
+                            {exercise}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="min-w-0 text-sm text-brand-muted">
+                      Fecha objetivo
+                      <input
+                        type="date"
+                        value={goalDate}
+                        onChange={(event) => setGoalDate(event.target.value)}
+                        className="date-input-responsive mt-2 block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-brand-muted md:col-span-2">
+                      Peso objetivo (kg)
+                      <input
+                        type="number"
+                        min={1}
+                        max={800}
+                        step="0.5"
+                        value={goalWeight}
+                        onChange={(event) => setGoalWeight(event.target.value)}
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        placeholder="Ejemplo: 200"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-3">
+                    <BrandButton onClick={saveAchievementGoal} disabled={goalSaving}>
+                      <Save className="mr-1 h-4 w-4" />
+                      {goalSaving ? "Guardando..." : "Guardar objetivo"}
+                    </BrandButton>
+                  </div>
+                </article>
+              </div>
+            </motion.section>
+
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Evolucion</p>
+                  <h2 className="mt-1 text-lg font-semibold text-brand-text">
+                    Comparativa de marcas vs objetivos
+                  </h2>
+                </div>
+
+                <label className="w-full max-w-sm text-sm text-brand-muted">
+                  Ejercicio para grafica
+                  <select
+                    value={chartAchievementExercise}
+                    onChange={(event) =>
+                      setChartAchievementExercise(event.target.value as StrengthExercise)
+                    }
+                    className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    {STRENGTH_EXERCISES.map((exercise) => (
+                      <option key={`chart-${exercise}`} value={exercise}>
+                        {exercise}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {achievementLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-56 w-full" />
+                </div>
+              ) : (
+                <StrengthComparisonChart
+                  title={`Evolucion - ${chartAchievementExercise}`}
+                  marks={achievementMarksForChart}
+                  goals={achievementGoalsForChart}
+                />
+              )}
+
+              <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <h3 className="text-sm font-semibold text-brand-text">Registro de marcas</h3>
+                  {achievementLoading ? (
+                    <div className="mt-2 space-y-2">
+                      <Skeleton className="h-12 w-full" />
+                      <Skeleton className="h-12 w-full" />
+                    </div>
+                  ) : achievementMarks.length === 0 ? (
+                    <p className="mt-2 text-sm text-brand-muted">Todavia no hay marcas registradas.</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {achievementMarks.map((mark) => (
+                        <div
+                          key={mark.id}
+                          className="rounded-lg border border-white/10 bg-black/25 px-3 py-2"
+                        >
+                          <p className="text-sm font-medium text-brand-text">
+                            {mark.exercise} · {mark.weightKg} kg
+                          </p>
+                          <p className="text-xs text-brand-muted">{formatDateLabel(mark.date)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+
+                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <h3 className="text-sm font-semibold text-brand-text">Objetivos definidos</h3>
+                  {achievementLoading ? (
+                    <div className="mt-2 space-y-2">
+                      <Skeleton className="h-12 w-full" />
+                      <Skeleton className="h-12 w-full" />
+                    </div>
+                  ) : achievementGoals.length === 0 ? (
+                    <p className="mt-2 text-sm text-brand-muted">Todavia no hay objetivos definidos.</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {achievementGoals.map((goal) => (
+                        <div
+                          key={goal.id}
+                          className="rounded-lg border border-white/10 bg-black/25 px-3 py-2"
+                        >
+                          <p className="text-sm font-medium text-brand-text">
+                            {goal.exercise} · {goal.targetWeightKg} kg
+                          </p>
+                          <p className="text-xs text-brand-muted">
+                            Objetivo para {formatDateLabel(goal.targetDate)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              </div>
             </section>
           </>
         )}

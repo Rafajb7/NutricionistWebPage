@@ -601,8 +601,8 @@ export function DashboardShell({ user }: DashboardShellProps) {
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="relative min-w-0">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <label className="relative min-w-0 w-full">
                 <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
                 <input
                   value={query}
@@ -611,7 +611,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                   className="min-w-0 w-full max-w-full rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                 />
               </label>
-              <label className="relative min-w-0 overflow-hidden">
+              <label className="relative min-w-0 w-full">
                 <Calendar className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
                 <input
                   type="date"
