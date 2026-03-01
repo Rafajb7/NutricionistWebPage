@@ -1,7 +1,7 @@
-import { google } from "googleapis";
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import { getGoogleAuth } from "@/lib/google/auth";
+import { canUserAccessPhotoFile, downloadDriveFile } from "@/lib/google/drive";
+import { listRevisionRowsForUser } from "@/lib/google/sheets";
 import { logError } from "@/lib/logger";
 
 type RouteContext = {
@@ -14,6 +14,29 @@ function isValidDriveId(value: string): boolean {
   return /^[A-Za-z0-9_-]{10,}$/.test(value);
 }
 
+function sanitizeFileName(value: string): string {
+  return value.replace(/["\r\n]+/g, "_");
+}
+
+function buildFileIdPatterns(fileId: string): RegExp[] {
+  const escaped = fileId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [
+    new RegExp(`/api/photos/view/${escaped}`, "i"),
+    new RegExp(`[?&]id=${escaped}(?:$|[&#])`, "i"),
+    new RegExp(`/file/d/${escaped}(?:/|$)`, "i"),
+    new RegExp(`/d/${escaped}(?:/|$)`, "i")
+  ];
+}
+
+async function isFileReferencedInUserRevisions(username: string, fileId: string): Promise<boolean> {
+  const rows = await listRevisionRowsForUser(username);
+  const patterns = buildFileIdPatterns(fileId);
+  return rows.some((row) => {
+    const value = String(row.respuesta ?? "");
+    return patterns.some((pattern) => pattern.test(value));
+  });
+}
+
 export async function GET(_req: Request, context: RouteContext) {
   const auth = await requireSession();
   if (!auth.session) return auth.response;
@@ -24,34 +47,28 @@ export async function GET(_req: Request, context: RouteContext) {
   }
 
   try {
-    const drive = google.drive({
-      version: "v3",
-      auth: getGoogleAuth(["https://www.googleapis.com/auth/drive.readonly"])
+    const canAccess = await canUserAccessPhotoFile({
+      username: auth.session.username,
+      name: auth.session.name,
+      permission: auth.session.permission,
+      fileId
     });
+    if (!canAccess) {
+      const hasRevisionReference =
+        auth.session.permission === "admin"
+          ? true
+          : await isFileReferencedInUserRevisions(auth.session.username, fileId);
+      if (!hasRevisionReference) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+    }
 
-    const [metadata, media] = await Promise.all([
-      drive.files.get({
-        fileId,
-        fields: "mimeType,name"
-      }),
-      drive.files.get(
-        {
-          fileId,
-          alt: "media"
-        },
-        {
-          responseType: "arraybuffer"
-        }
-      )
-    ]);
+    const file = await downloadDriveFile(fileId);
+    const fileName = sanitizeFileName(file.name);
 
-    const mimeType = metadata.data.mimeType ?? "application/octet-stream";
-    const fileName = metadata.data.name ?? `${fileId}.bin`;
-    const data = Buffer.from(media.data as ArrayBuffer);
-
-    return new NextResponse(new Uint8Array(data), {
+    return new NextResponse(new Uint8Array(file.data), {
       headers: {
-        "Content-Type": mimeType,
+        "Content-Type": file.mimeType,
         "Content-Disposition": `inline; filename="${fileName}"`,
         "Cache-Control": "private, max-age=600"
       }

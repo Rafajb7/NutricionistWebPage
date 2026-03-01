@@ -24,3 +24,19 @@ export async function requireSession(options?: {
 
   return { session, response: null };
 }
+
+export async function requireAdminSession(options?: {
+  allowPasswordChangePending?: boolean;
+}) {
+  const auth = await requireSession(options);
+  if (!auth.session) return auth;
+
+  if (auth.session.permission !== "admin") {
+    return {
+      session: null,
+      response: NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    };
+  }
+
+  return auth;
+}

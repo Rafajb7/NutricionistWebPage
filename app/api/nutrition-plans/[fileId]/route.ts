@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import { downloadDriveFile } from "@/lib/google/drive";
+import { canUserAccessNutritionPlanFile, downloadDriveFile } from "@/lib/google/drive";
 import { logError } from "@/lib/logger";
 
 type RouteContext = {
@@ -30,6 +30,15 @@ export async function GET(req: Request, context: RouteContext) {
   const download = url.searchParams.get("download") === "1";
 
   try {
+    const canAccess = await canUserAccessNutritionPlanFile({
+      username: auth.session.username,
+      permission: auth.session.permission,
+      fileId
+    });
+    if (!canAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const file = await downloadDriveFile(fileId);
     const fileName = sanitizeFileName(file.name);
     const disposition = download ? "attachment" : "inline";

@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { AdminShell } from "@/components/admin/admin-shell";
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { getSessionFromCookies } from "@/lib/auth/session";
 
@@ -8,12 +9,21 @@ export default async function DashboardPage() {
 
   return (
     <main className="min-h-screen bg-brand-gradient">
-      <DashboardShell
-        user={{
-          username: session.username,
-          name: session.name
-        }}
-      />
+      {session.permission === "admin" ? (
+        <AdminShell
+          user={{
+            username: session.username,
+            name: session.name
+          }}
+        />
+      ) : (
+        <DashboardShell
+          user={{
+            username: session.username,
+            name: session.name
+          }}
+        />
+      )}
     </main>
   );
 }
