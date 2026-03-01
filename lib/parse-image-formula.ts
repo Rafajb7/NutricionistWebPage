@@ -1,5 +1,6 @@
 const URL_REGEX = /(https?:\/\/[^\s"'();]+)/i;
 const DOUBLE_QUOTE_URL_REGEX = /"((?:https?:\/\/)[^"]+)"/i;
+const INTERNAL_PHOTO_ROUTE_REGEX = /\/api\/photos\/view\/([A-Za-z0-9_-]{10,})/i;
 
 export function extractImageUrl(value: string | undefined | null): string | null {
   if (!value) return null;
@@ -12,6 +13,9 @@ export function extractImageUrl(value: string | undefined | null): string | null
 
   const direct = trimmed.match(URL_REGEX);
   if (direct?.[1]) return toDisplayUrl(sanitizeUrl(direct[1]));
+
+  const internal = trimmed.match(INTERNAL_PHOTO_ROUTE_REGEX);
+  if (internal?.[1]) return `/api/photos/view/${internal[1]}`;
 
   return null;
 }

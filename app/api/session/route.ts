@@ -11,6 +11,7 @@ export async function GET() {
     user: {
       username: session.username,
       name: session.name,
+      permission: session.permission,
       mustChangePassword: Boolean(session.mustChangePassword)
     }
   });

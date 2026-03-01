@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
     const refreshedToken = await createSessionToken({
       username: user.username.trim().replace(/^@/, ""),
       name: user.name,
+      permission: user.permission,
       mustChangePassword: false
     });
 
@@ -67,4 +68,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Could not change password." }, { status: 500 });
   }
 }
-

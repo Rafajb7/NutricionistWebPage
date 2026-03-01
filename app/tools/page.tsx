@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { AdminToolsShell } from "@/components/admin/admin-tools-shell";
 import { ToolsShell } from "@/components/tools/tools-shell";
 import { getSessionFromCookies } from "@/lib/auth/session";
 
@@ -8,13 +9,21 @@ export default async function ToolsPage() {
 
   return (
     <main className="min-h-screen bg-brand-gradient">
-      <ToolsShell
-        user={{
-          username: session.username,
-          name: session.name
-        }}
-      />
+      {session.permission === "admin" ? (
+        <AdminToolsShell
+          user={{
+            username: session.username,
+            name: session.name
+          }}
+        />
+      ) : (
+        <ToolsShell
+          user={{
+            username: session.username,
+            name: session.name
+          }}
+        />
+      )}
     </main>
   );
 }
-

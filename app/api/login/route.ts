@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
     const token = await createSessionToken({
       username: user.username.trim().replace(/^@/, ""),
       name: user.name,
+      permission: user.permission,
       mustChangePassword
     });
 
@@ -75,7 +76,8 @@ export async function POST(req: NextRequest) {
       mustChangePassword,
       user: {
         username: user.username,
-        name: user.name
+        name: user.name,
+        permission: user.permission
       }
     });
 

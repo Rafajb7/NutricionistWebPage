@@ -10,7 +10,16 @@ type AppUser = {
   username: string;
   password: string;
   email: string;
+  permission: "user" | "admin";
   passwordColumn: number;
+};
+
+type UsersSheetColumns = {
+  usernameCol: number;
+  passwordCol: number;
+  nameCol: number;
+  emailCol: number;
+  permissionCol: number;
 };
 
 export type RoutineExercise = {
@@ -98,6 +107,12 @@ function isValidSpreadsheetId(value: string | undefined): value is string {
 
 function normalizeUsername(value: string): string {
   return value.trim().replace(/^@/, "");
+}
+
+function parseUserPermission(value: string | undefined): "user" | "admin" {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "admin") return "admin";
+  return "user";
 }
 
 function getUsernameVariants(username: string): Set<string> {
@@ -497,6 +512,9 @@ export async function readUsersFromSheet(): Promise<AppUser[]> {
   );
   const nameCol = headers.findIndex((h) => ["nombre", "name"].includes(h));
   const emailCol = headers.findIndex((h) => ["email", "correo", "mail"].includes(h));
+  const permissionCol = headers.findIndex((h) =>
+    ["permisos", "permiso", "permissions", "permission", "rol", "role"].includes(h)
+  );
 
   if (usernameCol === -1 || passwordCol === -1 || nameCol === -1) {
     throw new Error(
@@ -512,9 +530,128 @@ export async function readUsersFromSheet(): Promise<AppUser[]> {
       username: row[usernameCol]?.trim() ?? "",
       password: row[passwordCol]?.trim() ?? "",
       email: emailCol >= 0 ? row[emailCol]?.trim() ?? "" : "",
+      permission: parseUserPermission(permissionCol >= 0 ? row[permissionCol] : undefined),
       passwordColumn: passwordCol
     }))
     .filter((u) => u.username);
+}
+
+async function getUsersSheetContext(): Promise<{
+  spreadsheetId: string;
+  worksheetName: string;
+  columns: UsersSheetColumns;
+}> {
+  const env = getEnv();
+  const spreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_USERS_SHEET_NAME);
+  const worksheetName = await getFirstWorksheetTitle(spreadsheetId);
+  const values = await getValuesBySheetName(env.GOOGLE_USERS_SHEET_NAME, "A1:Z1", worksheetName);
+  const headers = (values[0] ?? []).map(normalizeHeader);
+
+  const usernameCol = headers.findIndex((h) =>
+    ["usuario", "username", "telegram", "user"].includes(h)
+  );
+  const passwordCol = headers.findIndex((h) =>
+    ["contrasenas", "contrasena", "password"].includes(h)
+  );
+  const nameCol = headers.findIndex((h) => ["nombre", "name"].includes(h));
+  const emailCol = headers.findIndex((h) => ["email", "correo", "mail"].includes(h));
+  const permissionCol = headers.findIndex((h) =>
+    ["permisos", "permiso", "permissions", "permission", "rol", "role"].includes(h)
+  );
+
+  if (usernameCol === -1 || passwordCol === -1 || nameCol === -1) {
+    throw new Error(
+      'Users sheet must include "Nombre", "Usuario" and "contrasenas" columns.'
+    );
+  }
+
+  return {
+    spreadsheetId,
+    worksheetName,
+    columns: {
+      usernameCol,
+      passwordCol,
+      nameCol,
+      emailCol,
+      permissionCol
+    }
+  };
+}
+
+export async function createUserInSheet(input: {
+  name: string;
+  username: string;
+  passwordHash: string;
+  email?: string;
+  permission: "user" | "admin";
+}): Promise<void> {
+  const context = await getUsersSheetContext();
+  const sheets = await getSheetsClient();
+  const maxCol = Math.max(
+    context.columns.usernameCol,
+    context.columns.passwordCol,
+    context.columns.nameCol,
+    context.columns.emailCol,
+    context.columns.permissionCol
+  );
+  const row = Array.from({ length: maxCol + 1 }, () => "");
+  row[context.columns.nameCol] = input.name.trim();
+  row[context.columns.usernameCol] = normalizeUsername(input.username);
+  row[context.columns.passwordCol] = input.passwordHash.trim();
+  if (context.columns.emailCol >= 0) {
+    row[context.columns.emailCol] = (input.email ?? "").trim();
+  }
+  if (context.columns.permissionCol >= 0) {
+    row[context.columns.permissionCol] = input.permission;
+  }
+
+  const endCol = indexToA1Column(maxCol);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: context.spreadsheetId,
+    range: `'${context.worksheetName}'!A:${endCol}`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [row]
+    }
+  });
+}
+
+export async function deleteUserFromSheetByUsername(username: string): Promise<boolean> {
+  const cleanUsername = normalizeUsername(username).toLowerCase();
+  if (!cleanUsername) return false;
+
+  const users = await readUsersFromSheet();
+  const targetUser = users.find(
+    (user) => normalizeUsername(user.username).toLowerCase() === cleanUsername
+  );
+  if (!targetUser) return false;
+
+  const context = await getUsersSheetContext();
+  const worksheetMeta = await getWorksheetMetadataByTitle({
+    spreadsheetId: context.spreadsheetId,
+    worksheetName: context.worksheetName
+  });
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: context.spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId: worksheetMeta.sheetId,
+              dimension: "ROWS",
+              startIndex: targetUser.rowNumber - 1,
+              endIndex: targetUser.rowNumber
+            }
+          }
+        }
+      ]
+    }
+  });
+
+  return true;
 }
 
 export async function readQuestionsFromSheet(): Promise<string[]> {

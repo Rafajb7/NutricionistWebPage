@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import { getDriveFileThumbnail } from "@/lib/google/drive";
+import { canUserAccessNutritionPlanFile, getDriveFileThumbnail } from "@/lib/google/drive";
 import { logError } from "@/lib/logger";
 
 type RouteContext = {
@@ -43,6 +43,15 @@ export async function GET(_req: Request, context: RouteContext) {
   }
 
   try {
+    const canAccess = await canUserAccessNutritionPlanFile({
+      username: auth.session.username,
+      permission: auth.session.permission,
+      fileId
+    });
+    if (!canAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const thumbnail = await getDriveFileThumbnail(fileId);
     if (thumbnail) {
       return new NextResponse(new Uint8Array(thumbnail.data), {

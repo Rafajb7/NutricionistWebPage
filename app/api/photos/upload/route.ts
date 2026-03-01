@@ -73,7 +73,7 @@ export async function POST(req: Request) {
 
       const buffer = Buffer.from(await file.arrayBuffer());
       const uploaded = await uploadPhotoToDrive({
-        userName: auth.session.name,
+        username: auth.session.username,
         originalFileName: file.name,
         mimeType: file.type,
         buffer

@@ -15,6 +15,13 @@ describe("extractImageUrl", () => {
     expect(extractImageUrl(value)).toBe("https://example.com/file.jpg");
   });
 
+  it("keeps internal photo endpoint links", () => {
+    const value = "/api/photos/view/1aUQq2TmlgcnrWlTpDGEGyr5qSpYTRLIO";
+    expect(extractImageUrl(value)).toBe(
+      "/api/photos/view/1aUQq2TmlgcnrWlTpDGEGyr5qSpYTRLIO"
+    );
+  });
+
   it("returns null for non-url content", () => {
     expect(extractImageUrl("sin enlace")).toBeNull();
   });

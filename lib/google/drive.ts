@@ -4,7 +4,14 @@ import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
 
 type UploadPhotoInput = {
-  userName: string;
+  username: string;
+  originalFileName: string;
+  mimeType: string;
+  buffer: Buffer;
+};
+
+type UploadNutritionPlanInput = {
+  username: string;
   originalFileName: string;
   mimeType: string;
   buffer: Buffer;
@@ -79,7 +86,11 @@ export async function uploadPhotoToDrive(input: UploadPhotoInput): Promise<{
   const rootId = env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
 
   const fotosFolderId = await ensureDriveFolder(drive, rootId, "Fotos");
-  const userFolderId = await ensureDriveFolder(drive, fotosFolderId, input.userName);
+  const normalizedUsername = normalizeUserFolderKey(input.username);
+  if (!normalizedUsername) {
+    throw new Error("Invalid username for photo upload.");
+  }
+  const userFolderId = await ensureDriveFolder(drive, fotosFolderId, normalizedUsername);
 
   const now = Date.now();
   const safeName = input.originalFileName.replace(/[^\w.-]/g, "_");
@@ -88,7 +99,11 @@ export async function uploadPhotoToDrive(input: UploadPhotoInput): Promise<{
   const created = await drive.files.create({
     requestBody: {
       name: driveFileName,
-      parents: [userFolderId]
+      parents: [userFolderId],
+      appProperties: {
+        matUsername: normalizedUsername,
+        matFileType: "revision-photo"
+      }
     },
     media: {
       mimeType: input.mimeType,
@@ -101,14 +116,6 @@ export async function uploadPhotoToDrive(input: UploadPhotoInput): Promise<{
   if (!fileId) {
     throw new Error("Drive upload failed: missing file id.");
   }
-
-  await drive.permissions.create({
-    fileId,
-    requestBody: {
-      type: "anyone",
-      role: "reader"
-    }
-  });
 
   const publicUrl = `https://drive.google.com/uc?id=${fileId}`;
   return {
@@ -142,6 +149,22 @@ async function findUserFolderInRoot(
   );
 
   return folder?.id ?? null;
+}
+
+async function ensureUserFolderInRoot(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  rootFolderId: string,
+  username: string
+): Promise<string> {
+  const normalized = normalizeUserFolderKey(username);
+  if (!normalized) {
+    throw new Error("Invalid username for nutrition plan upload.");
+  }
+  return ensureDriveFolder(drive, rootFolderId, normalized);
+}
+
+function sanitizeDriveFileName(value: string): string {
+  return value.replace(/[^\w.\- ]+/g, "_").trim() || "plan.pdf";
 }
 
 export async function listNutritionPlanPdfsForUser(username: string): Promise<NutritionPlanFile[]> {
@@ -196,6 +219,47 @@ export async function listNutritionPlanPdfsForUser(username: string): Promise<Nu
   return out;
 }
 
+export async function uploadNutritionPlanPdfForUser(
+  input: UploadNutritionPlanInput
+): Promise<NutritionPlanFile> {
+  const env = getEnv();
+  const drive = await getDriveClient();
+  const userFolderId = await ensureUserFolderInRoot(
+    drive,
+    env.GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID,
+    input.username
+  );
+
+  const safeOriginal = sanitizeDriveFileName(input.originalFileName);
+  const hasPdfExtension = /\.pdf$/i.test(safeOriginal);
+  const driveFileName = hasPdfExtension ? safeOriginal : `${safeOriginal}.pdf`;
+
+  const created = await drive.files.create({
+    requestBody: {
+      name: driveFileName,
+      parents: [userFolderId]
+    },
+    media: {
+      mimeType: input.mimeType || "application/pdf",
+      body: Readable.from(input.buffer)
+    },
+    fields: "id,name,mimeType,createdTime,modifiedTime,size"
+  });
+
+  if (!created.data.id) {
+    throw new Error("Nutrition plan upload failed: missing file id.");
+  }
+
+  return {
+    id: String(created.data.id),
+    name: String(created.data.name ?? driveFileName),
+    mimeType: String(created.data.mimeType ?? "application/pdf"),
+    createdTime: created.data.createdTime ?? null,
+    modifiedTime: created.data.modifiedTime ?? null,
+    sizeBytes: created.data.size ? Number(created.data.size) : null
+  };
+}
+
 export async function downloadDriveFile(fileId: string): Promise<{
   data: Buffer;
   name: string;
@@ -244,4 +308,67 @@ export async function getDriveFileThumbnail(fileId: string): Promise<{
     data: Buffer.from(thumbResponse.data as ArrayBuffer),
     mimeType
   };
+}
+
+export async function canUserAccessNutritionPlanFile(input: {
+  username: string;
+  permission: "user" | "admin";
+  fileId: string;
+}): Promise<boolean> {
+  if (input.permission === "admin") return true;
+  const plans = await listNutritionPlanPdfsForUser(input.username);
+  return plans.some((plan) => plan.id === input.fileId);
+}
+
+export async function canUserAccessPhotoFile(input: {
+  username: string;
+  name: string;
+  permission: "user" | "admin";
+  fileId: string;
+}): Promise<boolean> {
+  if (input.permission === "admin") return true;
+
+  const drive = await getDriveReadOnlyClient();
+  const normalizedUsername = normalizeUserFolderKey(input.username);
+  const normalizedName = normalizeUserFolderKey(input.name);
+
+  try {
+    const file = await drive.files.get({
+      fileId: input.fileId,
+      fields: "parents,appProperties,trashed"
+    });
+    if (file.data.trashed) return false;
+
+    const ownerInProperties = normalizeUserFolderKey(file.data.appProperties?.matUsername ?? "");
+    if (ownerInProperties && ownerInProperties === normalizedUsername) {
+      return true;
+    }
+
+    const userFolderId = file.data.parents?.[0];
+    if (!userFolderId) return false;
+
+    const userFolder = await drive.files.get({
+      fileId: userFolderId,
+      fields: "name,mimeType,parents,trashed"
+    });
+    if (userFolder.data.trashed) return false;
+    if (userFolder.data.mimeType !== "application/vnd.google-apps.folder") return false;
+
+    const folderOwner = normalizeUserFolderKey(userFolder.data.name ?? "");
+    if (!folderOwner) return false;
+    if (folderOwner !== normalizedUsername && folderOwner !== normalizedName) return false;
+
+    const fotosFolderId = userFolder.data.parents?.[0];
+    if (!fotosFolderId) return false;
+
+    const fotosFolder = await drive.files.get({
+      fileId: fotosFolderId,
+      fields: "name,trashed"
+    });
+    if (fotosFolder.data.trashed) return false;
+
+    return normalizeUserFolderKey(fotosFolder.data.name ?? "") === "fotos";
+  } catch {
+    return false;
+  }
 }

@@ -20,7 +20,14 @@ function normalizeEmail(value: string): string {
 
 function resolveBaseUrl(req: NextRequest): string {
   const env = getEnv();
-  return env.APP_BASE_URL ?? req.nextUrl.origin;
+  const configured = env.APP_BASE_URL?.trim();
+  if (configured) return configured;
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("APP_BASE_URL must be configured in production.");
+  }
+
+  return req.nextUrl.origin;
 }
 
 function getSmtpErrorMessage(error: unknown): string {

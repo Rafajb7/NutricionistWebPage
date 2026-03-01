@@ -3,9 +3,12 @@ import { getEnv } from "@/lib/env";
 
 export const SESSION_COOKIE_NAME = "mat_session";
 
+export type UserPermission = "user" | "admin";
+
 export type SessionUser = {
   username: string;
   name: string;
+  permission: UserPermission;
   mustChangePassword?: boolean;
 };
 
@@ -36,6 +39,9 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
     if (
       typeof payload.username !== "string" ||
       typeof payload.name !== "string" ||
+      (payload.permission !== undefined &&
+        payload.permission !== "user" &&
+        payload.permission !== "admin") ||
       (payload.mustChangePassword !== undefined &&
         typeof payload.mustChangePassword !== "boolean")
     ) {
@@ -44,6 +50,7 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
     return {
       username: payload.username,
       name: payload.name,
+      permission: (payload.permission as UserPermission | undefined) ?? "user",
       mustChangePassword: payload.mustChangePassword as boolean | undefined,
       iat: payload.iat,
       exp: payload.exp
