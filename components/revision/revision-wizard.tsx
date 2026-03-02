@@ -4,12 +4,13 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, Upload, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Upload, CheckCircle2, Trash2, Plus } from "lucide-react";
 import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
 
 const photoLabels = ["Frente", "Perfil izquierdo", "Perfil derecho", "Espalda"];
+const WEIGHT_AVERAGE_QUESTION = "PESO MEDIO SEMANAL (KG)";
 
 type WizardStage = "questions" | "photos" | "done";
 
@@ -18,9 +19,12 @@ export function RevisionWizard() {
   const [loadingQuestions, setLoadingQuestions] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
+  const [weightEntries, setWeightEntries] = useState<string[]>([""]);
   const [stage, setStage] = useState<WizardStage>("questions");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [finalizingRevision, setFinalizingRevision] = useState(false);
+
+  const isWeightQuestion = questions[currentIndex] === WEIGHT_AVERAGE_QUESTION;
 
   useEffect(() => {
     let active = true;
@@ -34,7 +38,8 @@ export function RevisionWizard() {
         if (!res.ok) throw new Error("No se pudieron cargar preguntas.");
         const json = (await res.json()) as { questions: string[] };
         if (!active) return;
-        const loaded = json.questions ?? [];
+        const loadedFromSheet = json.questions ?? [];
+        const loaded = [WEIGHT_AVERAGE_QUESTION, ...loadedFromSheet];
         setQuestions(loaded);
         setAnswers(new Array(loaded.length).fill(""));
       } catch (error) {
@@ -74,10 +79,54 @@ export function RevisionWizard() {
     return `${year}-${month}-${day}`;
   }
 
+  function parseWeightValue(raw: string): number | null {
+    const normalized = raw.replace(",", ".").trim();
+    if (!normalized) return null;
+    const value = Number(normalized);
+    if (!Number.isFinite(value)) return null;
+    if (value <= 0 || value > 800) return null;
+    return value;
+  }
+
+  function getValidWeightValues(): number[] {
+    return weightEntries
+      .map((value) => parseWeightValue(value))
+      .filter((value): value is number => value !== null);
+  }
+
+  function getWeightAverage(): number | null {
+    const values = getValidWeightValues();
+    if (!values.length) return null;
+    const sum = values.reduce((acc, value) => acc + value, 0);
+    return sum / values.length;
+  }
+
+  function validateWeightEntries(): boolean {
+    if (!weightEntries.length) {
+      toast.error("Debes registrar al menos un pesaje.");
+      return false;
+    }
+    const hasEmpty = weightEntries.some((value) => value.trim().length === 0);
+    if (hasEmpty) {
+      toast.error("Completa todos los pesajes antes de continuar.");
+      return false;
+    }
+    const values = getValidWeightValues();
+    if (values.length !== weightEntries.length) {
+      toast.error("Introduce pesos validos entre 1 y 800 kg.");
+      return false;
+    }
+    return true;
+  }
+
   function getNormalizedAnswers() {
+    const average = getWeightAverage();
     return questions.map((question, index) => ({
       question,
-      answer: (answers[index] ?? "").trim()
+      answer:
+        question === WEIGHT_AVERAGE_QUESTION
+          ? (average === null ? "" : `${average.toFixed(2)} kg`)
+          : (answers[index] ?? "").trim()
     }));
   }
 
@@ -91,12 +140,14 @@ export function RevisionWizard() {
   }
 
   function moveToPhotosStage() {
+    if (!validateWeightEntries()) return;
     const normalizedAnswers = validateAllAnswers();
     if (!normalizedAnswers) return;
     setStage("photos");
   }
 
   async function finalizeRevision(options?: { skipPhotos?: boolean }) {
+    if (!validateWeightEntries()) return;
     const normalizedAnswers = validateAllAnswers();
     if (!normalizedAnswers) return;
 
@@ -195,13 +246,88 @@ export function RevisionWizard() {
                 transition={{ duration: 0.2 }}
               >
                 <h1 className="mt-3 text-2xl font-semibold text-brand-text">{questions[currentIndex]}</h1>
-                <textarea
-                  value={currentAnswer}
-                  onChange={(event) => updateCurrentAnswer(event.target.value)}
-                  rows={6}
-                  className="mt-4 w-full rounded-xl border border-white/10 bg-black/30 p-4 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                  placeholder="Escribe tu respuesta..."
-                />
+                {isWeightQuestion ? (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm text-brand-muted">
+                      Registra tus pesajes de la semana. Puedes añadir todos los que quieras.
+                    </p>
+                    <div className="overflow-hidden rounded-xl border border-white/10">
+                      <table className="w-full text-sm">
+                        <thead className="bg-black/30 text-xs uppercase tracking-[0.16em] text-brand-muted">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Pesaje</th>
+                            <th className="px-3 py-2 text-left">Peso (kg)</th>
+                            <th className="px-3 py-2 text-left">Accion</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {weightEntries.map((value, index) => (
+                            <tr key={index} className="border-t border-white/10">
+                              <td className="px-3 py-2 text-brand-text">Pesaje {index + 1}</td>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="number"
+                                  inputMode="decimal"
+                                  step="0.1"
+                                  min="1"
+                                  max="800"
+                                  value={value}
+                                  onChange={(event) => {
+                                    const next = [...weightEntries];
+                                    next[index] = event.target.value;
+                                    setWeightEntries(next);
+                                  }}
+                                  placeholder="Ej: 78.4"
+                                  className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </td>
+                              <td className="px-3 py-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setWeightEntries((prev) =>
+                                      prev.length <= 1
+                                        ? prev
+                                        : prev.filter((_, rowIndex) => rowIndex !== index)
+                                    )
+                                  }
+                                  disabled={weightEntries.length <= 1}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-2 py-1 text-xs text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Eliminar
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <BrandButton
+                        variant="ghost"
+                        onClick={() => setWeightEntries((prev) => [...prev, ""])}
+                      >
+                        <Plus className="mr-1 h-4 w-4" />
+                        Añadir pesaje
+                      </BrandButton>
+                      <p className="text-sm text-brand-muted">
+                        Media registrada:{" "}
+                        <span className="font-semibold text-brand-text">
+                          {getWeightAverage() === null ? "-" : `${getWeightAverage()!.toFixed(2)} kg`}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <textarea
+                    value={currentAnswer}
+                    onChange={(event) => updateCurrentAnswer(event.target.value)}
+                    rows={6}
+                    className="mt-4 w-full rounded-xl border border-white/10 bg-black/30 p-4 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    placeholder="Escribe tu respuesta..."
+                  />
+                )}
               </motion.div>
             </AnimatePresence>
 
@@ -221,7 +347,9 @@ export function RevisionWizard() {
               ) : (
                 <BrandButton
                   onClick={() => {
-                    if (!currentAnswer.trim()) {
+                    if (isWeightQuestion) {
+                      if (!validateWeightEntries()) return;
+                    } else if (!currentAnswer.trim()) {
                       toast.error("Responde antes de continuar.");
                       return;
                     }
