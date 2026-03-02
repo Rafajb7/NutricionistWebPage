@@ -49,7 +49,8 @@ type MetricKey =
   | "CADERA"
   | "BRAZO_RELAJADO"
   | "BRAZO_FLEXIONADO"
-  | "MUSLO";
+  | "MUSLO"
+  | "PESO_MEDIO";
 
 type MetricPoint = {
   date: string;
@@ -61,7 +62,8 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "CADERA", label: "CADERA" },
   { key: "BRAZO_RELAJADO", label: "BRAZO RELAJADO" },
   { key: "BRAZO_FLEXIONADO", label: "BRAZO FLEXIONADO" },
-  { key: "MUSLO", label: "MUSLO" }
+  { key: "MUSLO", label: "MUSLO" },
+  { key: "PESO_MEDIO", label: "PESO MEDIO" }
 ];
 
 const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
@@ -74,7 +76,10 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
   BRAZOFLEXIONADO: "BRAZO_FLEXIONADO",
   BRAZOFLEXIONADOCM: "BRAZO_FLEXIONADO",
   MUSLO: "MUSLO",
-  MUSLOCM: "MUSLO"
+  MUSLOCM: "MUSLO",
+  PESOMEDIOSEMANALKG: "PESO_MEDIO",
+  PESOMEDIOKG: "PESO_MEDIO",
+  PESOMEDIO: "PESO_MEDIO"
 };
 
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -114,6 +119,12 @@ function metricKeyFromQuestion(question: string): MetricKey | null {
   if (withoutCmSuffix.includes("CINTURA")) return "CINTURA";
   if (withoutCmSuffix.includes("CADERA")) return "CADERA";
   if (withoutCmSuffix.includes("MUSLO")) return "MUSLO";
+  if (
+    withoutCmSuffix.includes("PESO") &&
+    (withoutCmSuffix.includes("MEDIO") || withoutCmSuffix.includes("PROMEDIO"))
+  ) {
+    return "PESO_MEDIO";
+  }
 
   return null;
 }
@@ -132,7 +143,7 @@ function formatMetricDate(date: string): string {
   return parsed.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
 }
 
-function EvolutionChart({ points }: { points: MetricPoint[] }) {
+function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" }) {
   if (points.length === 0) {
     return (
       <div className="rounded-xl border border-white/10 bg-black/25 p-6 text-sm text-brand-muted">
@@ -188,7 +199,7 @@ function EvolutionChart({ points }: { points: MetricPoint[] }) {
                 fill="rgba(255,255,255,0.65)"
                 fontSize={12}
               >
-                {tick.value.toFixed(1)}
+                {tick.value.toFixed(1)} {unit}
               </text>
             </g>
           ))}
@@ -296,7 +307,8 @@ export function DashboardShell({ user }: DashboardShellProps) {
       CADERA: [],
       BRAZO_RELAJADO: [],
       BRAZO_FLEXIONADO: [],
-      MUSLO: []
+      MUSLO: [],
+      PESO_MEDIO: []
     };
 
     for (const entry of entries) {
@@ -320,6 +332,8 @@ export function DashboardShell({ user }: DashboardShellProps) {
   );
 
   const selectedMetricSeries = metricSeriesByKey[selectedMetric];
+  const selectedMetricUnit: "cm" | "kg" =
+    selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
 
   useEffect(() => {
     router.prefetch("/tools");
@@ -654,7 +668,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Evolución</p>
-                <h2 className="mt-1 text-lg font-semibold text-brand-text">Análisis de métricas (cm)</h2>
+                <h2 className="mt-1 text-lg font-semibold text-brand-text">Análisis de métricas (cm / kg)</h2>
               </div>
               <label className="w-full max-w-sm text-sm text-brand-muted">
                 Métrica
@@ -672,7 +686,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
               </label>
             </div>
             <div className="mt-4">
-              <EvolutionChart points={selectedMetricSeries} />
+              <EvolutionChart points={selectedMetricSeries} unit={selectedMetricUnit} />
             </div>
           </div>
 

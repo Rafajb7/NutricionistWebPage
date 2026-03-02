@@ -70,7 +70,13 @@ type AdminUserData = {
   };
 };
 
-type MetricKey = "CINTURA" | "CADERA" | "BRAZO_RELAJADO" | "BRAZO_FLEXIONADO" | "MUSLO";
+type MetricKey =
+  | "CINTURA"
+  | "CADERA"
+  | "BRAZO_RELAJADO"
+  | "BRAZO_FLEXIONADO"
+  | "MUSLO"
+  | "PESO_MEDIO";
 type MetricPoint = { date: string; value: number };
 
 const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
@@ -78,7 +84,8 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "CADERA", label: "Cadera" },
   { key: "BRAZO_RELAJADO", label: "Brazo relajado" },
   { key: "BRAZO_FLEXIONADO", label: "Brazo flexionado" },
-  { key: "MUSLO", label: "Muslo" }
+  { key: "MUSLO", label: "Muslo" },
+  { key: "PESO_MEDIO", label: "Peso medio" }
 ];
 
 const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
@@ -91,7 +98,10 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
   BRAZOFLEXIONADO: "BRAZO_FLEXIONADO",
   BRAZOFLEXIONADOCM: "BRAZO_FLEXIONADO",
   MUSLO: "MUSLO",
-  MUSLOCM: "MUSLO"
+  MUSLOCM: "MUSLO",
+  PESOMEDIOSEMANALKG: "PESO_MEDIO",
+  PESOMEDIOKG: "PESO_MEDIO",
+  PESOMEDIO: "PESO_MEDIO"
 };
 
 function formatDateLabel(date: string): string {
@@ -126,6 +136,9 @@ function metricKeyFromQuestion(question: string): MetricKey | null {
   if (base.includes("CINTURA")) return "CINTURA";
   if (base.includes("CADERA")) return "CADERA";
   if (base.includes("MUSLO")) return "MUSLO";
+  if (base.includes("PESO") && (base.includes("MEDIO") || base.includes("PROMEDIO"))) {
+    return "PESO_MEDIO";
+  }
   return null;
 }
 
@@ -165,7 +178,7 @@ function shouldEnableDiabloMode(events: CompetitionEvent[]): boolean {
   });
 }
 
-function EvolutionChart({ points }: { points: MetricPoint[] }) {
+function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" }) {
   if (!points.length) {
     return <div className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">No hay datos para esta metrica.</div>;
   }
@@ -207,7 +220,7 @@ function EvolutionChart({ points }: { points: MetricPoint[] }) {
                 fill="rgba(255,255,255,0.65)"
                 fontSize={11}
               >
-                {tick.value.toFixed(1)} cm
+                {tick.value.toFixed(1)} {unit}
               </text>
             </g>
           ))}
@@ -266,7 +279,12 @@ export function AdminShell({ user }: AdminShellProps) {
 
   const metricSeriesByKey = useMemo(() => {
     const out: Record<MetricKey, MetricPoint[]> = {
-      CINTURA: [], CADERA: [], BRAZO_RELAJADO: [], BRAZO_FLEXIONADO: [], MUSLO: []
+      CINTURA: [],
+      CADERA: [],
+      BRAZO_RELAJADO: [],
+      BRAZO_FLEXIONADO: [],
+      MUSLO: [],
+      PESO_MEDIO: []
     };
     for (const entry of selectedData?.dashboard.revisions ?? []) {
       const key = metricKeyFromQuestion(entry.pregunta);
@@ -287,6 +305,8 @@ export function AdminShell({ user }: AdminShellProps) {
     () => METRIC_OPTIONS.filter((opt) => metricSeriesByKey[opt.key].length > 0),
     [metricSeriesByKey]
   );
+  const selectedMetricUnit: "cm" | "kg" =
+    selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
 
   const loadSelectedUserData = useCallback(async (username: string) => {
     if (!username) { setSelectedData(null); return; }
@@ -539,7 +559,7 @@ export function AdminShell({ user }: AdminShellProps) {
                   </select>
                 </label>
               </div>
-              <div className="mt-4"><EvolutionChart points={metricSeriesByKey[selectedMetric]} /></div>
+              <div className="mt-4"><EvolutionChart points={metricSeriesByKey[selectedMetric]} unit={selectedMetricUnit} /></div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
