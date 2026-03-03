@@ -129,6 +129,15 @@ function metricKeyFromQuestion(question: string): MetricKey | null {
   return null;
 }
 
+function buildNutritionPlanViewerSrc(fileId: string): string {
+  return `/api/nutrition-plans/${fileId}#toolbar=1&navpanes=0&statusbar=0&view=Fit&zoom=page-fit&pagemode=none`;
+}
+
+function isMobileViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(max-width: 767px)").matches;
+}
+
 function parseMetricValue(raw: string): number | null {
   const normalized = raw.replace(",", ".");
   const match = normalized.match(/-?\d+(?:\.\d+)?/);
@@ -469,10 +478,18 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
   function openLatestNewPlan() {
     if (!newPlanPopup) return;
-    setSelectedPlan(newPlanPopup.latestPlan);
+    openPlanViewer(newPlanPopup.latestPlan);
     const storageKey = `mat:last-seen-plan:${user.username.trim().toLowerCase()}`;
     window.localStorage.setItem(storageKey, new Date(newPlanPopup.latestSeenTimestamp).toISOString());
     setNewPlanPopup(null);
+  }
+
+  function openPlanViewer(plan: NutritionPlan) {
+    if (isMobileViewport()) {
+      window.location.href = `/api/nutrition-plans/${plan.id}`;
+      return;
+    }
+    setSelectedPlan(plan);
   }
 
   async function handleLogout() {
@@ -626,7 +643,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                   >
                     <button
                       type="button"
-                      onClick={() => setSelectedPlan(plan)}
+                      onClick={() => openPlanViewer(plan)}
                       className="block w-full"
                     >
                       <img
@@ -643,7 +660,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => setSelectedPlan(plan)}
+                          onClick={() => openPlanViewer(plan)}
                           className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/40 px-3 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
                         >
                           <Eye className="h-3.5 w-3.5" />
@@ -880,7 +897,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
         {selectedPlan ? (
           <motion.div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-5"
+            className="fixed inset-0 z-50 flex items-end justify-center bg-black/85 p-2 sm:items-center sm:p-5"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -891,7 +908,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.98, opacity: 0 }}
               transition={{ type: "spring", stiffness: 210, damping: 24 }}
-              className="flex h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-brand-accent/35 bg-[#0f0f11] sm:h-[86vh]"
+              className="flex h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-brand-accent/35 bg-[#0f0f11] sm:h-[86vh]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex flex-col gap-2 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -907,6 +924,15 @@ export function DashboardShell({ user }: DashboardShellProps) {
                     <Download className="h-3.5 w-3.5" />
                     Descargar
                   </a>
+                  <a
+                    href={`/api/nutrition-plans/${selectedPlan.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/40 px-3 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Abrir
+                  </a>
                   <button
                     type="button"
                     onClick={() => setSelectedPlan(null)}
@@ -916,11 +942,13 @@ export function DashboardShell({ user }: DashboardShellProps) {
                   </button>
                 </div>
               </div>
-              <iframe
-                title={selectedPlan.name}
-                src={`/api/nutrition-plans/${selectedPlan.id}`}
-                className="h-full w-full bg-white"
-              />
+              <div className="flex-1 min-h-0 bg-white">
+                <iframe
+                  title={selectedPlan.name}
+                  src={buildNutritionPlanViewerSrc(selectedPlan.id)}
+                  className="h-full w-full border-0 bg-white"
+                />
+              </div>
             </motion.div>
           </motion.div>
         ) : null}
