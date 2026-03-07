@@ -1132,25 +1132,23 @@ export function DashboardShell({ user }: DashboardShellProps) {
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4 backdrop-blur">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
-            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
-              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-                <Link href="/dashboard">
-                  <BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">
-                    Dashboard
-                  </BrandButton>
-                </Link>
-                <Link href="/tools">
-                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
-                    Herramientas
-                  </BrandButton>
-                </Link>
-                <Link href="/community">
-                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
-                    Comunidad
-                  </BrandButton>
-                </Link>
-              </div>
-              <div className="text-left sm:text-right">
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+              <Link href="/dashboard">
+                <BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">
+                  Dashboard
+                </BrandButton>
+              </Link>
+              <Link href="/tools">
+                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  Herramientas
+                </BrandButton>
+              </Link>
+              <Link href="/community">
+                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  Comunidad
+                </BrandButton>
+              </Link>
+              <div className="px-2 text-left sm:text-right">
                 <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Hola</p>
                 <p className="font-semibold text-brand-text">{user.name}</p>
               </div>

@@ -306,10 +306,10 @@ export function CommunityShell({ user }: CommunityShellProps) {
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-              <Link href="/dashboard"><BrandButton variant="ghost">Dashboard</BrandButton></Link>
-              <Link href="/tools"><BrandButton variant="ghost">Herramientas</BrandButton></Link>
-              <Link href="/community"><BrandButton>Comunidad</BrandButton></Link>
-              <BrandButton variant="ghost" onClick={handleLogout}><LogOut className="mr-2 h-4 w-4" />Logout</BrandButton>
+              <Link href="/dashboard"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Dashboard</BrandButton></Link>
+              <Link href="/tools"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Herramientas</BrandButton></Link>
+              <Link href="/community"><BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">Comunidad</BrandButton></Link>
+              <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto" onClick={handleLogout}><LogOut className="mr-2 h-4 w-4" />Logout</BrandButton>
             </div>
           </div>
         </header>
