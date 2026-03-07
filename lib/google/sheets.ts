@@ -32,6 +32,8 @@ export type RoutineExerciseGroup = {
   exercises: string[];
 };
 
+export type RoutineEffortLevel = "alto" | "medio" | "bajo";
+
 export type RoutineLogRow = {
   timestamp: string;
   nombre: string;
@@ -40,8 +42,13 @@ export type RoutineLogRow = {
   dia: string;
   grupoMuscular: string;
   ejercicio: string;
+  series: number;
   repeticiones: number;
   pesoKg: number | null;
+  erp: number;
+  nivelFatiga: RoutineEffortLevel;
+  molestiasGastrointestinales: RoutineEffortLevel;
+  intraentreno: boolean;
   notas: string;
 };
 
@@ -49,6 +56,31 @@ export type RoutineSessionTarget = {
   timestamp: string;
   sessionDate: string;
   day: string;
+};
+
+export type PeakModeType = "titan" | "diablo";
+
+export type PeakModeDailyLogRow = {
+  timestamp: string;
+  fecha: string;
+  nombre: string;
+  usuario: string;
+  modo: PeakModeType;
+  pesoAyunasKg: number;
+  pesoNocturnoKg: number;
+  pasosDiarios: number;
+  aguaLitros: number;
+  frutaPiezas: number;
+  verduraRaciones: number;
+  cerealesIntegralesRaciones: number;
+  hambreEscala: number;
+  descansoEscala: number;
+  horasSueno: number;
+  estresEscala: number;
+  molestiasDigestivasEscala: number;
+  cumplimientoPlanEscala: number;
+  tuvoEntreno: boolean;
+  dobleSesion: boolean;
 };
 
 const spreadsheetIdCache = new Map<string, string>();
@@ -63,6 +95,13 @@ type RoutineSheetsInfo = {
 
 const routineSheetInitCache = new Map<string, Promise<RoutineSheetsInfo>>();
 
+type PeakModeSheetInfo = {
+  spreadsheetId: string;
+  worksheetName: string;
+};
+
+const peakModeSheetInitCache = new Map<string, Promise<PeakModeSheetInfo>>();
+
 const ROUTINE_EXERCISE_HEADERS = ["Grupo muscular", "Ejercicio", "Activo"];
 const ROUTINE_LOG_HEADERS = [
   "Timestamp",
@@ -72,9 +111,37 @@ const ROUTINE_LOG_HEADERS = [
   "Dia",
   "Grupo muscular",
   "Ejercicio",
+  "Series",
   "Repeticiones",
   "Peso kg",
+  "RPE",
+  "Nivel de fatiga",
+  "Molestias gastrointestinales",
+  "Intraentreno",
   "Notas"
+];
+
+const PEAK_MODE_LOG_HEADERS = [
+  "Timestamp",
+  "Fecha",
+  "Nombre",
+  "Usuario",
+  "Modo",
+  "Peso en ayunas (kg)",
+  "Peso nocturno (kg)",
+  "Pasos diarios",
+  "Ingesta de agua (L)",
+  "Piezas de fruta",
+  "Raciones de verdura",
+  "Raciones de cereales integrales",
+  "Escala de hambre (1-5)",
+  "Escala de descanso (1-5)",
+  "Horas de sueno",
+  "Escala de estres (0-5)",
+  "Molestias digestivas (0-5)",
+  "Cumplimiento del plan (1-5)",
+  "Sesion de entreno",
+  "Doble sesion"
 ];
 
 function normalizeHeader(value: string): string {
@@ -127,6 +194,27 @@ function parseNumber(value: string | undefined): number | null {
   if (!normalized) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseBoolean(value: string | undefined): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["1", "true", "si", "sí", "yes", "y", "on"].includes(normalized);
+}
+
+function normalizeRoutineEffortLevel(
+  value: string | undefined,
+  fallback: RoutineEffortLevel
+): RoutineEffortLevel {
+  const normalized = String(value ?? "")
+    .trim()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+
+  if (normalized === "alto") return "alto";
+  if (normalized === "medio") return "medio";
+  if (normalized === "bajo") return "bajo";
+  return fallback;
 }
 
 function normalizeComparableValue(value: string | undefined): string {
@@ -476,6 +564,53 @@ async function ensureRoutineSheetsReady(): Promise<RoutineSheetsInfo> {
   }
 }
 
+async function ensurePeakModeSheetReady(): Promise<PeakModeSheetInfo> {
+  const env = getEnv();
+  const directSheetId = env.GOOGLE_PEAK_MODE_SPREADSHEET_ID?.trim();
+  const hasDirectId = isValidSpreadsheetId(directSheetId);
+
+  const cacheKey = [
+    hasDirectId ? directSheetId : "",
+    env.GOOGLE_PEAK_MODE_SHEET_NAME,
+    env.GOOGLE_PEAK_MODE_WORKSHEET_NAME
+  ].join("::");
+
+  let pending = peakModeSheetInitCache.get(cacheKey);
+  if (!pending) {
+    pending = (async () => {
+      const spreadsheetId = hasDirectId
+        ? (directSheetId as string)
+        : await resolveSpreadsheetIdByName(env.GOOGLE_PEAK_MODE_SHEET_NAME, {
+            createIfMissing: true,
+            initialWorksheetTitle: env.GOOGLE_PEAK_MODE_WORKSHEET_NAME
+          });
+
+      const worksheetName = await resolveWorksheetName({
+        spreadsheetId,
+        preferredName: env.GOOGLE_PEAK_MODE_WORKSHEET_NAME,
+        createIfMissing: !hasDirectId
+      });
+
+      await ensureHeaderRow({
+        spreadsheetId,
+        worksheetName,
+        headers: PEAK_MODE_LOG_HEADERS
+      });
+
+      return { spreadsheetId, worksheetName };
+    })();
+
+    peakModeSheetInitCache.set(cacheKey, pending);
+  }
+
+  try {
+    return await pending;
+  } catch (error) {
+    peakModeSheetInitCache.delete(cacheKey);
+    throw error;
+  }
+}
+
 async function getValuesBySheetName(
   spreadsheetName: string,
   rangeA1: string,
@@ -792,7 +927,7 @@ export async function appendRoutineLogs(rows: RoutineLogRow[]): Promise<void> {
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: routineSheets.logsSpreadsheetId,
-    range: `'${routineSheets.logsWorksheetName}'!A:J`,
+    range: `'${routineSheets.logsWorksheetName}'!A:O`,
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -804,8 +939,13 @@ export async function appendRoutineLogs(rows: RoutineLogRow[]): Promise<void> {
         row.dia,
         row.grupoMuscular,
         row.ejercicio,
+        row.series,
         row.repeticiones,
         row.pesoKg === null ? "" : row.pesoKg,
+        row.erp,
+        row.nivelFatiga,
+        row.molestiasGastrointestinales,
+        row.intraentreno ? "SI" : "NO",
         row.notas
       ])
     }
@@ -823,7 +963,7 @@ async function listRoutineLogSheetRowsForUser(username: string): Promise<Routine
 
   const values = await sheets.spreadsheets.values.get({
     spreadsheetId: routineSheets.logsSpreadsheetId,
-    range: `'${routineSheets.logsWorksheetName}'!A2:J`,
+    range: `'${routineSheets.logsWorksheetName}'!A2:O`,
     valueRenderOption: "FORMATTED_VALUE",
     dateTimeRenderOption: "FORMATTED_STRING"
   });
@@ -834,8 +974,23 @@ async function listRoutineLogSheetRowsForUser(username: string): Promise<Routine
     const usuario = String(row[2] ?? "").trim();
     if (!usernameVariants.has(usuario)) return;
 
-    const repeticiones = parseNumber(row[7]);
+    const isExtendedLayout = row.length >= 14;
+    const seriesIndex = isExtendedLayout ? 7 : -1;
+    const repsIndex = isExtendedLayout ? 8 : 7;
+    const weightIndex = isExtendedLayout ? 9 : 8;
+    const erpIndex = isExtendedLayout ? 10 : -1;
+    const nivelFatigaIndex = isExtendedLayout ? 11 : -1;
+    const molestiasIndex = isExtendedLayout ? 12 : -1;
+    const intraentrenoIndex = isExtendedLayout ? 13 : -1;
+    const notesIndex = isExtendedLayout ? 14 : 9;
+
+    const series = seriesIndex >= 0 ? parseNumber(row[seriesIndex]) : 1;
+    const repeticiones = parseNumber(row[repsIndex]);
     if (repeticiones === null) return;
+
+    const parsedSeries = series === null || series <= 0 ? 1 : Math.trunc(series);
+    const parsedErp = erpIndex >= 0 ? parseNumber(row[erpIndex]) : 7;
+    const erp = parsedErp === null ? 7 : Math.max(1, Math.min(10, Math.trunc(parsedErp)));
 
     parsed.push({
       rowNumber: index + 2,
@@ -846,9 +1001,20 @@ async function listRoutineLogSheetRowsForUser(username: string): Promise<Routine
       dia: String(row[4] ?? ""),
       grupoMuscular: String(row[5] ?? ""),
       ejercicio: String(row[6] ?? ""),
+      series: parsedSeries,
       repeticiones,
-      pesoKg: parseNumber(row[8]),
-      notas: String(row[9] ?? "")
+      pesoKg: parseNumber(row[weightIndex]),
+      erp,
+      nivelFatiga: normalizeRoutineEffortLevel(
+        nivelFatigaIndex >= 0 ? row[nivelFatigaIndex] : undefined,
+        "medio"
+      ),
+      molestiasGastrointestinales: normalizeRoutineEffortLevel(
+        molestiasIndex >= 0 ? row[molestiasIndex] : undefined,
+        "bajo"
+      ),
+      intraentreno: intraentrenoIndex >= 0 ? parseBoolean(row[intraentrenoIndex]) : false,
+      notas: String(row[notesIndex] ?? "")
     });
   });
 
@@ -878,8 +1044,13 @@ export async function listRoutineLogsForUser(username: string): Promise<RoutineL
     dia: row.dia,
     grupoMuscular: row.grupoMuscular,
     ejercicio: row.ejercicio,
+    series: row.series,
     repeticiones: row.repeticiones,
     pesoKg: row.pesoKg,
+    erp: row.erp,
+    nivelFatiga: row.nivelFatiga,
+    molestiasGastrointestinales: row.molestiasGastrointestinales,
+    intraentreno: row.intraentreno,
     notas: row.notas
   }));
 }
@@ -928,8 +1099,13 @@ export async function replaceRoutineSessionForUser(input: {
   entries: Array<{
     muscleGroup: string;
     exercise: string;
+    series: number;
     reps: number;
     weightKg: number | null;
+    erp: number;
+    fatigueLevel: RoutineEffortLevel;
+    digestiveDiscomfortLevel: RoutineEffortLevel;
+    usedIntraWorkout: boolean;
     notes?: string;
   }>;
 }): Promise<number> {
@@ -948,13 +1124,176 @@ export async function replaceRoutineSessionForUser(input: {
     dia: input.nextDayLabel,
     grupoMuscular: entry.muscleGroup,
     ejercicio: entry.exercise,
+    series: entry.series,
     repeticiones: entry.reps,
     pesoKg: entry.weightKg ?? null,
+    erp: entry.erp,
+    nivelFatiga: entry.fatigueLevel,
+    molestiasGastrointestinales: entry.digestiveDiscomfortLevel,
+    intraentreno: entry.usedIntraWorkout,
     notas: entry.notes?.trim() ?? ""
   }));
 
   await appendRoutineLogs(rows);
   return rows.length;
+}
+
+type PeakModeDailySheetRow = PeakModeDailyLogRow & {
+  rowNumber: number;
+};
+
+function toPeakModeLogValues(row: PeakModeDailyLogRow): Array<string | number> {
+  return [
+    row.timestamp,
+    row.fecha,
+    row.nombre,
+    row.usuario,
+    row.modo,
+    row.pesoAyunasKg,
+    row.pesoNocturnoKg,
+    row.pasosDiarios,
+    row.aguaLitros,
+    row.frutaPiezas,
+    row.verduraRaciones,
+    row.cerealesIntegralesRaciones,
+    row.hambreEscala,
+    row.descansoEscala,
+    row.horasSueno,
+    row.estresEscala,
+    row.molestiasDigestivasEscala,
+    row.cumplimientoPlanEscala,
+    row.tuvoEntreno ? "SI" : "NO",
+    row.dobleSesion ? "SI" : "NO"
+  ];
+}
+
+async function listPeakModeDailySheetRowsForUser(username: string): Promise<PeakModeDailySheetRow[]> {
+  const peakSheet = await ensurePeakModeSheetReady();
+  const sheets = await getSheetsClient();
+  const usernameVariants = getUsernameVariants(username);
+
+  const values = await sheets.spreadsheets.values.get({
+    spreadsheetId: peakSheet.spreadsheetId,
+    range: `'${peakSheet.worksheetName}'!A2:T`,
+    valueRenderOption: "FORMATTED_VALUE",
+    dateTimeRenderOption: "FORMATTED_STRING"
+  });
+  const rows = (values.data.values as string[][] | undefined) ?? [];
+
+  const parsed: PeakModeDailySheetRow[] = [];
+  rows.forEach((row, index) => {
+    const usuario = String(row[3] ?? "").trim();
+    if (!usernameVariants.has(usuario)) return;
+
+    const modo = String(row[4] ?? "").trim().toLowerCase();
+    if (modo !== "titan" && modo !== "diablo") return;
+
+    const fecha = String(row[1] ?? "").trim();
+    if (!fecha) return;
+
+    const pesoAyunasKg = parseNumber(row[5]);
+    const pesoNocturnoKg = parseNumber(row[6]);
+    const pasosDiarios = parseNumber(row[7]);
+    const aguaLitros = parseNumber(row[8]);
+    const frutaPiezas = parseNumber(row[9]);
+    const verduraRaciones = parseNumber(row[10]);
+    const cerealesIntegralesRaciones = parseNumber(row[11]);
+    const hambreEscala = parseNumber(row[12]);
+    const descansoEscala = parseNumber(row[13]);
+    const horasSueno = parseNumber(row[14]);
+    const estresEscala = parseNumber(row[15]);
+    const molestiasDigestivasEscala = parseNumber(row[16]);
+    const cumplimientoPlanEscala = parseNumber(row[17]);
+
+    if (
+      pesoAyunasKg === null ||
+      pesoNocturnoKg === null ||
+      pasosDiarios === null ||
+      aguaLitros === null ||
+      frutaPiezas === null ||
+      verduraRaciones === null ||
+      cerealesIntegralesRaciones === null ||
+      hambreEscala === null ||
+      descansoEscala === null ||
+      horasSueno === null ||
+      estresEscala === null ||
+      molestiasDigestivasEscala === null ||
+      cumplimientoPlanEscala === null
+    ) {
+      return;
+    }
+
+    parsed.push({
+      rowNumber: index + 2,
+      timestamp: String(row[0] ?? "").trim(),
+      fecha,
+      nombre: String(row[2] ?? "").trim(),
+      usuario,
+      modo,
+      pesoAyunasKg,
+      pesoNocturnoKg,
+      pasosDiarios,
+      aguaLitros,
+      frutaPiezas,
+      verduraRaciones,
+      cerealesIntegralesRaciones,
+      hambreEscala,
+      descansoEscala,
+      horasSueno,
+      estresEscala,
+      molestiasDigestivasEscala,
+      cumplimientoPlanEscala,
+      tuvoEntreno: parseBoolean(row[18]),
+      dobleSesion: parseBoolean(row[19])
+    });
+  });
+
+  return parsed.sort((a, b) => {
+    const byDate = a.fecha.localeCompare(b.fecha);
+    if (byDate !== 0) return byDate;
+    return a.timestamp.localeCompare(b.timestamp);
+  });
+}
+
+export async function listPeakModeDailyLogsForUser(username: string): Promise<PeakModeDailyLogRow[]> {
+  const rows = await listPeakModeDailySheetRowsForUser(username);
+  return rows.map(({ rowNumber: _rowNumber, ...row }) => row);
+}
+
+export async function upsertPeakModeDailyLogForUser(input: {
+  username: string;
+  row: PeakModeDailyLogRow;
+}): Promise<void> {
+  const peakSheet = await ensurePeakModeSheetReady();
+  const sheets = await getSheetsClient();
+
+  const existingRows = await listPeakModeDailySheetRowsForUser(input.username);
+  const normalizedDate = normalizeComparableValue(input.row.fecha);
+  const target = existingRows
+    .filter((row) => normalizeComparableValue(row.fecha) === normalizedDate)
+    .sort((a, b) => b.rowNumber - a.rowNumber)[0];
+
+  if (target) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: peakSheet.spreadsheetId,
+      range: `'${peakSheet.worksheetName}'!A${target.rowNumber}:T${target.rowNumber}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [toPeakModeLogValues(input.row)]
+      }
+    });
+    return;
+  }
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: peakSheet.spreadsheetId,
+    range: `'${peakSheet.worksheetName}'!A:T`,
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [toPeakModeLogValues(input.row)]
+    }
+  });
 }
 
 export async function updateUserPasswordCell(

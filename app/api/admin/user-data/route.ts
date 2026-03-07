@@ -4,7 +4,12 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
 import { listCompetitionEventsForUser } from "@/lib/google/calendar";
 import { listNutritionPlanPdfsForUser } from "@/lib/google/drive";
-import { listRoutineLogsForUser, listRevisionRowsForUser, readUsersFromSheet } from "@/lib/google/sheets";
+import {
+  listPeakModeDailyLogsForUser,
+  listRoutineLogsForUser,
+  listRevisionRowsForUser,
+  readUsersFromSheet
+} from "@/lib/google/sheets";
 import { toRevisionEntry } from "@/lib/revisions";
 import { logError } from "@/lib/logger";
 
@@ -38,14 +43,26 @@ export async function GET(req: NextRequest) {
     }
     const sourceUsername = targetUser.username.trim().replace(/^@/, "");
 
-    const [revisionRows, routineLogs, competitions, marks, goals, nutritionPlans] = await Promise.all([
-      listRevisionRowsForUser(sourceUsername),
-      listRoutineLogsForUser(sourceUsername),
-      listCompetitionEventsForUser(sourceUsername, { includePast: true }),
-      listStrengthMarksForUser(sourceUsername),
-      listStrengthGoalsForUser(sourceUsername),
-      listNutritionPlanPdfsForUser(sourceUsername)
-    ]);
+    const [revisionRows, routineLogs, competitions, marks, goals, nutritionPlans] =
+      await Promise.all([
+        listRevisionRowsForUser(sourceUsername),
+        listRoutineLogsForUser(sourceUsername),
+        listCompetitionEventsForUser(sourceUsername, { includePast: true }),
+        listStrengthMarksForUser(sourceUsername),
+        listStrengthGoalsForUser(sourceUsername),
+        listNutritionPlanPdfsForUser(sourceUsername)
+      ]);
+
+    let peakModeLogs: Awaited<ReturnType<typeof listPeakModeDailyLogsForUser>> = [];
+    try {
+      peakModeLogs = await listPeakModeDailyLogsForUser(sourceUsername);
+    } catch (error) {
+      logError("Failed to load peak mode logs for admin user-data", {
+        username: auth.session.username,
+        targetUsername,
+        error
+      });
+    }
 
     const revisions = revisionRows
       .map(toRevisionEntry)
@@ -63,6 +80,7 @@ export async function GET(req: NextRequest) {
       tools: {
         routines: routineLogs,
         competitions,
+        peakModeLogs,
         nutritionPlans,
         achievements: {
           marks,

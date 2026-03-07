@@ -10,6 +10,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getActiveCompetitionMode } from "@/lib/competition-mode";
 
 type SessionUser = { username: string; name: string };
 type AdminShellProps = { user: SessionUser };
@@ -33,8 +34,13 @@ type RoutineLog = {
   dia: string;
   grupoMuscular: string;
   ejercicio: string;
+  series: number;
   repeticiones: number;
   pesoKg: number | null;
+  erp: number;
+  nivelFatiga: "alto" | "medio" | "bajo";
+  molestiasGastrointestinales: "alto" | "medio" | "bajo";
+  intraentreno: boolean;
   notas: string;
 };
 
@@ -59,12 +65,36 @@ type NutritionPlan = {
   sizeBytes: number | null;
 };
 
+type PeakModeDailyLog = {
+  timestamp: string;
+  fecha: string;
+  nombre: string;
+  usuario: string;
+  modo: "titan" | "diablo";
+  pesoAyunasKg: number;
+  pesoNocturnoKg: number;
+  pasosDiarios: number;
+  aguaLitros: number;
+  frutaPiezas: number;
+  verduraRaciones: number;
+  cerealesIntegralesRaciones: number;
+  hambreEscala: number;
+  descansoEscala: number;
+  horasSueno: number;
+  estresEscala: number;
+  molestiasDigestivasEscala: number;
+  cumplimientoPlanEscala: number;
+  tuvoEntreno: boolean;
+  dobleSesion: boolean;
+};
+
 type AdminUserData = {
   user: AdminUserItem;
   dashboard: { revisions: RevisionEntry[] };
   tools: {
     routines: RoutineLog[];
     competitions: CompetitionEvent[];
+    peakModeLogs: PeakModeDailyLog[];
     nutritionPlans: NutritionPlan[];
     achievements: { marks: AchievementMark[]; goals: AchievementGoal[] };
   };
@@ -79,6 +109,23 @@ type MetricKey =
   | "PESO_MEDIO";
 type MetricPoint = { date: string; value: number };
 
+type PeakMetricKey =
+  | "pesoAyunasKg"
+  | "pesoNocturnoKg"
+  | "pasosDiarios"
+  | "aguaLitros"
+  | "frutaPiezas"
+  | "verduraRaciones"
+  | "cerealesIntegralesRaciones"
+  | "hambreEscala"
+  | "descansoEscala"
+  | "horasSueno"
+  | "estresEscala"
+  | "molestiasDigestivasEscala"
+  | "cumplimientoPlanEscala"
+  | "tuvoEntreno"
+  | "dobleSesion";
+
 const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "CINTURA", label: "Cintura" },
   { key: "CADERA", label: "Cadera" },
@@ -86,6 +133,44 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "BRAZO_FLEXIONADO", label: "Brazo flexionado" },
   { key: "MUSLO", label: "Muslo" },
   { key: "PESO_MEDIO", label: "Peso medio" }
+];
+
+const PEAK_METRIC_OPTIONS: Array<{
+  key: PeakMetricKey;
+  label: string;
+  unit: string;
+  type: "number" | "boolean";
+}> = [
+  { key: "pesoAyunasKg", label: "Peso en ayunas", unit: "kg", type: "number" },
+  { key: "pesoNocturnoKg", label: "Peso nocturno", unit: "kg", type: "number" },
+  { key: "pasosDiarios", label: "Pasos diarios", unit: "pasos", type: "number" },
+  { key: "aguaLitros", label: "Ingesta de agua", unit: "L", type: "number" },
+  { key: "frutaPiezas", label: "Piezas de fruta", unit: "raciones", type: "number" },
+  { key: "verduraRaciones", label: "Raciones de verdura", unit: "raciones", type: "number" },
+  {
+    key: "cerealesIntegralesRaciones",
+    label: "Raciones de cereales integrales",
+    unit: "raciones",
+    type: "number"
+  },
+  { key: "hambreEscala", label: "Escala de hambre", unit: "pts", type: "number" },
+  { key: "descansoEscala", label: "Escala de descanso", unit: "pts", type: "number" },
+  { key: "horasSueno", label: "Horas de sueno", unit: "h", type: "number" },
+  { key: "estresEscala", label: "Escala de estres", unit: "pts", type: "number" },
+  {
+    key: "molestiasDigestivasEscala",
+    label: "Molestias digestivas",
+    unit: "pts",
+    type: "number"
+  },
+  {
+    key: "cumplimientoPlanEscala",
+    label: "Cumplimiento del plan",
+    unit: "pts",
+    type: "number"
+  },
+  { key: "tuvoEntreno", label: "Tuvo entreno", unit: "0-1", type: "boolean" },
+  { key: "dobleSesion", label: "Doble sesion", unit: "0-1", type: "boolean" }
 ];
 
 const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
@@ -162,20 +247,29 @@ function getPlanDisplayDate(plan: NutritionPlan): string {
   return new Date(ts).toLocaleDateString("es-ES");
 }
 
-function toDaysUntil(date: string): number | null {
-  const target = new Date(`${date}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  target.setHours(0, 0, 0, 0);
-  return Math.floor((target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+function getPeakMetricNumericValue(log: PeakModeDailyLog, key: PeakMetricKey): number {
+  if (key === "tuvoEntreno") return log.tuvoEntreno ? 1 : 0;
+  if (key === "dobleSesion") return log.dobleSesion ? 1 : 0;
+  return Number(log[key] ?? 0);
 }
 
-function shouldEnableDiabloMode(events: CompetitionEvent[]): boolean {
-  return events.some((event) => {
-    const daysUntil = toDaysUntil(event.date);
-    return daysUntil !== null && daysUntil >= 0 && daysUntil <= 7;
-  });
+function formatPeakModeLabel(mode: "titan" | "diablo"): string {
+  return mode === "diablo" ? "Modo diablo" : "Modo titan";
+}
+
+function formatPeakModeBadgeClass(mode: "titan" | "diablo"): string {
+  return mode === "diablo"
+    ? "rounded-md border border-red-300/30 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-red-200"
+    : "rounded-md border border-violet-300/35 bg-violet-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-violet-200";
+}
+
+function formatPeakModeDailyValue(
+  log: PeakModeDailyLog,
+  option: (typeof PEAK_METRIC_OPTIONS)[number]
+): string {
+  if (option.key === "tuvoEntreno") return log.tuvoEntreno ? "Si" : "No";
+  if (option.key === "dobleSesion") return log.dobleSesion ? "Si" : "No";
+  return `${getPeakMetricNumericValue(log, option.key)} ${option.unit}`;
 }
 
 function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" }) {
@@ -247,6 +341,81 @@ function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | 
   );
 }
 
+function PeakModeChart(props: { points: MetricPoint[]; unit: string }) {
+  const { points, unit } = props;
+
+  if (!points.length) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">
+        No hay datos para este campo.
+      </div>
+    );
+  }
+
+  const width = 840;
+  const height = 280;
+  const px = 56;
+  const py = 36;
+  const min = Math.min(...points.map((p) => p.value));
+  const max = Math.max(...points.map((p) => p.value));
+  const range = Math.max(max - min, 1);
+  const x = (i: number) => px + (i * (width - px * 2)) / Math.max(points.length - 1, 1);
+  const y = (v: number) => height - py - ((v - min) * (height - py * 2)) / range;
+  const line = points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ");
+  const yTicks = Array.from({ length: 5 }).map((_, index) => {
+    const value = min + ((max - min) * index) / 4;
+    return { value, y: y(value) };
+  });
+  const xLabelStep = Math.max(1, Math.ceil(points.length / 6));
+
+  return (
+    <div className="min-w-0 rounded-xl border border-white/10 bg-black/25 p-3">
+      <div className="min-w-0 overflow-hidden">
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full">
+          {yTicks.map((tick, index) => (
+            <g key={`peak-tick-${index}`}>
+              <line
+                x1={px}
+                x2={width - px}
+                y1={tick.y}
+                y2={tick.y}
+                stroke="rgba(255,255,255,0.12)"
+                strokeDasharray="4 6"
+              />
+              <text
+                x={px - 10}
+                y={tick.y + 4}
+                textAnchor="end"
+                fill="rgba(255,255,255,0.65)"
+                fontSize={11}
+              >
+                {tick.value.toFixed(1)} {unit}
+              </text>
+            </g>
+          ))}
+          <polyline fill="none" stroke="#A855F7" strokeWidth={3} points={line} />
+          {points.map((p, i) => (
+            <g key={`peak-${p.date}-${i}`}>
+              <circle cx={x(i)} cy={y(p.value)} r={4} fill="#A855F7" />
+              {i % xLabelStep === 0 || i === points.length - 1 ? (
+                <text
+                  x={x(i)}
+                  y={height - 10}
+                  textAnchor="middle"
+                  fill="rgba(255,255,255,0.7)"
+                  fontSize={11}
+                >
+                  {formatMetricDate(p.date)}
+                </text>
+              ) : null}
+            </g>
+          ))}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 export function AdminShell({ user }: AdminShellProps) {
   const router = useRouter();
   const [users, setUsers] = useState<AdminUserItem[]>([]);
@@ -257,6 +426,7 @@ export function AdminShell({ user }: AdminShellProps) {
   const [selectedData, setSelectedData] = useState<AdminUserData | null>(null);
   const [openRevisionDates, setOpenRevisionDates] = useState<string[]>([]);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>("CINTURA");
+  const [selectedPeakMetric, setSelectedPeakMetric] = useState<PeakMetricKey>("pesoAyunasKg");
   const [uploadingPlans, setUploadingPlans] = useState(false);
   const [planFiles, setPlanFiles] = useState<File[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -307,6 +477,33 @@ export function AdminShell({ user }: AdminShellProps) {
   );
   const selectedMetricUnit: "cm" | "kg" =
     selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
+
+  const peakModeLogs = useMemo(
+    () =>
+      [...(selectedData?.tools.peakModeLogs ?? [])].sort((a, b) => {
+        const byDate = a.fecha.localeCompare(b.fecha);
+        if (byDate !== 0) return byDate;
+        return a.timestamp.localeCompare(b.timestamp);
+      }),
+    [selectedData]
+  );
+
+  const selectedPeakMetricOption = useMemo(
+    () =>
+      PEAK_METRIC_OPTIONS.find((option) => option.key === selectedPeakMetric) ??
+      PEAK_METRIC_OPTIONS[0],
+    [selectedPeakMetric]
+  );
+
+  const peakMetricSeries = useMemo(() => {
+    const byDate = new Map<string, number>();
+    for (const log of peakModeLogs) {
+      byDate.set(log.fecha, getPeakMetricNumericValue(log, selectedPeakMetric));
+    }
+    return Array.from(byDate.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, value]) => ({ date, value }));
+  }, [peakModeLogs, selectedPeakMetric]);
 
   const loadSelectedUserData = useCallback(async (username: string) => {
     if (!username) { setSelectedData(null); return; }
@@ -416,24 +613,37 @@ export function AdminShell({ user }: AdminShellProps) {
     revisions: groupedRevisions.length,
     routines: selectedData?.tools.routines.length ?? 0,
     competitions: selectedData?.tools.competitions.length ?? 0,
+    peakModeLogs: selectedData?.tools.peakModeLogs.length ?? 0,
     plans: selectedData?.tools.nutritionPlans.length ?? 0,
     marks: selectedData?.tools.achievements.marks.length ?? 0,
     goals: selectedData?.tools.achievements.goals.length ?? 0
   };
 
-  const selectedUserDiabloMode = useMemo(
-    () => shouldEnableDiabloMode(selectedData?.tools.competitions ?? []),
+  const selectedUserCompetitionMode = useMemo(
+    () => getActiveCompetitionMode(selectedData?.tools.competitions ?? []),
     [selectedData]
   );
 
   return (
     <MotionPage>
       <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 md:px-8">
-        {selectedUserDiabloMode ? (
-          <div className="fixed left-1/2 top-16 z-40 w-[calc(100%-1.5rem)] max-w-2xl -translate-x-1/2 rounded-xl border border-red-300/40 bg-red-800/90 px-4 py-3 text-center text-sm font-semibold text-white shadow-xl backdrop-blur">
+        {selectedUserCompetitionMode ? (
+          <div
+            className={
+              selectedUserCompetitionMode.mode === "diablo"
+                ? "fixed left-1/2 top-16 z-40 w-[calc(100%-1.5rem)] max-w-2xl -translate-x-1/2 rounded-xl border border-red-300/40 bg-red-800/90 px-4 py-3 text-center text-sm font-semibold text-white shadow-xl backdrop-blur"
+                : "fixed left-1/2 top-16 z-40 w-[calc(100%-1.5rem)] max-w-2xl -translate-x-1/2 rounded-xl border border-violet-300/40 bg-violet-800/90 px-4 py-3 text-center text-sm font-semibold text-white shadow-xl backdrop-blur"
+            }
+          >
             <span className="inline-flex items-center justify-center gap-2">
-              <Flame className="h-4 w-4" />
-              El modo diablo de este usuario esta activado
+              {selectedUserCompetitionMode.mode === "diablo" ? (
+                <Flame className="h-4 w-4" />
+              ) : (
+                <Shield className="h-4 w-4" />
+              )}
+              {selectedUserCompetitionMode.mode === "diablo"
+                ? "El modo diablo de este usuario esta activado"
+                : "El modo titan de este usuario esta activado"}
             </span>
           </div>
         ) : null}
@@ -489,10 +699,11 @@ export function AdminShell({ user }: AdminShellProps) {
           <div className="space-y-3">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4"><Skeleton className="h-5 w-48" /><Skeleton className="mt-3 h-4 w-full" /></div>)}</div>
         ) : selectedData ? (
           <section className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
               <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Revisiones (dias)</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.revisions}</p></article>
               <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Rutinas</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.routines}</p></article>
               <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Competiciones</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.competitions}</p></article>
+              <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Registros pico</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.peakModeLogs}</p></article>
               <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Planes PDF</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.plans}</p></article>
               <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Marcas maximas</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.marks}</p></article>
               <article className="rounded-xl border border-white/10 bg-brand-surface/70 p-4"><p className="text-xs uppercase tracking-[0.18em] text-brand-muted">Objetivos</p><p className="mt-2 text-2xl font-semibold text-brand-text">{summary.goals}</p></article>
@@ -563,6 +774,79 @@ export function AdminShell({ user }: AdminShellProps) {
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-brand-text">
+                    Seguimiento diario: modo titan y diablo
+                  </h3>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    Evolucion diaria del formulario obligatorio en semanas de precompeticion y
+                    competition week.
+                  </p>
+                </div>
+                <label className="w-full max-w-sm text-sm text-brand-muted">
+                  Campo
+                  <select
+                    value={selectedPeakMetric}
+                    onChange={(event) => setSelectedPeakMetric(event.target.value as PeakMetricKey)}
+                    className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    {PEAK_METRIC_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="mt-4">
+                <PeakModeChart points={peakMetricSeries} unit={selectedPeakMetricOption.unit} />
+              </div>
+
+              {peakModeLogs.length === 0 ? (
+                <p className="mt-4 text-sm text-brand-muted">
+                  Este usuario no tiene registros diarios de modo titan/diablo.
+                </p>
+              ) : (
+                <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
+                  <table className="min-w-[780px] w-full text-sm">
+                    <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Fecha</th>
+                        <th className="px-3 py-2 text-left">Modo</th>
+                        <th className="px-3 py-2 text-left">{selectedPeakMetricOption.label}</th>
+                        <th className="px-3 py-2 text-left">Entreno</th>
+                        <th className="px-3 py-2 text-left">Registro</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...peakModeLogs].reverse().map((log, index) => (
+                        <tr key={`${log.fecha}-${log.timestamp}-${index}`} className="border-t border-white/10">
+                          <td className="px-3 py-2 text-brand-text">{formatDateLabel(log.fecha)}</td>
+                          <td className="px-3 py-2">
+                            <span className={formatPeakModeBadgeClass(log.modo)}>
+                              {formatPeakModeLabel(log.modo)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-brand-text">
+                            {formatPeakModeDailyValue(log, selectedPeakMetricOption)}
+                          </td>
+                          <td className="px-3 py-2 text-brand-text">
+                            {log.tuvoEntreno ? (log.dobleSesion ? "Si (doble)" : "Si") : "No"}
+                          </td>
+                          <td className="px-3 py-2 text-brand-muted">
+                            {log.timestamp ? formatDateTimeLabel(log.timestamp) : "-"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <h3 className="text-lg font-semibold text-brand-text">Planes nutricionales (PDF)</h3>
                 <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
@@ -599,9 +883,41 @@ export function AdminShell({ user }: AdminShellProps) {
                 <h3 className="text-lg font-semibold text-brand-text">Herramienta: Gestion de entreno</h3>
                 {selectedData.tools.routines.length === 0 ? <p className="mt-3 text-sm text-brand-muted">No hay sesiones registradas.</p> : (
                   <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
-                    <table className="min-w-[760px] w-full text-sm">
-                      <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Dia</th><th className="px-3 py-2 text-left">Grupo</th><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Reps</th><th className="px-3 py-2 text-left">Peso</th><th className="px-3 py-2 text-left">Notas</th></tr></thead>
-                      <tbody>{selectedData.tools.routines.map((item, index) => <tr key={`${item.timestamp}-${index}`} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.fechaSesion)}</td><td className="px-3 py-2 text-brand-text">{item.dia}</td><td className="px-3 py-2 text-brand-text">{item.grupoMuscular}</td><td className="px-3 py-2 text-brand-text">{item.ejercicio}</td><td className="px-3 py-2 text-brand-text">{item.repeticiones}</td><td className="px-3 py-2 text-brand-text">{item.pesoKg === null ? "-" : `${item.pesoKg} kg`}</td><td className="px-3 py-2 text-brand-muted">{item.notas || "-"}</td></tr>)}</tbody>
+                    <table className="min-w-[1180px] w-full text-sm">
+                      <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Fecha</th>
+                          <th className="px-3 py-2 text-left">Dia</th>
+                          <th className="px-3 py-2 text-left">Grupo</th>
+                          <th className="px-3 py-2 text-left">Ejercicio</th>
+                          <th className="px-3 py-2 text-left">Series</th>
+                          <th className="px-3 py-2 text-left">Reps</th>
+                          <th className="px-3 py-2 text-left">Peso</th>
+                          <th className="px-3 py-2 text-left">RPE</th>
+                          <th className="px-3 py-2 text-left">Fatiga</th>
+                          <th className="px-3 py-2 text-left">Molestias GI</th>
+                          <th className="px-3 py-2 text-left">Intraentreno</th>
+                          <th className="px-3 py-2 text-left">Notas</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedData.tools.routines.map((item, index) => (
+                          <tr key={`${item.timestamp}-${index}`} className="border-t border-white/10">
+                            <td className="px-3 py-2 text-brand-text">{formatDateLabel(item.fechaSesion)}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.dia}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.grupoMuscular}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.ejercicio}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.series}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.repeticiones}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.pesoKg === null ? "-" : `${item.pesoKg} kg`}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.erp}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.nivelFatiga}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.molestiasGastrointestinales}</td>
+                            <td className="px-3 py-2 text-brand-text">{item.intraentreno ? "Si" : "No"}</td>
+                            <td className="px-3 py-2 text-brand-muted">{item.notas || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
                     </table>
                   </div>
                 )}

@@ -6,15 +6,23 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   BicepsFlexed,
+  Activity,
   Calendar,
+  Droplets,
   Dumbbell,
+  Flame,
+  Gauge,
+  Layers3,
   LineChart,
   LogOut,
   Pencil,
   Plus,
+  Repeat2,
   Save,
+  Scale,
   Trash2,
-  Trophy
+  Trophy,
+  type LucideIcon
 } from "lucide-react";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
@@ -50,8 +58,13 @@ type RoutineLog = {
   dia: string;
   grupoMuscular: string;
   ejercicio: string;
+  series: number;
   repeticiones: number;
   pesoKg: number | null;
+  erp: number;
+  nivelFatiga: "alto" | "medio" | "bajo";
+  molestiasGastrointestinales: "alto" | "medio" | "bajo";
+  intraentreno: boolean;
   notas: string;
 };
 
@@ -65,8 +78,13 @@ type RoutineEntryForm = {
   id: string;
   muscleGroup: string;
   exercise: string;
+  series: string;
   reps: string;
   weightKg: string;
+  erp: string;
+  fatigueLevel: "alto" | "medio" | "bajo";
+  digestiveDiscomfortLevel: "alto" | "medio" | "bajo";
+  usedIntraWorkout: boolean;
   notes: string;
 };
 
@@ -142,6 +160,15 @@ type ToolsClientCache = {
   logs: RoutineLog[];
 };
 
+const ROUTINE_LEVEL_OPTIONS: Array<{
+  value: "alto" | "medio" | "bajo";
+  label: string;
+}> = [
+  { value: "bajo", label: "Bajo" },
+  { value: "medio", label: "Medio" },
+  { value: "alto", label: "Alto" }
+];
+
 function createClientId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -179,8 +206,13 @@ function toRoutineEntry(groups: ExerciseGroup[]): RoutineEntryForm {
     id: createClientId("entry"),
     muscleGroup: firstGroup,
     exercise: firstExercise,
+    series: "1",
     reps: "",
     weightKg: "",
+    erp: "7",
+    fatigueLevel: "medio",
+    digestiveDiscomfortLevel: "bajo",
+    usedIntraWorkout: false,
     notes: ""
   };
 }
@@ -876,18 +908,27 @@ export function ToolsShell({ user }: ToolsShellProps) {
   function normalizeFormEntries(entries: RoutineEntryForm[]) {
     return entries
       .map((entry) => {
+        const series = parseEntryNumber(entry.series);
         const reps = parseEntryNumber(entry.reps);
         const weightKg = entry.weightKg.trim() ? parseEntryNumber(entry.weightKg) : null;
+        const erp = parseEntryNumber(entry.erp);
 
         if (!entry.muscleGroup.trim() || !entry.exercise.trim()) return null;
+        if (series === null || !Number.isInteger(series) || series <= 0 || series > 30) return null;
         if (reps === null || !Number.isInteger(reps) || reps <= 0 || reps > 300) return null;
         if (weightKg !== null && (weightKg < 0 || weightKg > 1500)) return null;
+        if (erp === null || !Number.isInteger(erp) || erp < 1 || erp > 10) return null;
 
         return {
           muscleGroup: entry.muscleGroup.trim(),
           exercise: entry.exercise.trim(),
+          series,
           reps,
           weightKg,
+          erp,
+          fatigueLevel: entry.fatigueLevel,
+          digestiveDiscomfortLevel: entry.digestiveDiscomfortLevel,
+          usedIntraWorkout: entry.usedIntraWorkout,
           notes: entry.notes.trim()
         };
       })
@@ -947,7 +988,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
     dayId: string,
     entryId: string,
     field: keyof RoutineEntryForm,
-    value: string
+    value: string | boolean
   ) {
     setDays((prev) =>
       prev.map((day) => {
@@ -957,10 +998,11 @@ export function ToolsShell({ user }: ToolsShellProps) {
           entries: day.entries.map((entry) => {
             if (entry.id !== entryId) return entry;
             if (field === "muscleGroup") {
-              const groupExercises = exercisesByGroup.get(value) ?? [];
+              const nextGroup = String(value);
+              const groupExercises = exercisesByGroup.get(nextGroup) ?? [];
               return {
                 ...entry,
-                muscleGroup: value,
+                muscleGroup: nextGroup,
                 exercise: groupExercises[0] ?? ""
               };
             }
@@ -974,15 +1016,20 @@ export function ToolsShell({ user }: ToolsShellProps) {
     );
   }
 
-  function updateEditingEntry(entryId: string, field: keyof RoutineEntryForm, value: string) {
+  function updateEditingEntry(
+    entryId: string,
+    field: keyof RoutineEntryForm,
+    value: string | boolean
+  ) {
     setEditingEntries((prev) =>
       prev.map((entry) => {
         if (entry.id !== entryId) return entry;
         if (field === "muscleGroup") {
-          const groupExercises = exercisesByGroup.get(value) ?? [];
+          const nextGroup = String(value);
+          const groupExercises = exercisesByGroup.get(nextGroup) ?? [];
           return {
             ...entry,
-            muscleGroup: value,
+            muscleGroup: nextGroup,
             exercise: groupExercises[0] ?? ""
           };
         }
@@ -1019,8 +1066,13 @@ export function ToolsShell({ user }: ToolsShellProps) {
         id: createClientId("edit-entry"),
         muscleGroup: item.grupoMuscular,
         exercise: item.ejercicio,
+        series: String(item.series ?? 1),
         reps: String(item.repeticiones),
         weightKg: item.pesoKg === null ? "" : String(item.pesoKg),
+        erp: String(item.erp ?? 7),
+        fatigueLevel: item.nivelFatiga ?? "medio",
+        digestiveDiscomfortLevel: item.molestiasGastrointestinales ?? "bajo",
+        usedIntraWorkout: Boolean(item.intraentreno),
         notes: item.notas ?? ""
       }))
     );
@@ -1145,6 +1197,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
       setCompetitionLocation("");
       setCompetitionDescription("");
       await reloadCompetitions();
+      window.dispatchEvent(new Event("competition-mode:refresh"));
       window.dispatchEvent(new Event("diablo-mode:refresh"));
     } catch (error) {
       console.error(error);
@@ -1429,8 +1482,8 @@ export function ToolsShell({ user }: ToolsShellProps) {
           <p className="text-xs uppercase tracking-[0.24em] text-brand-muted">Herramientas</p>
           <h1 className="mt-2 text-3xl font-bold text-brand-text">Gestión de entreno</h1>
           <p className="mt-3 max-w-3xl text-sm text-brand-muted">
-            Define rutinas para todos los dias que necesites, registra repeticiones y peso por
-            ejercicio, y revisa tu evolucion historica.
+            Define rutinas para todos los dias que necesites, registra series, repeticiones, peso,
+            RPE, fatiga y molestias por ejercicio, y revisa tu evolucion historica.
           </p>
 
           <div className="mt-5 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-end">
@@ -1512,82 +1565,205 @@ export function ToolsShell({ user }: ToolsShellProps) {
                     return (
                       <div
                         key={entry.id}
-                        className="grid gap-2 rounded-xl border border-white/10 bg-black/25 p-3 md:grid-cols-[1fr,1.2fr,0.5fr,0.5fr,1fr,auto]"
+                        className="rounded-xl border border-white/10 bg-black/25 p-3"
                       >
-                        <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                          Grupo
-                          <select
-                            value={entry.muscleGroup}
-                            onChange={(event) =>
-                              updateEntry(day.id, entry.id, "muscleGroup", event.target.value)
-                            }
-                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                          >
-                            {catalog.map((group) => (
-                              <option key={group.muscleGroup} value={group.muscleGroup}>
-                                {group.muscleGroup}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <BicepsFlexed className="h-3.5 w-3.5 text-brand-accent" />
+                              Grupo
+                            </span>
+                            <select
+                              value={entry.muscleGroup}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "muscleGroup", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            >
+                              {catalog.map((group) => (
+                                <option key={group.muscleGroup} value={group.muscleGroup}>
+                                  {group.muscleGroup}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
 
-                        <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                          Ejercicio
-                          <select
-                            value={entry.exercise}
-                            onChange={(event) =>
-                              updateEntry(day.id, entry.id, "exercise", event.target.value)
-                            }
-                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                          >
-                            {exercises.map((exercise) => (
-                              <option key={`${entry.muscleGroup}-${exercise}`} value={exercise}>
-                                {exercise}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Dumbbell className="h-3.5 w-3.5 text-brand-accent" />
+                              Ejercicio
+                            </span>
+                            <select
+                              value={entry.exercise}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "exercise", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            >
+                              {exercises.map((exercise) => (
+                                <option key={`${entry.muscleGroup}-${exercise}`} value={exercise}>
+                                  {exercise}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
 
-                        <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                          Reps
-                          <input
-                            type="number"
-                            min={1}
-                            value={entry.reps}
-                            onChange={(event) =>
-                              updateEntry(day.id, entry.id, "reps", event.target.value)
-                            }
-                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                          />
-                        </label>
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Layers3 className="h-3.5 w-3.5 text-brand-accent" />
+                              Series
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={30}
+                              value={entry.series}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "series", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
 
-                        <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                          Peso kg
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.5"
-                            value={entry.weightKg}
-                            onChange={(event) =>
-                              updateEntry(day.id, entry.id, "weightKg", event.target.value)
-                            }
-                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                          />
-                        </label>
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Repeat2 className="h-3.5 w-3.5 text-brand-accent" />
+                              Reps
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={entry.reps}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "reps", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
 
-                        <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                          Notas
-                          <input
-                            value={entry.notes}
-                            onChange={(event) =>
-                              updateEntry(day.id, entry.id, "notes", event.target.value)
-                            }
-                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                            placeholder="Opcional"
-                          />
-                        </label>
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Scale className="h-3.5 w-3.5 text-brand-accent" />
+                              Peso kg
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.5"
+                              value={entry.weightKg}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "weightKg", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
 
-                        <div className="flex items-end">
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Gauge className="h-3.5 w-3.5 text-brand-accent" />
+                              RPE
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={10}
+                              value={entry.erp}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "erp", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
+
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Flame className="h-3.5 w-3.5 text-brand-accent" />
+                              Nivel de fatiga
+                            </span>
+                            <select
+                              value={entry.fatigueLevel}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "fatigueLevel", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            >
+                              {ROUTINE_LEVEL_OPTIONS.map((option) => (
+                                <option key={`fatigue-${option.value}`} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Activity className="h-3.5 w-3.5 text-brand-accent" />
+                              Molestias GI
+                            </span>
+                            <select
+                              value={entry.digestiveDiscomfortLevel}
+                              onChange={(event) =>
+                                updateEntry(
+                                  day.id,
+                                  entry.id,
+                                  "digestiveDiscomfortLevel",
+                                  event.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            >
+                              {ROUTINE_LEVEL_OPTIONS.map((option) => (
+                                <option key={`gi-${option.value}`} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="inline-flex items-center gap-1">
+                              <Pencil className="h-3.5 w-3.5 text-brand-accent" />
+                              Notas
+                            </span>
+                            <input
+                              value={entry.notes}
+                              onChange={(event) =>
+                                updateEntry(day.id, entry.id, "notes", event.target.value)
+                              }
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                              placeholder="Opcional"
+                            />
+                          </label>
+
+                          <label className="flex items-end text-xs uppercase tracking-[0.12em] text-brand-muted">
+                            <span className="flex w-full items-center gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-2">
+                              <span className="relative inline-flex items-center justify-center">
+                                <input
+                                  type="checkbox"
+                                  checked={entry.usedIntraWorkout}
+                                  onChange={(event) =>
+                                    updateEntry(
+                                      day.id,
+                                      entry.id,
+                                      "usedIntraWorkout",
+                                      event.target.checked
+                                    )
+                                  }
+                                  className="peer sr-only"
+                                />
+                                <span className="h-5 w-10 rounded-full border border-white/20 bg-black/35 transition peer-checked:border-brand-accent/60 peer-checked:bg-brand-accent/25 peer-focus-visible:ring-2 peer-focus-visible:ring-brand-accent/60 peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-black/30" />
+                                <span className="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white/70 shadow transition peer-checked:translate-x-5 peer-checked:bg-brand-accent" />
+                                <span className="sr-only">
+                                  {entry.usedIntraWorkout ? "Intraentreno activado" : "Intraentreno desactivado"}
+                                </span>
+                              </span>
+                              <Droplets className="h-3.5 w-3.5 text-brand-accent" />
+                              Intraentreno
+                            </span>
+                          </label>
+                        </div>
+
+                        <div className="mt-3 flex justify-end">
                           <button
                             type="button"
                             onClick={() => removeEntry(day.id, entry.id)}
@@ -1739,15 +1915,31 @@ export function ToolsShell({ user }: ToolsShellProps) {
                       {selectedHistorySession.items.map((item, index) => (
                         <div
                           key={`${selectedHistorySession.id}-${item.ejercicio}-${index}`}
-                          className="grid gap-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-sm md:grid-cols-[1fr,0.3fr,0.3fr]"
+                          className="grid gap-2 rounded-lg border border-white/10 bg-black/25 px-3 py-3 text-sm md:grid-cols-[1fr,0.6fr,0.8fr,0.7fr]"
                         >
                           <div>
                             <p className="font-medium text-brand-text">{item.ejercicio}</p>
                             <p className="text-xs text-brand-muted">{item.grupoMuscular}</p>
                           </div>
-                          <p className="text-left text-brand-text md:text-center">{item.repeticiones} reps</p>
-                          <p className="text-left text-brand-text md:text-center">
-                            {item.pesoKg === null ? "-" : `${item.pesoKg} kg`}
+                          <div className="space-y-1">
+                            <p className="text-left text-brand-text md:text-center">
+                              {item.series ?? 1} series · {item.repeticiones} reps
+                            </p>
+                            <p className="text-left text-xs text-brand-muted md:text-center">
+                              RPE {item.erp ?? 7}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-left text-brand-text md:text-center">
+                              {item.pesoKg === null ? "-" : `${item.pesoKg} kg`}
+                            </p>
+                            <p className="text-left text-xs text-brand-muted md:text-center">
+                              Fatiga {item.nivelFatiga ?? "medio"} · GI{" "}
+                              {item.molestiasGastrointestinales ?? "bajo"}
+                            </p>
+                          </div>
+                          <p className="text-left text-xs text-brand-muted md:text-center">
+                            Intraentreno: {item.intraentreno ? "Si" : "No"}
                           </p>
                         </div>
                       ))}
@@ -1786,77 +1978,204 @@ export function ToolsShell({ user }: ToolsShellProps) {
                         return (
                           <div
                             key={entry.id}
-                            className="grid gap-2 rounded-xl border border-white/10 bg-black/30 p-3 md:grid-cols-[1fr,1.2fr,0.5fr,0.5fr,1fr,auto]"
+                            className="rounded-xl border border-white/10 bg-black/30 p-3"
                           >
-                            <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                              Grupo
-                              <select
-                                value={entry.muscleGroup}
-                                onChange={(event) =>
-                                  updateEditingEntry(entry.id, "muscleGroup", event.target.value)
-                                }
-                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                              >
-                                {catalog.map((group) => (
-                                  <option key={group.muscleGroup} value={group.muscleGroup}>
-                                    {group.muscleGroup}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <BicepsFlexed className="h-3.5 w-3.5 text-brand-accent" />
+                                  Grupo
+                                </span>
+                                <select
+                                  value={entry.muscleGroup}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "muscleGroup", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                >
+                                  {catalog.map((group) => (
+                                    <option key={group.muscleGroup} value={group.muscleGroup}>
+                                      {group.muscleGroup}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
 
-                            <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                              Ejercicio
-                              <select
-                                value={entry.exercise}
-                                onChange={(event) =>
-                                  updateEditingEntry(entry.id, "exercise", event.target.value)
-                                }
-                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                              >
-                                {exercises.map((exercise) => (
-                                  <option key={`${entry.muscleGroup}-${exercise}`} value={exercise}>
-                                    {exercise}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Dumbbell className="h-3.5 w-3.5 text-brand-accent" />
+                                  Ejercicio
+                                </span>
+                                <select
+                                  value={entry.exercise}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "exercise", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                >
+                                  {exercises.map((exercise) => (
+                                    <option key={`${entry.muscleGroup}-${exercise}`} value={exercise}>
+                                      {exercise}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
 
-                            <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                              Reps
-                              <input
-                                type="number"
-                                min={1}
-                                value={entry.reps}
-                                onChange={(event) => updateEditingEntry(entry.id, "reps", event.target.value)}
-                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                              />
-                            </label>
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Layers3 className="h-3.5 w-3.5 text-brand-accent" />
+                                  Series
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={30}
+                                  value={entry.series}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "series", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </label>
 
-                            <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                              Peso kg
-                              <input
-                                type="number"
-                                min={0}
-                                step="0.5"
-                                value={entry.weightKg}
-                                onChange={(event) =>
-                                  updateEditingEntry(entry.id, "weightKg", event.target.value)
-                                }
-                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                              />
-                            </label>
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Repeat2 className="h-3.5 w-3.5 text-brand-accent" />
+                                  Reps
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={entry.reps}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "reps", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </label>
 
-                            <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
-                              Notas
-                              <input
-                                value={entry.notes}
-                                onChange={(event) => updateEditingEntry(entry.id, "notes", event.target.value)}
-                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                              />
-                            </label>
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Scale className="h-3.5 w-3.5 text-brand-accent" />
+                                  Peso kg
+                                </span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.5"
+                                  value={entry.weightKg}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "weightKg", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </label>
 
-                            <div className="flex items-end">
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Gauge className="h-3.5 w-3.5 text-brand-accent" />
+                                  RPE
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={10}
+                                  value={entry.erp}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "erp", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </label>
+
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Flame className="h-3.5 w-3.5 text-brand-accent" />
+                                  Nivel de fatiga
+                                </span>
+                                <select
+                                  value={entry.fatigueLevel}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "fatigueLevel", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                >
+                                  {ROUTINE_LEVEL_OPTIONS.map((option) => (
+                                    <option key={`edit-fatigue-${option.value}`} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Activity className="h-3.5 w-3.5 text-brand-accent" />
+                                  Molestias GI
+                                </span>
+                                <select
+                                  value={entry.digestiveDiscomfortLevel}
+                                  onChange={(event) =>
+                                    updateEditingEntry(
+                                      entry.id,
+                                      "digestiveDiscomfortLevel",
+                                      event.target.value
+                                    )
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                >
+                                  {ROUTINE_LEVEL_OPTIONS.map((option) => (
+                                    <option key={`edit-gi-${option.value}`} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+
+                              <label className="text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="inline-flex items-center gap-1">
+                                  <Pencil className="h-3.5 w-3.5 text-brand-accent" />
+                                  Notas
+                                </span>
+                                <input
+                                  value={entry.notes}
+                                  onChange={(event) =>
+                                    updateEditingEntry(entry.id, "notes", event.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </label>
+
+                              <label className="flex items-end text-xs uppercase tracking-[0.12em] text-brand-muted">
+                                <span className="flex w-full items-center gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-2">
+                                  <span className="relative inline-flex items-center justify-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={entry.usedIntraWorkout}
+                                      onChange={(event) =>
+                                        updateEditingEntry(
+                                          entry.id,
+                                          "usedIntraWorkout",
+                                          event.target.checked
+                                        )
+                                      }
+                                      className="peer sr-only"
+                                    />
+                                    <span className="h-5 w-10 rounded-full border border-white/20 bg-black/35 transition peer-checked:border-brand-accent/60 peer-checked:bg-brand-accent/25 peer-focus-visible:ring-2 peer-focus-visible:ring-brand-accent/60 peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-black/30" />
+                                    <span className="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white/70 shadow transition peer-checked:translate-x-5 peer-checked:bg-brand-accent" />
+                                    <span className="sr-only">
+                                      {entry.usedIntraWorkout
+                                        ? "Intraentreno activado"
+                                        : "Intraentreno desactivado"}
+                                    </span>
+                                  </span>
+                                  <Droplets className="h-3.5 w-3.5 text-brand-accent" />
+                                  Intraentreno
+                                </span>
+                              </label>
+                            </div>
+
+                            <div className="mt-3 flex justify-end">
                               <button
                                 type="button"
                                 onClick={() => removeEditingEntry(entry.id)}

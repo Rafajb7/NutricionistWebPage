@@ -13,8 +13,13 @@ import { logError, logInfo } from "@/lib/logger";
 const routineEntrySchema = z.object({
   muscleGroup: z.string().min(1).max(120),
   exercise: z.string().min(1).max(240),
+  series: z.coerce.number().int().min(1).max(30),
   reps: z.coerce.number().int().min(1).max(300),
   weightKg: z.coerce.number().min(0).max(1500).nullable().optional(),
+  erp: z.coerce.number().int().min(1).max(10),
+  fatigueLevel: z.enum(["alto", "medio", "bajo"]),
+  digestiveDiscomfortLevel: z.enum(["alto", "medio", "bajo"]),
+  usedIntraWorkout: z.boolean().optional(),
   notes: z.string().max(500).optional()
 });
 
@@ -91,8 +96,13 @@ export async function POST(req: NextRequest) {
         dia: day.label.trim(),
         grupoMuscular: entry.muscleGroup.trim(),
         ejercicio: entry.exercise.trim(),
+        series: entry.series,
         repeticiones: entry.reps,
         pesoKg: entry.weightKg ?? null,
+        erp: entry.erp,
+        nivelFatiga: entry.fatigueLevel,
+        molestiasGastrointestinales: entry.digestiveDiscomfortLevel,
+        intraentreno: Boolean(entry.usedIntraWorkout),
         notas: entry.notes?.trim() ?? ""
       }))
     );
@@ -135,8 +145,13 @@ export async function PATCH(req: NextRequest) {
       entries: parsed.data.entries.map((entry) => ({
         muscleGroup: entry.muscleGroup.trim(),
         exercise: entry.exercise.trim(),
+        series: entry.series,
         reps: entry.reps,
         weightKg: entry.weightKg ?? null,
+        erp: entry.erp,
+        fatigueLevel: entry.fatigueLevel,
+        digestiveDiscomfortLevel: entry.digestiveDiscomfortLevel,
+        usedIntraWorkout: Boolean(entry.usedIntraWorkout),
         notes: entry.notes?.trim() ?? ""
       }))
     });

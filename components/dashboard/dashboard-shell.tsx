@@ -1,10 +1,35 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Search, LogOut, Calendar, FileText, Download, Eye, BellRing, X, Trash2 } from "lucide-react";
+import {
+  Search,
+  LogOut,
+  Calendar,
+  FileText,
+  Download,
+  Eye,
+  BellRing,
+  X,
+  Trash2,
+  Scale,
+  Footprints,
+  Droplets,
+  Apple,
+  Leaf,
+  Wheat,
+  UtensilsCrossed,
+  MoonStar,
+  Clock3,
+  Brain,
+  Activity,
+  ClipboardCheck,
+  Dumbbell,
+  Repeat2,
+  type LucideIcon
+} from "lucide-react";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
@@ -92,6 +117,112 @@ type DashboardClientCache = {
   plans: NutritionPlan[];
 };
 
+type PeakMode = "none" | "titan" | "diablo";
+
+type PeakModeDailyLog = {
+  timestamp: string;
+  fecha: string;
+  nombre: string;
+  usuario: string;
+  modo: "titan" | "diablo";
+  pesoAyunasKg: number;
+  pesoNocturnoKg: number;
+  pasosDiarios: number;
+  aguaLitros: number;
+  frutaPiezas: number;
+  verduraRaciones: number;
+  cerealesIntegralesRaciones: number;
+  hambreEscala: number;
+  descansoEscala: number;
+  horasSueno: number;
+  estresEscala: number;
+  molestiasDigestivasEscala: number;
+  cumplimientoPlanEscala: number;
+  tuvoEntreno: boolean;
+  dobleSesion: boolean;
+};
+
+type ActivePeakWindow = {
+  mode: "titan" | "diablo";
+  competitionDate: string;
+  daysUntilCompetition: number;
+  startsOn: string;
+  endsOn: string;
+};
+
+type PeakModeDailyResponse = {
+  mode: PeakMode;
+  activeWindow: ActivePeakWindow | null;
+  today: string;
+  todayLog: PeakModeDailyLog | null;
+  todaySubmitted: boolean;
+  warning?: string;
+};
+
+type PeakModeFormState = {
+  pesoAyunasKg: string;
+  pesoNocturnoKg: string;
+  pasosDiarios: string;
+  aguaLitros: string;
+  frutaPiezas: string;
+  verduraRaciones: string;
+  cerealesIntegralesRaciones: string;
+  hambreEscala: string;
+  descansoEscala: string;
+  horasSueno: string;
+  estresEscala: string;
+  molestiasDigestivasEscala: string;
+  cumplimientoPlanEscala: string;
+  tuvoEntreno: "" | "si" | "no";
+  dobleSesion: boolean;
+};
+
+function createEmptyPeakModeForm(): PeakModeFormState {
+  return {
+    pesoAyunasKg: "",
+    pesoNocturnoKg: "",
+    pasosDiarios: "",
+    aguaLitros: "",
+    frutaPiezas: "",
+    verduraRaciones: "",
+    cerealesIntegralesRaciones: "",
+    hambreEscala: "",
+    descansoEscala: "",
+    horasSueno: "",
+    estresEscala: "",
+    molestiasDigestivasEscala: "",
+    cumplimientoPlanEscala: "",
+    tuvoEntreno: "",
+    dobleSesion: false
+  };
+}
+
+function toPeakModeFormFromLog(log: PeakModeDailyLog): PeakModeFormState {
+  return {
+    pesoAyunasKg: String(log.pesoAyunasKg),
+    pesoNocturnoKg: String(log.pesoNocturnoKg),
+    pasosDiarios: String(log.pasosDiarios),
+    aguaLitros: String(log.aguaLitros),
+    frutaPiezas: String(log.frutaPiezas),
+    verduraRaciones: String(log.verduraRaciones),
+    cerealesIntegralesRaciones: String(log.cerealesIntegralesRaciones),
+    hambreEscala: String(log.hambreEscala),
+    descansoEscala: String(log.descansoEscala),
+    horasSueno: String(log.horasSueno),
+    estresEscala: String(log.estresEscala),
+    molestiasDigestivasEscala: String(log.molestiasDigestivasEscala),
+    cumplimientoPlanEscala: String(log.cumplimientoPlanEscala),
+    tuvoEntreno: log.tuvoEntreno ? "si" : "no",
+    dobleSesion: log.dobleSesion
+  };
+}
+
+function formatPeakModeName(mode: PeakMode): string {
+  if (mode === "diablo") return "Modo diablo";
+  if (mode === "titan") return "Modo titan";
+  return "Sin modo activo";
+}
+
 function normalizeMetricQuestion(question: string): string {
   return question
     .normalize("NFD")
@@ -146,10 +277,27 @@ function parseMetricValue(raw: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function parseInputNumber(raw: string): number | null {
+  const normalized = raw.trim().replace(",", ".");
+  if (!normalized) return null;
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : null;
+}
+
 function formatMetricDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
   return parsed.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
+}
+
+function formatDateLabel(date: string): string {
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return parsed.toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  });
 }
 
 function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" }) {
@@ -270,6 +418,91 @@ function getPlanDisplayDate(plan: NutritionPlan): string {
   return formatPlanDate(new Date(ts).toISOString());
 }
 
+function PeakNumberField(props: {
+  icon: LucideIcon;
+  label: string;
+  unit?: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const Icon = props.icon;
+
+  return (
+    <label className="rounded-xl border border-white/10 bg-black/20 p-3 text-sm text-brand-muted transition focus-within:border-brand-accent/60 focus-within:bg-black/30">
+      <span className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-brand-muted">
+        <Icon className="h-4 w-4 text-brand-accent" />
+        {props.label}
+      </span>
+      <div className="mt-2 flex items-center gap-2">
+        <input
+          value={props.value}
+          onChange={(event) => props.onChange(event.target.value)}
+          inputMode="decimal"
+          placeholder={props.placeholder}
+          className="w-full rounded-lg border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+        />
+        {props.unit ? (
+          <span className="rounded-md border border-white/15 bg-black/20 px-2 py-1 text-xs text-brand-muted">
+            {props.unit}
+          </span>
+        ) : null}
+      </div>
+    </label>
+  );
+}
+
+function PeakScaleField(props: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  min: number;
+  max: number;
+}) {
+  const Icon = props.icon;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+      <p className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-brand-muted">
+        <Icon className="h-4 w-4 text-brand-accent" />
+        {props.label}
+      </p>
+      <div className="mt-2 grid grid-cols-6 gap-2">
+        <button
+          type="button"
+          onClick={() => props.onChange("")}
+          className={
+            props.value === ""
+              ? "rounded-lg border border-brand-accent/55 bg-brand-accent/15 px-2 py-2 text-xs font-semibold text-brand-text"
+              : "rounded-lg border border-white/20 bg-black/25 px-2 py-2 text-xs text-brand-muted transition hover:border-brand-accent/45 hover:text-brand-text"
+          }
+        >
+          -
+        </button>
+        {Array.from({ length: props.max - props.min + 1 }).map((_, index) => {
+          const optionValue = String(props.min + index);
+          const isSelected = props.value === optionValue;
+          return (
+            <button
+              key={`${props.label}-${optionValue}`}
+              type="button"
+              onClick={() => props.onChange(optionValue)}
+              className={
+                isSelected
+                  ? "rounded-lg border border-brand-accent/55 bg-brand-accent/15 px-2 py-2 text-xs font-semibold text-brand-text"
+                  : "rounded-lg border border-white/20 bg-black/25 px-2 py-2 text-xs text-brand-muted transition hover:border-brand-accent/45 hover:text-brand-text"
+              }
+            >
+              {optionValue}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function DashboardShell({ user }: DashboardShellProps) {
   const router = useRouter();
   const [entries, setEntries] = useState<RevisionEntry[]>([]);
@@ -284,6 +517,16 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const [selectedPlan, setSelectedPlan] = useState<NutritionPlan | null>(null);
   const [newPlanPopup, setNewPlanPopup] = useState<NewPlanPopupState | null>(null);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>("CINTURA");
+  const [peakMode, setPeakMode] = useState<PeakMode>("none");
+  const [peakActiveWindow, setPeakActiveWindow] = useState<ActivePeakWindow | null>(null);
+  const [peakDailyForm, setPeakDailyForm] = useState<PeakModeFormState>(() =>
+    createEmptyPeakModeForm()
+  );
+  const [peakLoading, setPeakLoading] = useState(true);
+  const [peakSaving, setPeakSaving] = useState(false);
+  const [peakTodaySubmitted, setPeakTodaySubmitted] = useState(false);
+  const [showPeakReminder, setShowPeakReminder] = useState(false);
+  const [peakWarning, setPeakWarning] = useState("");
   const dashboardCacheKey = useMemo(
     () =>
       `mat:dashboard-cache:v${DASHBOARD_CACHE_VERSION}:${user.username.trim().toLowerCase()}`,
@@ -343,11 +586,83 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const selectedMetricSeries = metricSeriesByKey[selectedMetric];
   const selectedMetricUnit: "cm" | "kg" =
     selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
+  const peakModeEnabled = peakMode !== "none";
 
   useEffect(() => {
     router.prefetch("/tools");
     router.prefetch("/revision/new");
   }, [router]);
+
+  const loadPeakModeData = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = Boolean(options?.silent);
+      if (!silent) setPeakLoading(true);
+
+      try {
+        const res = await fetch("/api/tools/peak-mode-daily", { cache: "no-store" });
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+
+        const json = (await res.json()) as PeakModeDailyResponse & { error?: string };
+        if (!res.ok) {
+          throw new Error(json.error ?? "No se pudo cargar el formulario diario.");
+        }
+
+        setPeakMode(json.mode ?? "none");
+        setPeakActiveWindow(json.activeWindow ?? null);
+        setPeakTodaySubmitted(Boolean(json.todaySubmitted));
+        setPeakWarning(json.warning?.trim() ?? "");
+
+        if (json.todayLog) {
+          setPeakDailyForm(toPeakModeFormFromLog(json.todayLog));
+        } else {
+          setPeakDailyForm(createEmptyPeakModeForm());
+        }
+
+        const modeEnabled = json.mode === "titan" || json.mode === "diablo";
+        setShowPeakReminder(modeEnabled && !json.todaySubmitted);
+      } catch (error) {
+        console.error(error);
+        if (!silent) toast.error("Error al cargar el formulario diario.");
+        setPeakMode("none");
+        setPeakActiveWindow(null);
+        setPeakTodaySubmitted(false);
+        setShowPeakReminder(false);
+        setPeakWarning("");
+      } finally {
+        if (!silent) setPeakLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    void loadPeakModeData();
+
+    const intervalId = window.setInterval(() => {
+      void loadPeakModeData({ silent: true });
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [loadPeakModeData]);
+
+  useEffect(() => {
+    const refreshFromCompetitionEvents = () => {
+      void loadPeakModeData({ silent: true });
+    };
+
+    window.addEventListener("competition-mode:refresh", refreshFromCompetitionEvents);
+    window.addEventListener("diablo-mode:refresh", refreshFromCompetitionEvents);
+
+    return () => {
+      window.removeEventListener("competition-mode:refresh", refreshFromCompetitionEvents);
+      window.removeEventListener("diablo-mode:refresh", refreshFromCompetitionEvents);
+    };
+  }, [loadPeakModeData]);
 
   useEffect(() => {
     let active = true;
@@ -492,6 +807,99 @@ export function DashboardShell({ user }: DashboardShellProps) {
     setSelectedPlan(plan);
   }
 
+  function updatePeakDailyFormField<K extends keyof PeakModeFormState>(
+    key: K,
+    value: PeakModeFormState[K]
+  ) {
+    setPeakDailyForm((current) => ({
+      ...current,
+      [key]: value
+    }));
+  }
+
+  async function submitPeakModeDailyForm() {
+    if (!peakModeEnabled) {
+      toast.error("El formulario diario solo esta disponible en modo titan o diablo.");
+      return;
+    }
+
+    const requiredTextValues = [
+      peakDailyForm.pesoAyunasKg,
+      peakDailyForm.pesoNocturnoKg,
+      peakDailyForm.pasosDiarios,
+      peakDailyForm.aguaLitros,
+      peakDailyForm.frutaPiezas,
+      peakDailyForm.verduraRaciones,
+      peakDailyForm.cerealesIntegralesRaciones,
+      peakDailyForm.hambreEscala,
+      peakDailyForm.descansoEscala,
+      peakDailyForm.horasSueno,
+      peakDailyForm.estresEscala,
+      peakDailyForm.molestiasDigestivasEscala,
+      peakDailyForm.cumplimientoPlanEscala
+    ];
+
+    if (requiredTextValues.some((value) => !value.trim()) || !peakDailyForm.tuvoEntreno) {
+      toast.error("Debes completar todos los campos del formulario diario.");
+      return;
+    }
+
+    const payload = {
+      pesoAyunasKg: parseInputNumber(peakDailyForm.pesoAyunasKg),
+      pesoNocturnoKg: parseInputNumber(peakDailyForm.pesoNocturnoKg),
+      pasosDiarios: parseInputNumber(peakDailyForm.pasosDiarios),
+      aguaLitros: parseInputNumber(peakDailyForm.aguaLitros),
+      frutaPiezas: parseInputNumber(peakDailyForm.frutaPiezas),
+      verduraRaciones: parseInputNumber(peakDailyForm.verduraRaciones),
+      cerealesIntegralesRaciones: parseInputNumber(peakDailyForm.cerealesIntegralesRaciones),
+      hambreEscala: parseInputNumber(peakDailyForm.hambreEscala),
+      descansoEscala: parseInputNumber(peakDailyForm.descansoEscala),
+      horasSueno: parseInputNumber(peakDailyForm.horasSueno),
+      estresEscala: parseInputNumber(peakDailyForm.estresEscala),
+      molestiasDigestivasEscala: parseInputNumber(peakDailyForm.molestiasDigestivasEscala),
+      cumplimientoPlanEscala: parseInputNumber(peakDailyForm.cumplimientoPlanEscala),
+      tuvoEntreno: peakDailyForm.tuvoEntreno === "si",
+      dobleSesion: peakDailyForm.tuvoEntreno === "si" ? peakDailyForm.dobleSesion : false
+    };
+
+    if (Object.values(payload).some((value) => value === null)) {
+      toast.error("Revisa los valores numericos del formulario diario.");
+      return;
+    }
+
+    setPeakSaving(true);
+    try {
+      const res = await fetch("/api/tools/peak-mode-daily", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudo guardar el formulario diario.");
+        return;
+      }
+
+      toast.success("Formulario diario guardado.");
+      setPeakTodaySubmitted(true);
+      setShowPeakReminder(false);
+      await loadPeakModeData({ silent: true });
+    } catch (error) {
+      console.error(error);
+      toast.error("Error al guardar el formulario diario.");
+    } finally {
+      setPeakSaving(false);
+    }
+  }
+
   async function handleLogout() {
     const res = await fetch("/api/logout", { method: "POST" });
     if (!res.ok) {
@@ -605,6 +1013,225 @@ export function DashboardShell({ user }: DashboardShellProps) {
             </Link>
           </div>
         </motion.section>
+
+        {peakLoading ? (
+          <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+            <Skeleton className="h-5 w-56" />
+            <Skeleton className="mt-3 h-4 w-full" />
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          </section>
+        ) : peakModeEnabled ? (
+          <section
+            id="peak-daily-form"
+            className={
+              peakMode === "diablo"
+                ? "rounded-2xl border border-red-400/30 bg-red-950/20 p-4"
+                : "rounded-2xl border border-violet-400/30 bg-violet-950/20 p-4"
+            }
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-brand-muted">
+                  {formatPeakModeName(peakMode)}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-brand-text">
+                  Registro diario obligatorio
+                </h2>
+                {peakActiveWindow ? (
+                  <p className="mt-1 text-xs text-brand-muted">
+                    Ventana activa: {formatDateLabel(peakActiveWindow.startsOn)} -{" "}
+                    {formatDateLabel(peakActiveWindow.endsOn)} | Competicion:{" "}
+                    {formatDateLabel(peakActiveWindow.competitionDate)}
+                  </p>
+                ) : null}
+              </div>
+              <span
+                className={
+                  peakTodaySubmitted
+                    ? "rounded-lg border border-emerald-300/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-200"
+                    : "rounded-lg border border-amber-300/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-200"
+                }
+              >
+                {peakTodaySubmitted ? "Completado hoy" : "Pendiente hoy"}
+              </span>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              <PeakNumberField
+                icon={Scale}
+                label="Peso en ayunas (Kg)"
+                unit="kg"
+                value={peakDailyForm.pesoAyunasKg}
+                onChange={(value) => updatePeakDailyFormField("pesoAyunasKg", value)}
+                placeholder="Ej: 82.4"
+              />
+              <PeakNumberField
+                icon={Scale}
+                label="Peso nocturno (Kg)"
+                unit="kg"
+                value={peakDailyForm.pesoNocturnoKg}
+                onChange={(value) => updatePeakDailyFormField("pesoNocturnoKg", value)}
+                placeholder="Ej: 83.1"
+              />
+              <PeakNumberField
+                icon={Footprints}
+                label="Pasos diarios"
+                unit="pasos"
+                value={peakDailyForm.pasosDiarios}
+                onChange={(value) => updatePeakDailyFormField("pasosDiarios", value)}
+                placeholder="Ej: 9600"
+              />
+              <PeakNumberField
+                icon={Droplets}
+                label="Ingesta de agua (L)"
+                unit="L"
+                value={peakDailyForm.aguaLitros}
+                onChange={(value) => updatePeakDailyFormField("aguaLitros", value)}
+                placeholder="Ej: 3.5"
+              />
+              <PeakNumberField
+                icon={Apple}
+                label="Piezas de fruta"
+                unit="r"
+                value={peakDailyForm.frutaPiezas}
+                onChange={(value) => updatePeakDailyFormField("frutaPiezas", value)}
+                placeholder="Ej: 3"
+              />
+              <PeakNumberField
+                icon={Leaf}
+                label="Raciones de verdura"
+                unit="r"
+                value={peakDailyForm.verduraRaciones}
+                onChange={(value) => updatePeakDailyFormField("verduraRaciones", value)}
+                placeholder="Ej: 2"
+              />
+              <PeakNumberField
+                icon={Wheat}
+                label="Raciones de cereales integrales"
+                unit="r"
+                value={peakDailyForm.cerealesIntegralesRaciones}
+                onChange={(value) => updatePeakDailyFormField("cerealesIntegralesRaciones", value)}
+                placeholder="Ej: 2"
+              />
+              <PeakScaleField
+                icon={UtensilsCrossed}
+                label="Escala de hambre (1-5)"
+                value={peakDailyForm.hambreEscala}
+                onChange={(value) => updatePeakDailyFormField("hambreEscala", value)}
+                min={1}
+                max={5}
+              />
+              <PeakScaleField
+                icon={MoonStar}
+                label="Escala de descanso (1-5)"
+                value={peakDailyForm.descansoEscala}
+                onChange={(value) => updatePeakDailyFormField("descansoEscala", value)}
+                min={1}
+                max={5}
+              />
+              <PeakNumberField
+                icon={Clock3}
+                label="Horas de sueno"
+                unit="h"
+                value={peakDailyForm.horasSueno}
+                onChange={(value) => updatePeakDailyFormField("horasSueno", value)}
+                placeholder="Ej: 7.5"
+              />
+              <PeakScaleField
+                icon={Brain}
+                label="Escala de estres (0-5)"
+                value={peakDailyForm.estresEscala}
+                onChange={(value) => updatePeakDailyFormField("estresEscala", value)}
+                min={0}
+                max={5}
+              />
+              <PeakScaleField
+                icon={Activity}
+                label="Molestias digestivas (0-5)"
+                value={peakDailyForm.molestiasDigestivasEscala}
+                onChange={(value) =>
+                  updatePeakDailyFormField("molestiasDigestivasEscala", value)
+                }
+                min={0}
+                max={5}
+              />
+              <PeakScaleField
+                icon={ClipboardCheck}
+                label="Cumplimiento del plan (1-5)"
+                value={peakDailyForm.cumplimientoPlanEscala}
+                onChange={(value) => updatePeakDailyFormField("cumplimientoPlanEscala", value)}
+                min={1}
+                max={5}
+              />
+            </div>
+
+            {peakWarning ? (
+              <div className="mt-4 rounded-xl border border-amber-300/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                {peakWarning}
+              </div>
+            ) : null}
+
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/25 p-4">
+              <p className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-brand-muted">
+                <Dumbbell className="h-4 w-4 text-brand-accent" />
+                Sesion de entreno
+              </p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => updatePeakDailyFormField("tuvoEntreno", "si")}
+                  className={
+                    peakDailyForm.tuvoEntreno === "si"
+                      ? "inline-flex items-center gap-1 rounded-lg border border-brand-accent/60 bg-brand-accent/15 px-3 py-2 text-xs font-semibold text-brand-text"
+                      : "inline-flex items-center gap-1 rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-xs text-brand-text transition hover:border-brand-accent/45"
+                  }
+                >
+                  <Dumbbell className="h-3.5 w-3.5" />
+                  SI
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updatePeakDailyFormField("tuvoEntreno", "no");
+                    updatePeakDailyFormField("dobleSesion", false);
+                  }}
+                  className={
+                    peakDailyForm.tuvoEntreno === "no"
+                      ? "inline-flex items-center gap-1 rounded-lg border border-brand-accent/60 bg-brand-accent/15 px-3 py-2 text-xs font-semibold text-brand-text"
+                      : "inline-flex items-center gap-1 rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-xs text-brand-text transition hover:border-brand-accent/45"
+                  }
+                >
+                  <X className="h-3.5 w-3.5" />
+                  NO
+                </button>
+              </div>
+              <label className="mt-3 inline-flex items-center gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-2 text-xs text-brand-muted">
+                <input
+                  type="checkbox"
+                  checked={peakDailyForm.dobleSesion}
+                  disabled={peakDailyForm.tuvoEntreno !== "si"}
+                  onChange={(event) =>
+                    updatePeakDailyFormField("dobleSesion", event.target.checked)
+                  }
+                  className="h-4 w-4 rounded border-white/20 bg-black/20 accent-brand-accent"
+                />
+                <Repeat2 className="h-3.5 w-3.5 text-brand-accent" />
+                Entrenamiento con doble sesion
+              </label>
+            </div>
+
+            <div className="mt-4">
+              <BrandButton onClick={submitPeakModeDailyForm} disabled={peakSaving}>
+                {peakSaving ? "Guardando..." : "Guardar formulario diario"}
+              </BrandButton>
+            </div>
+          </section>
+        ) : null}
 
         <section className="space-y-4">
           <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
@@ -841,6 +1468,58 @@ export function DashboardShell({ user }: DashboardShellProps) {
       </div>
 
       <AnimatePresence>
+        {showPeakReminder && peakModeEnabled && !peakTodaySubmitted ? (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowPeakReminder(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 240, damping: 24 }}
+              className="w-full max-w-md rounded-2xl border border-brand-accent/35 bg-brand-surface/95 p-5 shadow-glow backdrop-blur"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                Recordatorio diario
+              </p>
+              <h3 className="mt-2 text-lg font-semibold text-brand-text">
+                Completa tu formulario de {formatPeakModeName(peakMode).toLowerCase()}
+              </h3>
+              <p className="mt-2 text-sm text-brand-muted">
+                Aun no has registrado los datos de hoy. Este registro es obligatorio y diario en
+                semanas de precompeticion/competicion.
+              </p>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPeakReminder(false);
+                    document.getElementById("peak-daily-form")?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "start"
+                    });
+                  }}
+                  className="inline-flex items-center rounded-lg border border-brand-accent/45 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text transition hover:bg-brand-accent/20"
+                >
+                  Completar ahora
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPeakReminder(false)}
+                  className="inline-flex items-center rounded-lg border border-white/20 px-3 py-1.5 text-xs text-brand-text transition hover:bg-white/10"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+
         {newPlanPopup ? (
           <motion.aside
             initial={{ opacity: 0, y: 26, scale: 0.97 }}
