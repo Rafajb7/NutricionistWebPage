@@ -31,6 +31,7 @@ import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   STRENGTH_EXERCISES,
+  isDailyStepsExercise,
   type StrengthExercise
 } from "@/lib/achievements/strength-exercises";
 
@@ -237,6 +238,52 @@ function parseEntryNumber(raw: string): number | null {
   return parsed;
 }
 
+type AchievementUnit = "kg" | "pasos";
+
+function getAchievementValueConfig(exercise: StrengthExercise): {
+  label: string;
+  placeholder: string;
+  min: number;
+  max: number;
+  step: string;
+  unit: AchievementUnit;
+  requireInteger: boolean;
+} {
+  if (isDailyStepsExercise(exercise)) {
+    return {
+      label: "Pasos diarios",
+      placeholder: "Ejemplo: 9500",
+      min: 0,
+      max: 100_000,
+      step: "1",
+      unit: "pasos",
+      requireInteger: true
+    };
+  }
+
+  return {
+    label: "Peso levantado",
+    placeholder: "Ejemplo: 180",
+    min: 1,
+    max: 800,
+    step: "0.5",
+    unit: "kg",
+    requireInteger: false
+  };
+}
+
+function formatAchievementValue(value: number, exercise: StrengthExercise): string {
+  if (isDailyStepsExercise(exercise)) {
+    return `${Math.round(value)} pasos`;
+  }
+  return `${value} kg`;
+}
+
+function formatChartTickValue(value: number, unit: AchievementUnit): string {
+  if (unit === "pasos") return `${Math.round(value)} pasos`;
+  return `${value.toFixed(1)}kg`;
+}
+
 function toDaysUntil(date: string): number | null {
   const target = new Date(`${date}T00:00:00`);
   if (Number.isNaN(target.getTime())) return null;
@@ -351,8 +398,9 @@ function StrengthComparisonChart(props: {
   title: string;
   marks: ProgressPoint[];
   goals: ProgressPoint[];
+  unit: AchievementUnit;
 }) {
-  const { title, marks, goals } = props;
+  const { title, marks, goals, unit } = props;
   const hasMarks = marks.length > 0;
   const hasGoals = goals.length > 0;
 
@@ -450,7 +498,7 @@ function StrengthComparisonChart(props: {
                 fill="rgba(255,255,255,0.65)"
                 fontSize={11}
               >
-                {tick.value.toFixed(1)}kg
+                {formatChartTickValue(tick.value, unit)}
               </text>
             </g>
           ))}
@@ -686,8 +734,21 @@ export function ToolsShell({ user }: ToolsShellProps) {
       }));
   }, [achievementGoals, chartAchievementExercise]);
 
+  const achievementInputConfig = useMemo(
+    () => getAchievementValueConfig(achievementExercise),
+    [achievementExercise]
+  );
+
+  const goalInputConfig = useMemo(() => getAchievementValueConfig(goalExercise), [goalExercise]);
+
+  const chartAchievementUnit = useMemo<AchievementUnit>(
+    () => (isDailyStepsExercise(chartAchievementExercise) ? "pasos" : "kg"),
+    [chartAchievementExercise]
+  );
+
   useEffect(() => {
     router.prefetch("/dashboard");
+    router.prefetch("/community");
     router.prefetch("/revision/new");
   }, [router]);
 
@@ -1213,9 +1274,16 @@ export function ToolsShell({ user }: ToolsShellProps) {
       return;
     }
 
-    const weightKg = parseEntryNumber(achievementWeight);
-    if (weightKg === null || weightKg <= 0 || weightKg > 800) {
-      toast.error("Introduce un peso valido entre 1 y 800 kg.");
+    const value = parseEntryNumber(achievementWeight);
+    const config = getAchievementValueConfig(achievementExercise);
+    if (value === null || value < config.min || value > config.max) {
+      toast.error(
+        `Introduce un valor valido entre ${config.min} y ${config.max} ${config.unit}.`
+      );
+      return;
+    }
+    if (config.requireInteger && !Number.isInteger(value)) {
+      toast.error("Los pasos diarios deben registrarse como numero entero.");
       return;
     }
 
@@ -1229,7 +1297,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
         body: JSON.stringify({
           exercise: achievementExercise,
           date: achievementDate,
-          weightKg
+          weightKg: value
         })
       });
 
@@ -1244,7 +1312,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
         return;
       }
 
-      toast.success("Marca maxima registrada.");
+      toast.success("Marca registrada.");
       setAchievementWeight("");
       await reloadAchievements();
     } catch (error) {
@@ -1261,9 +1329,16 @@ export function ToolsShell({ user }: ToolsShellProps) {
       return;
     }
 
-    const targetWeightKg = parseEntryNumber(goalWeight);
-    if (targetWeightKg === null || targetWeightKg <= 0 || targetWeightKg > 800) {
-      toast.error("Introduce un objetivo valido entre 1 y 800 kg.");
+    const targetValue = parseEntryNumber(goalWeight);
+    const config = getAchievementValueConfig(goalExercise);
+    if (targetValue === null || targetValue < config.min || targetValue > config.max) {
+      toast.error(
+        `Introduce un objetivo valido entre ${config.min} y ${config.max} ${config.unit}.`
+      );
+      return;
+    }
+    if (config.requireInteger && !Number.isInteger(targetValue)) {
+      toast.error("El objetivo de pasos debe registrarse como numero entero.");
       return;
     }
 
@@ -1277,7 +1352,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
         body: JSON.stringify({
           exercise: goalExercise,
           targetDate: goalDate,
-          targetWeightKg
+          targetWeightKg: targetValue
         })
       });
 
@@ -1423,6 +1498,11 @@ export function ToolsShell({ user }: ToolsShellProps) {
               <Link href="/tools">
                 <BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">
                   Herramientas
+                </BrandButton>
+              </Link>
+              <Link href="/community">
+                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  Comunidad
                 </BrandButton>
               </Link>
               <div className="px-2 text-left sm:text-right">
@@ -2368,14 +2448,14 @@ export function ToolsShell({ user }: ToolsShellProps) {
               <p className="text-xs uppercase tracking-[0.24em] text-brand-muted">Herramientas</p>
               <h1 className="mt-2 text-3xl font-bold text-brand-text">Logros</h1>
               <p className="mt-3 max-w-3xl text-sm text-brand-muted">
-                Registra tus marcas maximas de sentadilla, press de banca y peso muerto, y define
-                objetivos para comparar la evolucion real frente al plan.
+                Registra marcas de fuerza y tus pasos diarios, define objetivos y compara la
+                evolucion real frente al plan.
               </p>
 
               <div className="mt-5 grid gap-4 lg:grid-cols-2">
                 <article className="rounded-xl border border-white/10 bg-black/20 p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
-                    Nueva marca maxima
+                    Nuevo registro de marca
                   </p>
 
                   <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -2407,16 +2487,16 @@ export function ToolsShell({ user }: ToolsShellProps) {
                     </label>
 
                     <label className="text-sm text-brand-muted md:col-span-2">
-                      Peso levantado (kg)
+                      {achievementInputConfig.label} ({achievementInputConfig.unit})
                       <input
                         type="number"
-                        min={1}
-                        max={800}
-                        step="0.5"
+                        min={achievementInputConfig.min}
+                        max={achievementInputConfig.max}
+                        step={achievementInputConfig.step}
                         value={achievementWeight}
                         onChange={(event) => setAchievementWeight(event.target.value)}
                         className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                        placeholder="Ejemplo: 180"
+                        placeholder={achievementInputConfig.placeholder}
                       />
                     </label>
                   </div>
@@ -2461,16 +2541,16 @@ export function ToolsShell({ user }: ToolsShellProps) {
                     </label>
 
                     <label className="text-sm text-brand-muted md:col-span-2">
-                      Peso objetivo (kg)
+                      Objetivo ({goalInputConfig.unit})
                       <input
                         type="number"
-                        min={1}
-                        max={800}
-                        step="0.5"
+                        min={goalInputConfig.min}
+                        max={goalInputConfig.max}
+                        step={goalInputConfig.step}
                         value={goalWeight}
                         onChange={(event) => setGoalWeight(event.target.value)}
                         className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                        placeholder="Ejemplo: 200"
+                        placeholder={goalInputConfig.placeholder}
                       />
                     </label>
                   </div>
@@ -2521,6 +2601,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                   title={`Evolucion - ${chartAchievementExercise}`}
                   marks={achievementMarksForChart}
                   goals={achievementGoalsForChart}
+                  unit={chartAchievementUnit}
                 />
               )}
 
@@ -2542,7 +2623,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                           className="rounded-lg border border-white/10 bg-black/25 px-3 py-2"
                         >
                           <p className="text-sm font-medium text-brand-text">
-                            {mark.exercise} · {mark.weightKg} kg
+                            {mark.exercise} · {formatAchievementValue(mark.weightKg, mark.exercise)}
                           </p>
                           <p className="text-xs text-brand-muted">{formatDateLabel(mark.date)}</p>
                         </div>
@@ -2568,7 +2649,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
                           className="rounded-lg border border-white/10 bg-black/25 px-3 py-2"
                         >
                           <p className="text-sm font-medium text-brand-text">
-                            {goal.exercise} · {goal.targetWeightKg} kg
+                            {goal.exercise} · {formatAchievementValue(goal.targetWeightKg, goal.exercise)}
                           </p>
                           <p className="text-xs text-brand-muted">
                             Objetivo para {formatDateLabel(goal.targetDate)}

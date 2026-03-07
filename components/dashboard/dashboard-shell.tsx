@@ -35,6 +35,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
+import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
 
 type SessionUser = {
   username: string;
@@ -109,12 +110,33 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
 
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DASHBOARD_CACHE_TTL_MS = 90 * 1000;
-const DASHBOARD_CACHE_VERSION = 1;
+const DASHBOARD_CACHE_VERSION = 2;
 
 type DashboardClientCache = {
   timestamp: number;
   revisions: RevisionEntry[];
   plans: NutritionPlan[];
+  stepsMarks?: AchievementMark[];
+};
+
+type AchievementMark = {
+  id: string;
+  timestamp: string;
+  exercise: string;
+  date: string;
+  weightKg: number;
+};
+
+type AchievementsResponse = {
+  marks?: AchievementMark[];
+  error?: string;
+};
+
+type WeeklyStepsAverage = {
+  weekStart: string;
+  weekEnd: string;
+  averageSteps: number;
+  daysCount: number;
 };
 
 type PeakMode = "none" | "titan" | "diablo";
@@ -300,7 +322,49 @@ function formatDateLabel(date: string): string {
   });
 }
 
-function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" }) {
+function parseIsoDateOnly(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function toIsoDateOnly(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function toLocalDateOnly(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getIsoWeekRange(value: string): { weekStart: string; weekEnd: string } | null {
+  const parsed = parseIsoDateOnly(value);
+  if (!parsed) return null;
+
+  const dayOfWeek = (parsed.getUTCDay() + 6) % 7;
+  const weekStart = new Date(parsed);
+  weekStart.setUTCDate(parsed.getUTCDate() - dayOfWeek);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
+
+  return {
+    weekStart: toIsoDateOnly(weekStart),
+    weekEnd: toIsoDateOnly(weekEnd)
+  };
+}
+
+function formatStepsValue(value: number): string {
+  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Math.round(value));
+}
+
+function formatWeekRangeLabel(weekStart: string, weekEnd: string): string {
+  return `${formatDateLabel(weekStart)} - ${formatDateLabel(weekEnd)}`;
+}
+
+function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" | "pasos" }) {
   if (points.length === 0) {
     return (
       <div className="rounded-xl border border-white/10 bg-black/25 p-6 text-sm text-brand-muted">
@@ -334,6 +398,10 @@ function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | 
     };
   });
   const labelStep = Math.max(1, Math.ceil(points.length / 6));
+  const formatYAxisValue = (value: number): string => {
+    if (unit === "pasos") return `${Math.round(value)} ${unit}`;
+    return `${value.toFixed(1)} ${unit}`;
+  };
 
   return (
     <div className="min-w-0 rounded-xl border border-white/10 bg-black/25 p-4">
@@ -356,7 +424,7 @@ function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | 
                 fill="rgba(255,255,255,0.65)"
                 fontSize={12}
               >
-                {tick.value.toFixed(1)} {unit}
+                {formatYAxisValue(tick.value)}
               </text>
             </g>
           ))}
@@ -517,6 +585,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const [selectedPlan, setSelectedPlan] = useState<NutritionPlan | null>(null);
   const [newPlanPopup, setNewPlanPopup] = useState<NewPlanPopupState | null>(null);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>("CINTURA");
+  const [stepsMarks, setStepsMarks] = useState<AchievementMark[]>([]);
   const [peakMode, setPeakMode] = useState<PeakMode>("none");
   const [peakActiveWindow, setPeakActiveWindow] = useState<ActivePeakWindow | null>(null);
   const [peakDailyForm, setPeakDailyForm] = useState<PeakModeFormState>(() =>
@@ -588,8 +657,87 @@ export function DashboardShell({ user }: DashboardShellProps) {
     selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
   const peakModeEnabled = peakMode !== "none";
 
+  const uniqueDailySteps = useMemo(() => {
+    const byDate = new Map<string, { date: string; value: number; timestamp: string }>();
+
+    for (const mark of stepsMarks) {
+      if (mark.exercise !== DAILY_STEPS_EXERCISE) continue;
+      if (!Number.isFinite(mark.weightKg) || mark.weightKg < 0) continue;
+      if (!parseIsoDateOnly(mark.date)) continue;
+
+      const existing = byDate.get(mark.date);
+      if (!existing || mark.timestamp.localeCompare(existing.timestamp) > 0) {
+        byDate.set(mark.date, {
+          date: mark.date,
+          value: Math.round(mark.weightKg),
+          timestamp: mark.timestamp
+        });
+      }
+    }
+
+    return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [stepsMarks]);
+
+  const weeklyStepsAverages = useMemo<WeeklyStepsAverage[]>(() => {
+    const byWeek = new Map<
+      string,
+      { weekStart: string; weekEnd: string; totalSteps: number; daysCount: number }
+    >();
+
+    for (const day of uniqueDailySteps) {
+      const week = getIsoWeekRange(day.date);
+      if (!week) continue;
+
+      const bucket = byWeek.get(week.weekStart) ?? {
+        weekStart: week.weekStart,
+        weekEnd: week.weekEnd,
+        totalSteps: 0,
+        daysCount: 0
+      };
+      bucket.totalSteps += day.value;
+      bucket.daysCount += 1;
+      byWeek.set(week.weekStart, bucket);
+    }
+
+    return Array.from(byWeek.values())
+      .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+      .map((item) => ({
+        weekStart: item.weekStart,
+        weekEnd: item.weekEnd,
+        averageSteps: item.totalSteps / Math.max(item.daysCount, 1),
+        daysCount: item.daysCount
+      }));
+  }, [uniqueDailySteps]);
+
+  const weeklyStepsChartSeries = useMemo<MetricPoint[]>(() => {
+    return weeklyStepsAverages.map((item) => ({
+      date: item.weekStart,
+      value: item.averageSteps
+    }));
+  }, [weeklyStepsAverages]);
+
+  const currentWeekSteps = useMemo(() => {
+    const currentWeek = getIsoWeekRange(toLocalDateOnly(new Date()));
+    if (!currentWeek) return null;
+
+    return (
+      weeklyStepsAverages.find((item) => item.weekStart === currentWeek.weekStart) ?? {
+        weekStart: currentWeek.weekStart,
+        weekEnd: currentWeek.weekEnd,
+        averageSteps: 0,
+        daysCount: 0
+      }
+    );
+  }, [weeklyStepsAverages]);
+
+  const latestWeekWithData = useMemo(() => {
+    if (!weeklyStepsAverages.length) return null;
+    return weeklyStepsAverages[weeklyStepsAverages.length - 1];
+  }, [weeklyStepsAverages]);
+
   useEffect(() => {
     router.prefetch("/tools");
+    router.prefetch("/community");
     router.prefetch("/revision/new");
   }, [router]);
 
@@ -678,8 +826,10 @@ export function DashboardShell({ user }: DashboardShellProps) {
         if (isFresh) {
           const cachedRevisions = Array.isArray(cached.revisions) ? cached.revisions : [];
           const cachedPlans = Array.isArray(cached.plans) ? cached.plans : [];
+          const cachedStepsMarks = Array.isArray(cached.stepsMarks) ? cached.stepsMarks : [];
           setEntries(cachedRevisions);
           setPlans(cachedPlans);
+          setStepsMarks(cachedStepsMarks);
           if (cachedRevisions.length) {
             setOpenDate(cachedRevisions[0].fecha);
           }
@@ -693,12 +843,17 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
     async function load() {
       try {
-        const [revisionsRes, plansRes] = await Promise.all([
+        const [revisionsRes, plansRes, achievementsRes] = await Promise.all([
           fetch("/api/revisions"),
-          fetch("/api/nutrition-plans")
+          fetch("/api/nutrition-plans"),
+          fetch("/api/tools/achievements", { cache: "no-store" })
         ]);
 
-        if (revisionsRes.status === 401 || plansRes.status === 401) {
+        if (
+          revisionsRes.status === 401 ||
+          plansRes.status === 401 ||
+          achievementsRes.status === 401
+        ) {
           window.location.href = "/login";
           return;
         }
@@ -708,12 +863,21 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
         const revisionsJson = (await revisionsRes.json()) as { revisions: RevisionEntry[] };
         const plansJson = (await plansRes.json()) as { plans: NutritionPlan[] };
+        let nextStepsMarks: AchievementMark[] = [];
+        if (achievementsRes.ok) {
+          const achievementsJson = (await achievementsRes.json()) as AchievementsResponse;
+          const marks = Array.isArray(achievementsJson.marks) ? achievementsJson.marks : [];
+          nextStepsMarks = marks.filter((mark) => mark.exercise === DAILY_STEPS_EXERCISE);
+        } else {
+          console.error("No se pudieron cargar los logros para pasos semanales.");
+        }
         const nextEntries = revisionsJson.revisions ?? [];
         const nextPlans = plansJson.plans ?? [];
 
         if (!active) return;
         setEntries(nextEntries);
         setPlans(nextPlans);
+        setStepsMarks(nextStepsMarks);
         if (nextEntries.length) {
           setOpenDate(nextEntries[0].fecha);
         }
@@ -722,7 +886,8 @@ export function DashboardShell({ user }: DashboardShellProps) {
           const payload: DashboardClientCache = {
             timestamp: Date.now(),
             revisions: nextEntries,
-            plans: nextPlans
+            plans: nextPlans,
+            stepsMarks: nextStepsMarks
           };
           window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
         } catch {
@@ -944,7 +1109,8 @@ export function DashboardShell({ user }: DashboardShellProps) {
         const payload: DashboardClientCache = {
           timestamp: Date.now(),
           revisions: nextEntries,
-          plans
+          plans,
+          stepsMarks
         };
         window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
       } catch {
@@ -976,6 +1142,11 @@ export function DashboardShell({ user }: DashboardShellProps) {
                 <Link href="/tools">
                   <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
                     Herramientas
+                  </BrandButton>
+                </Link>
+                <Link href="/community">
+                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                    Comunidad
                   </BrandButton>
                 </Link>
               </div>
@@ -1232,6 +1403,67 @@ export function DashboardShell({ user }: DashboardShellProps) {
             </div>
           </section>
         ) : null}
+
+        <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Actividad diaria</p>
+            <h2 className="mt-1 text-lg font-semibold text-brand-text">Media semanal de pasos</h2>
+          </div>
+
+          {weeklyStepsAverages.length === 0 ? (
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">
+              Aun no hay registros de pasos diarios en Logros. Guarda pasos en Herramientas para
+              ver la media semanal y su historico.
+            </div>
+          ) : (
+            <>
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                    Media esta semana
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold text-brand-text">
+                    {currentWeekSteps ? `${formatStepsValue(currentWeekSteps.averageSteps)} pasos/dia` : "Sin datos"}
+                  </p>
+                  {currentWeekSteps ? (
+                    <p className="mt-1 text-xs text-brand-muted">
+                      {formatWeekRangeLabel(currentWeekSteps.weekStart, currentWeekSteps.weekEnd)}
+                    </p>
+                  ) : null}
+                </article>
+
+                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                    Dias registrados (semana actual)
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold text-brand-text">
+                    {currentWeekSteps?.daysCount ?? 0}
+                  </p>
+                </article>
+
+                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                    Ultima semana con datos
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-brand-text">
+                    {latestWeekWithData
+                      ? formatWeekRangeLabel(latestWeekWithData.weekStart, latestWeekWithData.weekEnd)
+                      : "Sin datos"}
+                  </p>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    {latestWeekWithData
+                      ? `${formatStepsValue(latestWeekWithData.averageSteps)} pasos/dia`
+                      : ""}
+                  </p>
+                </article>
+              </div>
+
+              <div className="mt-4">
+                <EvolutionChart points={weeklyStepsChartSeries} unit="pasos" />
+              </div>
+            </>
+          )}
+        </section>
 
         <section className="space-y-4">
           <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">

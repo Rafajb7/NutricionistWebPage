@@ -655,6 +655,7 @@ export function AdminShell({ user }: AdminShellProps) {
               <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                 <Link href="/dashboard"><BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">Panel admin</BrandButton></Link>
                 <Link href="/tools"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Herramientas admin</BrandButton></Link>
+                <Link href="/community"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Comunidad</BrandButton></Link>
               </div>
               <div className="text-left sm:text-right">
                 <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Administrador</p>
