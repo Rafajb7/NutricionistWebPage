@@ -347,6 +347,11 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     Herramientas admin
                   </BrandButton>
                 </Link>
+                <Link href="/community">
+                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                    Comunidad
+                  </BrandButton>
+                </Link>
               </div>
               <div className="text-left sm:text-right">
                 <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Administrador</p>

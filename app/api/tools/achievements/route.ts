@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import { STRENGTH_EXERCISES } from "@/lib/achievements/strength-exercises";
+import {
+  isDailyStepsExercise,
+  STRENGTH_EXERCISES
+} from "@/lib/achievements/strength-exercises";
 import {
   appendStrengthMark,
   listStrengthGoalsForUser,
@@ -12,17 +15,19 @@ import { deleteMemoryCache, getOrSetMemoryCache } from "@/lib/cache/memory-cache
 import { logError, logInfo } from "@/lib/logger";
 
 const strengthExerciseSchema = z.enum(STRENGTH_EXERCISES);
+const MAX_STRENGTH_VALUE = 800;
+const MAX_DAILY_STEPS_VALUE = 100_000;
 
 const createMarkSchema = z.object({
   exercise: strengthExerciseSchema,
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  weightKg: z.coerce.number().min(1).max(800)
+  weightKg: z.coerce.number().min(0).max(MAX_DAILY_STEPS_VALUE)
 });
 
 const upsertGoalSchema = z.object({
   exercise: strengthExerciseSchema,
   targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  targetWeightKg: z.coerce.number().min(1).max(800)
+  targetWeightKg: z.coerce.number().min(0).max(MAX_DAILY_STEPS_VALUE)
 });
 
 const ACHIEVEMENTS_CACHE_TTL_MS = 45_000;
@@ -73,6 +78,25 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
+    const isDailySteps = isDailyStepsExercise(parsed.data.exercise);
+    if (isDailySteps && !Number.isInteger(parsed.data.weightKg)) {
+      return NextResponse.json(
+        { error: "Los pasos diarios deben ser un numero entero." },
+        { status: 400 }
+      );
+    }
+    if (isDailySteps && parsed.data.weightKg < 0) {
+      return NextResponse.json(
+        { error: "Los pasos diarios deben estar entre 0 y 100000." },
+        { status: 400 }
+      );
+    }
+    if (!isDailySteps && (parsed.data.weightKg < 1 || parsed.data.weightKg > MAX_STRENGTH_VALUE)) {
+      return NextResponse.json(
+        { error: "Las marcas de fuerza deben estar entre 1 y 800 kg." },
+        { status: 400 }
+      );
+    }
 
     await appendStrengthMark({
       name: auth.session.name,
@@ -87,7 +111,8 @@ export async function POST(req: NextRequest) {
       username: auth.session.username,
       exercise: parsed.data.exercise,
       date: parsed.data.date,
-      weightKg: parsed.data.weightKg
+      value: parsed.data.weightKg,
+      unit: isDailySteps ? "steps" : "kg"
     });
 
     return NextResponse.json({ ok: true });
@@ -110,6 +135,28 @@ export async function PUT(req: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
+    const isDailySteps = isDailyStepsExercise(parsed.data.exercise);
+    if (isDailySteps && !Number.isInteger(parsed.data.targetWeightKg)) {
+      return NextResponse.json(
+        { error: "El objetivo de pasos debe ser un numero entero." },
+        { status: 400 }
+      );
+    }
+    if (isDailySteps && parsed.data.targetWeightKg < 0) {
+      return NextResponse.json(
+        { error: "El objetivo de pasos debe estar entre 0 y 100000." },
+        { status: 400 }
+      );
+    }
+    if (
+      !isDailySteps &&
+      (parsed.data.targetWeightKg < 1 || parsed.data.targetWeightKg > MAX_STRENGTH_VALUE)
+    ) {
+      return NextResponse.json(
+        { error: "Los objetivos de fuerza deben estar entre 1 y 800 kg." },
+        { status: 400 }
+      );
+    }
 
     await upsertStrengthGoal({
       name: auth.session.name,
@@ -124,7 +171,8 @@ export async function PUT(req: NextRequest) {
       username: auth.session.username,
       exercise: parsed.data.exercise,
       targetDate: parsed.data.targetDate,
-      targetWeightKg: parsed.data.targetWeightKg
+      value: parsed.data.targetWeightKg,
+      unit: isDailySteps ? "steps" : "kg"
     });
 
     return NextResponse.json({ ok: true });

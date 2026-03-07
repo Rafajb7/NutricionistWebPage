@@ -59,6 +59,15 @@ GOOGLE_ROUTINE_EXERCISES_SPREADSHEET_ID=
 GOOGLE_ROUTINE_LOGS_SPREADSHEET_ID=
 GOOGLE_ROUTINE_EXERCISES_WORKSHEET_NAME=Ejercicios
 GOOGLE_ROUTINE_LOGS_WORKSHEET_NAME=Registro
+GOOGLE_PEAK_MODE_SPREADSHEET_ID=
+GOOGLE_PEAK_MODE_SHEET_NAME=ModoPico
+GOOGLE_PEAK_MODE_WORKSHEET_NAME=Registro diario
+GOOGLE_COMMUNITY_SPREADSHEET_ID=
+GOOGLE_COMMUNITY_SHEET_NAME=Comunidad
+GOOGLE_COMMUNITY_POSTS_WORKSHEET_NAME=Publicaciones
+GOOGLE_COMMUNITY_COMMENTS_WORKSHEET_NAME=Comentarios
+GOOGLE_COMMUNITY_AUDIT_WORKSHEET_NAME=Auditoria
+GOOGLE_COMMUNITY_DRIVE_FOLDER_ID=
 GOOGLE_ACHIEVEMENTS_SPREADSHEET_ID=
 GOOGLE_ACHIEVEMENTS_SHEET_NAME=Logros
 GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME=Marcas
@@ -94,11 +103,13 @@ MAX_UPLOAD_MB=8
    - Spreadsheet `Preguntas`
    - Spreadsheet `Revisiones`
    - Spreadsheet `Rutinas` (solo si usas modo por nombre)
-   - Spreadsheet de catalogo de ejercicios (si usas `GOOGLE_ROUTINE_EXERCISES_SPREADSHEET_ID`)
-   - Spreadsheet de registros de rutina (si usas `GOOGLE_ROUTINE_LOGS_SPREADSHEET_ID`)
-   - Carpeta de Drive con id `1G-QgvfDD-dqMPzjuaA71ii7t6aWn_prX`
-   - Carpeta de Drive de planes nutricionales con id `1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf`
-   - Google Calendar de competiciones (`GOOGLE_COMPETITIONS_CALENDAR_ID`) compartido con la service account como editor
+- Spreadsheet de catalogo de ejercicios (si usas `GOOGLE_ROUTINE_EXERCISES_SPREADSHEET_ID`)
+- Spreadsheet de registros de rutina (si usas `GOOGLE_ROUTINE_LOGS_SPREADSHEET_ID`)
+- Spreadsheet de comunidad (si usas `GOOGLE_COMMUNITY_SPREADSHEET_ID`)
+- Carpeta de Drive con id `1G-QgvfDD-dqMPzjuaA71ii7t6aWn_prX`
+- Carpeta de Drive de planes nutricionales con id `1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf`
+- Carpeta de adjuntos de comunidad (si usas `GOOGLE_COMMUNITY_DRIVE_FOLDER_ID`)
+- Google Calendar de competiciones (`GOOGLE_COMPETITIONS_CALENDAR_ID`) compartido con la service account como editor
 5. Asigna permisos de editor.
 
 ## Ejecutar en local
@@ -113,6 +124,7 @@ App:
 - Login: `http://localhost:3000/login`
 - Dashboard: `http://localhost:3000/dashboard`
 - Herramientas: `http://localhost:3000/tools`
+- Comunidad: `http://localhost:3000/community`
 
 ## Flujo funcional
 
