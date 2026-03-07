@@ -1,6 +1,10 @@
 import { calendar_v3, google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
+import {
+  addDaysToDateString,
+  buildCompetitionCalendarPeriods
+} from "@/lib/competition-mode";
 
 export type CompetitionCalendarEvent = {
   id: string;
@@ -52,13 +56,26 @@ function buildCompetitionDescription(input: {
   return lines.join("\n");
 }
 
-function addDays(date: string, days: number): string {
-  const parsed = new Date(`${date}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error("Invalid competition date.");
-  }
-  parsed.setDate(parsed.getDate() + days);
-  return parsed.toISOString().slice(0, 10);
+const COMPETITION_EVENT_KIND = "competition";
+const COMPETITION_WEEK_EVENT_KIND = "competition_week";
+const PRECOMPETITION_WEEKS_EVENT_KIND = "precompetition_weeks";
+
+function getEventKind(event: calendar_v3.Schema$Event): string {
+  return event.extendedProperties?.private?.matEventKind?.trim().toLowerCase() ?? "";
+}
+
+function buildCompetitionPhaseDescription(input: {
+  phaseLabel: "Competition Week" | "Precompetition Weeks";
+  competitionName: string;
+  competitionDate: string;
+  username: string;
+  name: string;
+}): string {
+  return [
+    `${input.phaseLabel} - ${input.competitionName.trim()}`,
+    `Competicion: ${input.competitionDate}`,
+    `Usuario: ${input.name.trim()} (${toDisplayUsername(input.username)})`
+  ].join("\n");
 }
 
 function extractEventDate(input: { date?: string | null; dateTime?: string | null }): string {
@@ -142,31 +159,107 @@ export async function createCompetitionEvent(input: {
   const calendar = await getCalendarClient();
   const calendarId = getCalendarId();
   const normalizedUsername = normalizeUsername(input.username);
-  const endDate = addDays(input.date, 1);
+  const competitionEndDate = addDaysToDateString(input.date, 1);
+  const periods = buildCompetitionCalendarPeriods(input.date);
+  const createdEventIds: string[] = [];
 
-  const created = await calendar.events.insert({
-    calendarId,
-    requestBody: {
-      summary: input.competitionName.trim(),
-      location: input.location.trim(),
-      description: buildCompetitionDescription({
-        username: input.username,
-        name: input.name,
-        weighInTime: input.weighInTime,
-        description: input.description
-      }),
-      start: { date: input.date },
-      end: { date: endDate },
-      extendedProperties: {
-        private: {
-          matUsername: normalizedUsername,
-          matDisplayName: input.name.trim()
+  let createdCompetitionEvent: calendar_v3.Schema$Event | null = null;
+
+  try {
+    const created = await calendar.events.insert({
+      calendarId,
+      requestBody: {
+        summary: input.competitionName.trim(),
+        location: input.location.trim(),
+        description: buildCompetitionDescription({
+          username: input.username,
+          name: input.name,
+          weighInTime: input.weighInTime,
+          description: input.description
+        }),
+        start: { date: input.date },
+        end: { date: competitionEndDate },
+        extendedProperties: {
+          private: {
+            matUsername: normalizedUsername,
+            matDisplayName: input.name.trim(),
+            matEventKind: COMPETITION_EVENT_KIND
+          }
         }
       }
-    }
-  });
+    });
 
-  const mapped = mapEvent(created.data);
+    createdCompetitionEvent = created.data;
+    const competitionEventId = created.data.id?.trim();
+    if (competitionEventId) createdEventIds.push(competitionEventId);
+
+    const sharedPrivateProps = {
+      matUsername: normalizedUsername,
+      matDisplayName: input.name.trim(),
+      matCompetitionDate: input.date,
+      matCompetitionName: input.competitionName.trim(),
+      matCompetitionEventId: competitionEventId ?? ""
+    };
+
+    const phaseEventRequests: calendar_v3.Schema$Event[] = [
+      {
+        summary: "Precompetition Weeks",
+        location: input.location.trim(),
+        description: buildCompetitionPhaseDescription({
+          phaseLabel: "Precompetition Weeks",
+          competitionName: input.competitionName,
+          competitionDate: input.date,
+          username: input.username,
+          name: input.name
+        }),
+        start: { date: periods.precompetitionWeeks.startDate },
+        end: { date: periods.precompetitionWeeks.endDateExclusive },
+        extendedProperties: {
+          private: {
+            ...sharedPrivateProps,
+            matEventKind: PRECOMPETITION_WEEKS_EVENT_KIND
+          }
+        }
+      },
+      {
+        summary: "Competition Week",
+        location: input.location.trim(),
+        description: buildCompetitionPhaseDescription({
+          phaseLabel: "Competition Week",
+          competitionName: input.competitionName,
+          competitionDate: input.date,
+          username: input.username,
+          name: input.name
+        }),
+        start: { date: periods.competitionWeek.startDate },
+        end: { date: periods.competitionWeek.endDateExclusive },
+        extendedProperties: {
+          private: {
+            ...sharedPrivateProps,
+            matEventKind: COMPETITION_WEEK_EVENT_KIND
+          }
+        }
+      }
+    ];
+
+    for (const requestBody of phaseEventRequests) {
+      const phaseCreated = await calendar.events.insert({
+        calendarId,
+        requestBody
+      });
+      const phaseId = phaseCreated.data.id?.trim();
+      if (phaseId) createdEventIds.push(phaseId);
+    }
+  } catch (error) {
+    await Promise.all(
+      createdEventIds.map((eventId) =>
+        calendar.events.delete({ calendarId, eventId }).catch(() => null)
+      )
+    );
+    throw error;
+  }
+
+  const mapped = createdCompetitionEvent ? mapEvent(createdCompetitionEvent) : null;
   if (!mapped) {
     throw new Error("Could not parse created competition event.");
   }
@@ -200,6 +293,10 @@ export async function listCompetitionEventsForUser(
   const res = await calendar.events.list(request);
 
   return (res.data.items ?? [])
+    .filter((event) => {
+      const kind = getEventKind(event);
+      return !kind || kind === COMPETITION_EVENT_KIND;
+    })
     .map((event) => mapEvent(event))
     .filter((event): event is CompetitionCalendarEvent => Boolean(event))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -291,7 +388,7 @@ export async function createCalendarEventForAdmin(input: {
     };
   } else {
     requestBody.start = { date: cleanDate };
-    requestBody.end = { date: addDays(cleanDate, 1) };
+    requestBody.end = { date: addDaysToDateString(cleanDate, 1) };
   }
 
   if (cleanUsername) {

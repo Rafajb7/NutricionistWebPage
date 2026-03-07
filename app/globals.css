@@ -28,6 +28,17 @@
   --brand-shadow-glow: rgba(255, 77, 77, 0.6);
 }
 
+:root[data-brand-theme="titan"] {
+  --brand-accent: #b06dff;
+  --brand-accent-2: #6d28d9;
+  --brand-glow-1: rgba(176, 109, 255, 0.2);
+  --brand-glow-2: rgba(109, 40, 217, 0.18);
+  --brand-gradient-1: rgba(176, 109, 255, 0.24);
+  --brand-gradient-2: rgba(109, 40, 217, 0.2);
+  --brand-shadow-ring: rgba(176, 109, 255, 0.22);
+  --brand-shadow-glow: rgba(176, 109, 255, 0.6);
+}
+
 * {
   box-sizing: border-box;
 }
