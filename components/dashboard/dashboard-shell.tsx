@@ -14,6 +14,7 @@ import {
   BellRing,
   X,
   Trash2,
+  ImagePlus,
   Scale,
   Footprints,
   Droplets,
@@ -111,6 +112,8 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DASHBOARD_CACHE_TTL_MS = 90 * 1000;
 const DASHBOARD_CACHE_VERSION = 2;
+const REVISION_PHOTO_MAX_FILES = 4;
+const REVISION_PHOTO_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 type DashboardClientCache = {
   timestamp: number;
@@ -581,6 +584,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const [date, setDate] = useState("");
   const [openDate, setOpenDate] = useState<string | null>(null);
   const [deletingDate, setDeletingDate] = useState<string | null>(null);
+  const [uploadingRevisionDate, setUploadingRevisionDate] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<NutritionPlan | null>(null);
   const [newPlanPopup, setNewPlanPopup] = useState<NewPlanPopupState | null>(null);
@@ -1072,6 +1076,88 @@ export function DashboardShell({ user }: DashboardShellProps) {
       return;
     }
     window.location.href = "/login";
+  }
+
+  async function refreshRevisionEntries() {
+    const res = await fetch("/api/revisions", { cache: "no-store" });
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+
+    const json = (await res.json()) as { revisions?: RevisionEntry[]; error?: string };
+    if (!res.ok) {
+      throw new Error(json.error ?? "No se pudieron recargar las revisiones.");
+    }
+
+    const nextEntries = Array.isArray(json.revisions) ? json.revisions : [];
+    setEntries(nextEntries);
+    setOpenDate((currentOpen) => {
+      if (currentOpen && nextEntries.some((item) => item.fecha === currentOpen)) {
+        return currentOpen;
+      }
+      return nextEntries[0]?.fecha ?? null;
+    });
+
+    try {
+      const payload: DashboardClientCache = {
+        timestamp: Date.now(),
+        revisions: nextEntries,
+        plans,
+        stepsMarks
+      };
+      window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
+    } catch {
+      // ignore local storage errors
+    }
+  }
+
+  async function addPhotosToRevision(fecha: string, selectedFiles: File[]) {
+    if (!selectedFiles.length) return;
+    if (selectedFiles.length > REVISION_PHOTO_MAX_FILES) {
+      toast.error(`Puedes subir como máximo ${REVISION_PHOTO_MAX_FILES} fotos cada vez.`);
+      return;
+    }
+
+    const invalidFile = selectedFiles.find((file) => !REVISION_PHOTO_ALLOWED_MIME_TYPES.has(file.type));
+    if (invalidFile) {
+      toast.error(`Formato no permitido: ${invalidFile.name}`);
+      return;
+    }
+
+    const form = new FormData();
+    selectedFiles.forEach((file) => form.append("photos", file));
+    form.append("revisionDate", fecha);
+
+    setUploadingRevisionDate(fecha);
+    try {
+      const res = await fetch("/api/photos/upload", {
+        method: "POST",
+        body: form
+      });
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudieron subir las fotos.");
+        return;
+      }
+
+      await refreshRevisionEntries();
+      toast.success(
+        selectedFiles.length === 1
+          ? "Foto añadida a la revisión."
+          : "Fotos añadidas a la revisión."
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error("Error al añadir fotos a la revisión.");
+    } finally {
+      setUploadingRevisionDate(null);
+    }
   }
 
   async function deleteRevisionDate(fecha: string) {
@@ -1637,11 +1723,33 @@ export function DashboardShell({ user }: DashboardShellProps) {
                           className="border-t border-white/10"
                         >
                           <div className="space-y-3 p-4">
-                            <div className="flex justify-end">
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <label
+                                className={
+                                  uploadingRevisionDate === fecha
+                                    ? "inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text opacity-65"
+                                    : "inline-flex cursor-pointer items-center gap-1 rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text transition hover:bg-brand-accent/20"
+                                }
+                              >
+                                <ImagePlus className="h-3.5 w-3.5" />
+                                {uploadingRevisionDate === fecha ? "Subiendo..." : "Añadir fotos"}
+                                <input
+                                  type="file"
+                                  accept="image/jpeg,image/png,image/webp"
+                                  multiple
+                                  className="hidden"
+                                  disabled={uploadingRevisionDate === fecha}
+                                  onChange={(event) => {
+                                    const selectedFiles = Array.from(event.currentTarget.files ?? []);
+                                    event.currentTarget.value = "";
+                                    void addPhotosToRevision(fecha, selectedFiles);
+                                  }}
+                                />
+                              </label>
                               <button
                                 type="button"
                                 onClick={() => deleteRevisionDate(fecha)}
-                                disabled={deletingDate === fecha}
+                                disabled={deletingDate === fecha || uploadingRevisionDate === fecha}
                                 className="inline-flex items-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
