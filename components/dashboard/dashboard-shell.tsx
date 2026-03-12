@@ -769,20 +769,24 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
         if (json.todayLog) {
           setPeakDailyForm(toPeakModeFormFromLog(json.todayLog));
-        } else {
+        } else if (!silent) {
           setPeakDailyForm(createEmptyPeakModeForm());
         }
 
         const modeEnabled = json.mode === "titan" || json.mode === "diablo";
-        setShowPeakReminder(modeEnabled && !json.todaySubmitted);
+        if (!silent) {
+          setShowPeakReminder(modeEnabled && !json.todaySubmitted);
+        }
       } catch (error) {
         console.error(error);
-        if (!silent) toast.error("Error al cargar el formulario diario.");
-        setPeakMode("none");
-        setPeakActiveWindow(null);
-        setPeakTodaySubmitted(false);
-        setShowPeakReminder(false);
-        setPeakWarning("");
+        if (!silent) {
+          toast.error("Error al cargar el formulario diario.");
+          setPeakMode("none");
+          setPeakActiveWindow(null);
+          setPeakTodaySubmitted(false);
+          setShowPeakReminder(false);
+          setPeakWarning("");
+        }
       } finally {
         if (!silent) setPeakLoading(false);
       }
