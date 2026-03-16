@@ -4,6 +4,8 @@ import { requireSession } from "@/lib/auth/require-session";
 import { appendRevisionRows } from "@/lib/google/sheets";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { buildRevisionRows } from "@/lib/revisions";
+import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
+import { appendStrengthMark } from "@/lib/google/achievements";
 import { logError, logInfo } from "@/lib/logger";
 
 const submitSchema = z.object({
@@ -17,6 +19,7 @@ const submitSchema = z.object({
     )
     .min(1)
 });
+const STEPS_AVERAGE_QUESTION = "numero de pasos";
 
 function getTodayDateString(): string {
   const now = new Date();
@@ -24,6 +27,34 @@ function getTodayDateString(): string {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function normalizeQuestion(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function parseNumericValue(value: string): number | null {
+  const match = value.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
+function getStepsAverageFromAnswers(
+  answers: Array<{ question: string; answer: string }>
+): number | null {
+  const stepsAnswer = answers.find((item) =>
+    normalizeQuestion(item.question).startsWith(STEPS_AVERAGE_QUESTION)
+  );
+  if (!stepsAnswer) return null;
+  const value = parseNumericValue(stepsAnswer.answer);
+  if (value === null || value < 0) return null;
+  return value;
 }
 
 export async function POST(req: NextRequest) {
@@ -38,6 +69,8 @@ export async function POST(req: NextRequest) {
     }
 
     const fecha = parsed.data.revisionDate ?? getTodayDateString();
+    const normalizedUsername = auth.session.username.trim().toLowerCase();
+    const stepsAverage = getStepsAverageFromAnswers(parsed.data.answers);
     const rows = buildRevisionRows({
       nombre: auth.session.name,
       usuario: auth.session.username,
@@ -49,10 +82,32 @@ export async function POST(req: NextRequest) {
     });
 
     await appendRevisionRows(rows);
-    deleteMemoryCache(`revisions:${auth.session.username.trim().toLowerCase()}`);
+    deleteMemoryCache(`revisions:${normalizedUsername}`);
+
+    if (stepsAverage !== null) {
+      try {
+        await appendStrengthMark({
+          name: auth.session.name,
+          username: auth.session.username,
+          exercise: DAILY_STEPS_EXERCISE,
+          date: fecha,
+          weightKg: Math.round(stepsAverage)
+        });
+        deleteMemoryCache(`strength-achievements:${normalizedUsername}`);
+      } catch (error) {
+        logError("Failed to store weekly steps average from revision", {
+          username: auth.session.username,
+          date: fecha,
+          stepsAverage,
+          error
+        });
+      }
+    }
+
     logInfo("Revision answers stored", {
       username: auth.session.username,
-      count: rows.length
+      count: rows.length,
+      stepsStored: stepsAverage !== null
     });
 
     return NextResponse.json({ ok: true });
