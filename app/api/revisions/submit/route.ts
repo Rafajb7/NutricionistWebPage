@@ -8,6 +8,8 @@ import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
 import { appendStrengthMark } from "@/lib/google/achievements";
 import { logError, logInfo } from "@/lib/logger";
 
+const MAX_DAILY_STEPS_VALUE = 100_000;
+
 const submitSchema = z.object({
   revisionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   answers: z
@@ -17,7 +19,16 @@ const submitSchema = z.object({
         answer: z.string().min(1).max(3000)
       })
     )
-    .min(1)
+    .min(1),
+  stepsDailyEntries: z
+    .array(
+      z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        steps: z.number().int().min(0).max(MAX_DAILY_STEPS_VALUE)
+      })
+    )
+    .length(7)
+    .optional()
 });
 const STEPS_AVERAGE_QUESTION = "numero de pasos";
 
@@ -70,6 +81,13 @@ export async function POST(req: NextRequest) {
 
     const fecha = parsed.data.revisionDate ?? getTodayDateString();
     const normalizedUsername = auth.session.username.trim().toLowerCase();
+    const stepsDailyEntries = parsed.data.stepsDailyEntries ?? [];
+    if (stepsDailyEntries.length) {
+      const uniqueDates = new Set(stepsDailyEntries.map((entry) => entry.date));
+      if (uniqueDates.size !== stepsDailyEntries.length) {
+        return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+      }
+    }
     const stepsAverage = getStepsAverageFromAnswers(parsed.data.answers);
     const rows = buildRevisionRows({
       nombre: auth.session.name,
@@ -84,7 +102,30 @@ export async function POST(req: NextRequest) {
     await appendRevisionRows(rows);
     deleteMemoryCache(`revisions:${normalizedUsername}`);
 
-    if (stepsAverage !== null) {
+    let stepsStoredCount = 0;
+
+    if (stepsDailyEntries.length) {
+      try {
+        for (const entry of stepsDailyEntries) {
+          await appendStrengthMark({
+            name: auth.session.name,
+            username: auth.session.username,
+            exercise: DAILY_STEPS_EXERCISE,
+            date: entry.date,
+            weightKg: entry.steps
+          });
+        }
+        stepsStoredCount = stepsDailyEntries.length;
+        deleteMemoryCache(`strength-achievements:${normalizedUsername}`);
+      } catch (error) {
+        logError("Failed to store weekly daily-steps entries from revision", {
+          username: auth.session.username,
+          date: fecha,
+          entriesCount: stepsDailyEntries.length,
+          error
+        });
+      }
+    } else if (stepsAverage !== null) {
       try {
         await appendStrengthMark({
           name: auth.session.name,
@@ -93,6 +134,7 @@ export async function POST(req: NextRequest) {
           date: fecha,
           weightKg: Math.round(stepsAverage)
         });
+        stepsStoredCount = 1;
         deleteMemoryCache(`strength-achievements:${normalizedUsername}`);
       } catch (error) {
         logError("Failed to store weekly steps average from revision", {
@@ -107,7 +149,8 @@ export async function POST(req: NextRequest) {
     logInfo("Revision answers stored", {
       username: auth.session.username,
       count: rows.length,
-      stepsStored: stepsAverage !== null
+      stepsStored: stepsStoredCount > 0,
+      stepsStoredCount
     });
 
     return NextResponse.json({ ok: true });

@@ -12,18 +12,72 @@ import { MotionPage } from "@/components/ui/motion-page";
 const photoLabels = ["Frente", "Perfil izquierdo", "Perfil derecho", "Espalda"];
 const WEIGHT_AVERAGE_QUESTION = "PESO MEDIO SEMANAL (KG)";
 const STEPS_AVERAGE_QUESTION = "NUMERO DE PASOS";
-const WEEK_DAYS = ["Dia 1", "Dia 2", "Dia 3", "Dia 4", "Dia 5", "Dia 6", "Dia 7"];
+const PREVIOUS_WEEK_DAY_NAMES = [
+  "Lunes",
+  "Martes",
+  "Miercoles",
+  "Jueves",
+  "Viernes",
+  "Sabado",
+  "Domingo"
+];
 
 type WizardStage = "questions" | "photos" | "done";
+type WeeklyStepEntry = { date: string; steps: number };
+
+function normalizeQuestionKey(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function toLocalIsoDate(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatShortDate(value: Date): string {
+  const day = String(value.getDate()).padStart(2, "0");
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  return `${day}/${month}`;
+}
+
+function getPreviousWeekDates(referenceDate = new Date()): Array<{ date: string; label: string }> {
+  const localToday = new Date(
+    referenceDate.getFullYear(),
+    referenceDate.getMonth(),
+    referenceDate.getDate()
+  );
+  const daysSinceMonday = (localToday.getDay() + 6) % 7;
+  const currentWeekMonday = new Date(localToday);
+  currentWeekMonday.setDate(localToday.getDate() - daysSinceMonday);
+
+  const previousWeekMonday = new Date(currentWeekMonday);
+  previousWeekMonday.setDate(currentWeekMonday.getDate() - 7);
+
+  return PREVIOUS_WEEK_DAY_NAMES.map((dayName, index) => {
+    const day = new Date(previousWeekMonday);
+    day.setDate(previousWeekMonday.getDate() + index);
+    return {
+      date: toLocalIsoDate(day),
+      label: `${dayName} ${formatShortDate(day)}`
+    };
+  });
+}
 
 export function RevisionWizard() {
+  const previousWeekDates = useMemo(() => getPreviousWeekDates(), []);
   const [questions, setQuestions] = useState<string[]>([]);
   const [loadingQuestions, setLoadingQuestions] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const [weightEntries, setWeightEntries] = useState<string[]>([""]);
   const [stepsEntries, setStepsEntries] = useState<string[]>(() =>
-    WEEK_DAYS.map(() => "")
+    Array.from({ length: 7 }, () => "")
   );
   const [stage, setStage] = useState<WizardStage>("questions");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -46,14 +100,14 @@ export function RevisionWizard() {
         if (!active) return;
         const loadedFromSheet = json.questions ?? [];
         const reservedQuestions = new Set([
-          WEIGHT_AVERAGE_QUESTION.trim().toLowerCase(),
-          STEPS_AVERAGE_QUESTION.trim().toLowerCase()
+          normalizeQuestionKey(WEIGHT_AVERAGE_QUESTION),
+          normalizeQuestionKey(STEPS_AVERAGE_QUESTION)
         ]);
         const loaded = [
           WEIGHT_AVERAGE_QUESTION,
           STEPS_AVERAGE_QUESTION,
           ...loadedFromSheet.filter(
-            (question) => !reservedQuestions.has(question.trim().toLowerCase())
+            (question) => !reservedQuestions.has(normalizeQuestionKey(question))
           )
         ];
         setQuestions(loaded);
@@ -144,21 +198,29 @@ export function RevisionWizard() {
     return value;
   }
 
-  function getValidStepValues(): number[] {
-    return stepsEntries
-      .map((value) => parseStepsValue(value))
-      .filter((value): value is number => value !== null);
+  function getNormalizedStepEntries(): WeeklyStepEntry[] | null {
+    if (stepsEntries.length !== previousWeekDates.length) return null;
+
+    const normalized = stepsEntries.map((value, index) => {
+      const parsed = parseStepsValue(value);
+      const date = previousWeekDates[index]?.date ?? "";
+      if (parsed === null || !date) return null;
+      return { date, steps: parsed };
+    });
+
+    if (normalized.some((item) => item === null)) return null;
+    return normalized.filter((item): item is WeeklyStepEntry => item !== null);
   }
 
   function getStepsAverage(): number | null {
-    const values = getValidStepValues();
-    if (values.length !== WEEK_DAYS.length) return null;
-    const sum = values.reduce((acc, value) => acc + value, 0);
-    return sum / WEEK_DAYS.length;
+    const entries = getNormalizedStepEntries();
+    if (!entries?.length) return null;
+    const sum = entries.reduce((acc, entry) => acc + entry.steps, 0);
+    return sum / entries.length;
   }
 
   function validateStepsEntries(): boolean {
-    if (stepsEntries.length !== WEEK_DAYS.length) {
+    if (stepsEntries.length !== previousWeekDates.length) {
       toast.error("Debes registrar los pasos de los 7 dias.");
       return false;
     }
@@ -167,8 +229,8 @@ export function RevisionWizard() {
       toast.error("Completa los pasos diarios antes de continuar.");
       return false;
     }
-    const values = getValidStepValues();
-    if (values.length !== WEEK_DAYS.length) {
+    const normalizedEntries = getNormalizedStepEntries();
+    if (!normalizedEntries || normalizedEntries.length !== previousWeekDates.length) {
       toast.error("Introduce pasos validos entre 0 y 100000.");
       return false;
     }
@@ -211,6 +273,11 @@ export function RevisionWizard() {
     if (!validateStepsEntries()) return;
     const normalizedAnswers = validateAllAnswers();
     if (!normalizedAnswers) return;
+    const normalizedStepEntries = getNormalizedStepEntries();
+    if (!normalizedStepEntries) {
+      toast.error("No se pudieron normalizar los pasos diarios de la semana pasada.");
+      return;
+    }
 
     if (!options?.skipPhotos && selectedFiles.length > 4) {
       toast.error("Máximo 4 fotos.");
@@ -225,7 +292,8 @@ export function RevisionWizard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           revisionDate,
-          answers: normalizedAnswers
+          answers: normalizedAnswers,
+          stepsDailyEntries: normalizedStepEntries
         })
       });
       if (answersRes.status === 401) {
@@ -383,20 +451,22 @@ export function RevisionWizard() {
                 ) : isStepsQuestion ? (
                   <div className="mt-4 space-y-3">
                     <p className="text-sm text-brand-muted">
-                      Registra los pasos de cada dia de la semana. La media se calcula automaticamente entre 7.
+                      Registra los pasos de lunes a domingo de la semana pasada. La media se calcula automaticamente entre 7.
                     </p>
                     <div className="overflow-hidden rounded-xl border border-white/10">
                       <table className="w-full text-sm">
                         <thead className="bg-black/30 text-xs uppercase tracking-[0.16em] text-brand-muted">
                           <tr>
-                            <th className="px-3 py-2 text-left">Dia</th>
+                            <th className="px-3 py-2 text-left">Fecha</th>
                             <th className="px-3 py-2 text-left">Pasos</th>
                           </tr>
                         </thead>
                         <tbody>
                           {stepsEntries.map((value, index) => (
-                            <tr key={WEEK_DAYS[index]} className="border-t border-white/10">
-                              <td className="px-3 py-2 text-brand-text">{WEEK_DAYS[index]}</td>
+                            <tr key={previousWeekDates[index]?.date ?? String(index)} className="border-t border-white/10">
+                              <td className="px-3 py-2 text-brand-text">
+                                {previousWeekDates[index]?.label ?? "-"}
+                              </td>
                               <td className="px-3 py-2">
                                 <input
                                   type="number"
