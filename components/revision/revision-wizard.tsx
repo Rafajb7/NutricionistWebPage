@@ -11,6 +11,8 @@ import { MotionPage } from "@/components/ui/motion-page";
 
 const photoLabels = ["Frente", "Perfil izquierdo", "Perfil derecho", "Espalda"];
 const WEIGHT_AVERAGE_QUESTION = "PESO MEDIO SEMANAL (KG)";
+const STEPS_AVERAGE_QUESTION = "NUMERO DE PASOS";
+const WEEK_DAYS = ["Dia 1", "Dia 2", "Dia 3", "Dia 4", "Dia 5", "Dia 6", "Dia 7"];
 
 type WizardStage = "questions" | "photos" | "done";
 
@@ -20,11 +22,15 @@ export function RevisionWizard() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const [weightEntries, setWeightEntries] = useState<string[]>([""]);
+  const [stepsEntries, setStepsEntries] = useState<string[]>(() =>
+    WEEK_DAYS.map(() => "")
+  );
   const [stage, setStage] = useState<WizardStage>("questions");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [finalizingRevision, setFinalizingRevision] = useState(false);
 
   const isWeightQuestion = questions[currentIndex] === WEIGHT_AVERAGE_QUESTION;
+  const isStepsQuestion = questions[currentIndex] === STEPS_AVERAGE_QUESTION;
 
   useEffect(() => {
     let active = true;
@@ -39,7 +45,17 @@ export function RevisionWizard() {
         const json = (await res.json()) as { questions: string[] };
         if (!active) return;
         const loadedFromSheet = json.questions ?? [];
-        const loaded = [WEIGHT_AVERAGE_QUESTION, ...loadedFromSheet];
+        const reservedQuestions = new Set([
+          WEIGHT_AVERAGE_QUESTION.trim().toLowerCase(),
+          STEPS_AVERAGE_QUESTION.trim().toLowerCase()
+        ]);
+        const loaded = [
+          WEIGHT_AVERAGE_QUESTION,
+          STEPS_AVERAGE_QUESTION,
+          ...loadedFromSheet.filter(
+            (question) => !reservedQuestions.has(question.trim().toLowerCase())
+          )
+        ];
         setQuestions(loaded);
         setAnswers(new Array(loaded.length).fill(""));
       } catch (error) {
@@ -119,14 +135,57 @@ export function RevisionWizard() {
     return true;
   }
 
+  function parseStepsValue(raw: string): number | null {
+    const normalized = raw.replace(",", ".").trim();
+    if (!normalized) return null;
+    const value = Number(normalized);
+    if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
+    if (value < 0 || value > 100000) return null;
+    return value;
+  }
+
+  function getValidStepValues(): number[] {
+    return stepsEntries
+      .map((value) => parseStepsValue(value))
+      .filter((value): value is number => value !== null);
+  }
+
+  function getStepsAverage(): number | null {
+    const values = getValidStepValues();
+    if (values.length !== WEEK_DAYS.length) return null;
+    const sum = values.reduce((acc, value) => acc + value, 0);
+    return sum / WEEK_DAYS.length;
+  }
+
+  function validateStepsEntries(): boolean {
+    if (stepsEntries.length !== WEEK_DAYS.length) {
+      toast.error("Debes registrar los pasos de los 7 dias.");
+      return false;
+    }
+    const hasEmpty = stepsEntries.some((value) => value.trim().length === 0);
+    if (hasEmpty) {
+      toast.error("Completa los pasos diarios antes de continuar.");
+      return false;
+    }
+    const values = getValidStepValues();
+    if (values.length !== WEEK_DAYS.length) {
+      toast.error("Introduce pasos validos entre 0 y 100000.");
+      return false;
+    }
+    return true;
+  }
+
   function getNormalizedAnswers() {
-    const average = getWeightAverage();
+    const weightAverage = getWeightAverage();
+    const stepsAverage = getStepsAverage();
     return questions.map((question, index) => ({
       question,
       answer:
         question === WEIGHT_AVERAGE_QUESTION
-          ? (average === null ? "" : `${average.toFixed(2)} kg`)
-          : (answers[index] ?? "").trim()
+          ? (weightAverage === null ? "" : `${weightAverage.toFixed(2)} kg`)
+          : question === STEPS_AVERAGE_QUESTION
+            ? (stepsAverage === null ? "" : `${Math.round(stepsAverage)} pasos`)
+            : (answers[index] ?? "").trim()
     }));
   }
 
@@ -141,6 +200,7 @@ export function RevisionWizard() {
 
   function moveToPhotosStage() {
     if (!validateWeightEntries()) return;
+    if (!validateStepsEntries()) return;
     const normalizedAnswers = validateAllAnswers();
     if (!normalizedAnswers) return;
     setStage("photos");
@@ -148,6 +208,7 @@ export function RevisionWizard() {
 
   async function finalizeRevision(options?: { skipPhotos?: boolean }) {
     if (!validateWeightEntries()) return;
+    if (!validateStepsEntries()) return;
     const normalizedAnswers = validateAllAnswers();
     if (!normalizedAnswers) return;
 
@@ -319,6 +380,52 @@ export function RevisionWizard() {
                       </p>
                     </div>
                   </div>
+                ) : isStepsQuestion ? (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm text-brand-muted">
+                      Registra los pasos de cada dia de la semana. La media se calcula automaticamente entre 7.
+                    </p>
+                    <div className="overflow-hidden rounded-xl border border-white/10">
+                      <table className="w-full text-sm">
+                        <thead className="bg-black/30 text-xs uppercase tracking-[0.16em] text-brand-muted">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Dia</th>
+                            <th className="px-3 py-2 text-left">Pasos</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stepsEntries.map((value, index) => (
+                            <tr key={WEEK_DAYS[index]} className="border-t border-white/10">
+                              <td className="px-3 py-2 text-brand-text">{WEEK_DAYS[index]}</td>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="number"
+                                  inputMode="numeric"
+                                  step="1"
+                                  min="0"
+                                  max="100000"
+                                  value={value}
+                                  onChange={(event) => {
+                                    const next = [...stepsEntries];
+                                    next[index] = event.target.value;
+                                    setStepsEntries(next);
+                                  }}
+                                  placeholder="Ej: 8500"
+                                  className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-sm text-brand-muted">
+                      Media registrada:{" "}
+                      <span className="font-semibold text-brand-text">
+                        {getStepsAverage() === null ? "-" : `${Math.round(getStepsAverage()!)} pasos`}
+                      </span>
+                    </p>
+                  </div>
                 ) : (
                   <textarea
                     value={currentAnswer}
@@ -349,6 +456,8 @@ export function RevisionWizard() {
                   onClick={() => {
                     if (isWeightQuestion) {
                       if (!validateWeightEntries()) return;
+                    } else if (isStepsQuestion) {
+                      if (!validateStepsEntries()) return;
                     } else if (!currentAnswer.trim()) {
                       toast.error("Responde antes de continuar.");
                       return;
