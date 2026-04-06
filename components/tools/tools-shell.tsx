@@ -10,6 +10,7 @@ import {
   Calendar,
   Droplets,
   Dumbbell,
+  Footprints,
   Flame,
   Gauge,
   Layers3,
@@ -44,7 +45,7 @@ type ToolsShellProps = {
   user: SessionUser;
 };
 
-type ToolSection = "routine" | "competitions" | "achievements";
+type ToolSection = "routine" | "competitions" | "tracker" | "achievements";
 
 type ExerciseGroup = {
   muscleGroup: string;
@@ -151,6 +152,21 @@ type AchievementsResponse = {
   error?: string;
 };
 
+type DailyTrackerMetric = "steps" | "weight";
+
+type DailyTrackerEntry = {
+  id: string;
+  timestamp: string;
+  metric: DailyTrackerMetric;
+  date: string;
+  value: number;
+};
+
+type DailyTrackerResponse = {
+  entries?: DailyTrackerEntry[];
+  error?: string;
+};
+
 const TOOLS_CACHE_TTL_MS = 90 * 1000;
 const TOOLS_CACHE_VERSION = 1;
 
@@ -240,6 +256,8 @@ function parseEntryNumber(raw: string): number | null {
 
 type AchievementUnit = "kg" | "pasos";
 
+type DailyTrackerUnit = "kg" | "pasos";
+
 function getAchievementValueConfig(exercise: StrengthExercise): {
   label: string;
   placeholder: string;
@@ -277,6 +295,51 @@ function formatAchievementValue(value: number, exercise: StrengthExercise): stri
     return `${Math.round(value)} pasos`;
   }
   return `${value} kg`;
+}
+
+function getDailyTrackerValueConfig(metric: DailyTrackerMetric): {
+  label: string;
+  title: string;
+  placeholder: string;
+  min: number;
+  max: number;
+  step: string;
+  unit: DailyTrackerUnit;
+  color: string;
+  icon: LucideIcon;
+} {
+  if (metric === "steps") {
+    return {
+      label: "Pasos diarios",
+      title: "Pasos",
+      placeholder: "Ejemplo: 9500",
+      min: 0,
+      max: 100_000,
+      step: "1",
+      unit: "pasos",
+      color: "#f59e0b",
+      icon: Footprints
+    };
+  }
+
+  return {
+    label: "Peso corporal",
+    title: "Peso",
+    placeholder: "Ejemplo: 82.4",
+    min: 20,
+    max: 300,
+    step: "0.1",
+    unit: "kg",
+    color: "#38bdf8",
+    icon: Scale
+  };
+}
+
+function formatDailyTrackerValue(metric: DailyTrackerMetric, value: number): string {
+  if (metric === "steps") {
+    return `${Math.round(value)} pasos`;
+  }
+  return `${value.toFixed(1)} kg`;
 }
 
 function formatChartTickValue(value: number, unit: AchievementUnit): string {
@@ -600,6 +663,12 @@ export function ToolsShell({ user }: ToolsShellProps) {
   const [competitionName, setCompetitionName] = useState("");
   const [competitionLocation, setCompetitionLocation] = useState("");
   const [competitionDescription, setCompetitionDescription] = useState("");
+  const [dailyTrackerEntries, setDailyTrackerEntries] = useState<DailyTrackerEntry[]>([]);
+  const [dailyTrackerLoading, setDailyTrackerLoading] = useState(true);
+  const [dailyTrackerSaving, setDailyTrackerSaving] = useState(false);
+  const [dailyTrackerMetric, setDailyTrackerMetric] = useState<DailyTrackerMetric>("steps");
+  const [dailyTrackerDate, setDailyTrackerDate] = useState(() => formatDateForInput(new Date()));
+  const [dailyTrackerValue, setDailyTrackerValue] = useState("");
   const toolsCacheKey = useMemo(
     () => `mat:tools-cache:v${TOOLS_CACHE_VERSION}:${user.username.trim().toLowerCase()}`,
     [user.username]
@@ -745,6 +814,33 @@ export function ToolsShell({ user }: ToolsShellProps) {
     () => (isDailyStepsExercise(chartAchievementExercise) ? "pasos" : "kg"),
     [chartAchievementExercise]
   );
+  const dailyTrackerInputConfig = useMemo(
+    () => getDailyTrackerValueConfig(dailyTrackerMetric),
+    [dailyTrackerMetric]
+  );
+  const DailyTrackerIcon = dailyTrackerInputConfig.icon;
+  const selectedDailyTrackerEntry = useMemo(() => {
+    return (
+      dailyTrackerEntries.find(
+        (entry) => entry.metric === dailyTrackerMetric && entry.date === dailyTrackerDate
+      ) ?? null
+    );
+  }, [dailyTrackerEntries, dailyTrackerMetric, dailyTrackerDate]);
+  const dailyTrackerHistory = useMemo(() => {
+    return dailyTrackerEntries.filter((entry) => entry.metric === dailyTrackerMetric);
+  }, [dailyTrackerEntries, dailyTrackerMetric]);
+  const dailyTrackerChartPoints = useMemo(() => {
+    return [...dailyTrackerHistory]
+      .sort((a, b) => {
+        const byDate = a.date.localeCompare(b.date);
+        if (byDate !== 0) return byDate;
+        return a.timestamp.localeCompare(b.timestamp);
+      })
+      .map((entry) => ({
+        date: entry.date,
+        value: entry.value
+      }));
+  }, [dailyTrackerHistory]);
 
   useEffect(() => {
     router.prefetch("/dashboard");
@@ -927,6 +1023,30 @@ export function ToolsShell({ user }: ToolsShellProps) {
     }
   }
 
+  async function reloadDailyTracker() {
+    setDailyTrackerLoading(true);
+    try {
+      const res = await fetch("/api/tools/daily-tracker", { cache: "no-store" });
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as DailyTrackerResponse;
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudieron cargar los registros diarios.");
+        return;
+      }
+
+      setDailyTrackerEntries(Array.isArray(json.entries) ? json.entries : []);
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudieron cargar los registros diarios.");
+    } finally {
+      setDailyTrackerLoading(false);
+    }
+  }
+
   useEffect(() => {
     reloadCompetitions();
   }, []);
@@ -934,6 +1054,23 @@ export function ToolsShell({ user }: ToolsShellProps) {
   useEffect(() => {
     reloadAchievements();
   }, []);
+
+  useEffect(() => {
+    reloadDailyTracker();
+  }, []);
+
+  useEffect(() => {
+    if (selectedDailyTrackerEntry) {
+      if (dailyTrackerMetric === "steps") {
+        setDailyTrackerValue(String(Math.round(selectedDailyTrackerEntry.value)));
+      } else {
+        setDailyTrackerValue(String(selectedDailyTrackerEntry.value));
+      }
+      return;
+    }
+
+    setDailyTrackerValue("");
+  }, [selectedDailyTrackerEntry, dailyTrackerMetric]);
 
   async function reloadHistory() {
     setHistoryLoading(true);
@@ -1268,6 +1405,65 @@ export function ToolsShell({ user }: ToolsShellProps) {
     }
   }
 
+  async function saveDailyTrackerEntry() {
+    if (!dailyTrackerDate) {
+      toast.error("Debes indicar la fecha del registro.");
+      return;
+    }
+
+    const value = parseEntryNumber(dailyTrackerValue);
+    const config = dailyTrackerInputConfig;
+    if (value === null || value < config.min || value > config.max) {
+      toast.error(
+        `Introduce un valor valido entre ${config.min} y ${config.max} ${config.unit}.`
+      );
+      return;
+    }
+
+    if (dailyTrackerMetric === "steps" && !Number.isInteger(value)) {
+      toast.error("Los pasos deben registrarse como numero entero.");
+      return;
+    }
+
+    setDailyTrackerSaving(true);
+    try {
+      const res = await fetch("/api/tools/daily-tracker", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          metric: dailyTrackerMetric,
+          date: dailyTrackerDate,
+          value
+        })
+      });
+
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "No se pudo guardar el registro.");
+        return;
+      }
+
+      toast.success(
+        selectedDailyTrackerEntry
+          ? "Registro sobrescrito correctamente."
+          : "Registro guardado correctamente."
+      );
+      await reloadDailyTracker();
+    } catch (error) {
+      console.error(error);
+      toast.error("Error guardando el registro.");
+    } finally {
+      setDailyTrackerSaving(false);
+    }
+  }
+
   async function registerAchievementMark() {
     if (!achievementDate) {
       toast.error("Debes indicar la fecha de la marca.");
@@ -1547,6 +1743,14 @@ export function ToolsShell({ user }: ToolsShellProps) {
             >
               <BicepsFlexed className="mr-2 h-4 w-4" />
               Logros
+            </BrandButton>
+            <BrandButton
+              variant={activeTool === "tracker" ? "accent" : "ghost"}
+              className="w-full justify-center px-4 py-2 sm:w-auto"
+              onClick={() => setActiveTool("tracker")}
+            >
+              <Gauge className="mr-2 h-4 w-4" />
+              Pasos y peso
             </BrandButton>
           </div>
         </section>
@@ -2433,6 +2637,209 @@ export function ToolsShell({ user }: ToolsShellProps) {
                       </article>
                     );
                   })}
+                </div>
+              )}
+            </section>
+          </>
+        ) : activeTool === "tracker" ? (
+          <>
+            <motion.section
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.45 }}
+              className="rounded-3xl border border-brand-accent/20 bg-brand-surface/80 p-6 shadow-glow"
+            >
+              <p className="text-xs uppercase tracking-[0.24em] text-brand-muted">Herramientas</p>
+              <h1 className="mt-2 text-3xl font-bold text-brand-text">Pasos y peso</h1>
+              <p className="mt-3 max-w-3xl text-sm text-brand-muted">
+                Elige si quieres registrar pasos o peso corporal, selecciona cualquier fecha del
+                calendario y guarda o sobrescribe el valor del dia.
+              </p>
+
+              <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+                <article className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                    Tipo de registro
+                  </p>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setDailyTrackerMetric("steps")}
+                      className={
+                        dailyTrackerMetric === "steps"
+                          ? "rounded-xl border border-brand-accent/50 bg-brand-accent/15 px-4 py-3 text-left text-brand-text"
+                          : "rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-left text-brand-muted transition hover:border-brand-accent/35 hover:text-brand-text"
+                      }
+                    >
+                      <span className="flex items-center gap-2 text-sm font-semibold">
+                        <Footprints className="h-4 w-4" />
+                        Pasos
+                      </span>
+                      <span className="mt-1 block text-xs">Registro diario de pasos.</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDailyTrackerMetric("weight")}
+                      className={
+                        dailyTrackerMetric === "weight"
+                          ? "rounded-xl border border-brand-accent/50 bg-brand-accent/15 px-4 py-3 text-left text-brand-text"
+                          : "rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-left text-brand-muted transition hover:border-brand-accent/35 hover:text-brand-text"
+                      }
+                    >
+                      <span className="flex items-center gap-2 text-sm font-semibold">
+                        <Scale className="h-4 w-4" />
+                        Peso
+                      </span>
+                      <span className="mt-1 block text-xs">Peso corporal por fecha.</span>
+                    </button>
+                  </div>
+
+                  <label className="mt-4 block text-sm text-brand-muted">
+                    Fecha del registro
+                    <div className="relative mt-2">
+                      <Calendar className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
+                      <input
+                        type="date"
+                        value={dailyTrackerDate}
+                        onChange={(event) => setDailyTrackerDate(event.target.value)}
+                        className="date-input-responsive block w-full rounded-xl border border-white/10 bg-black/25 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      />
+                    </div>
+                  </label>
+
+                  <label className="mt-4 block text-sm text-brand-muted">
+                    {dailyTrackerInputConfig.label}
+                    <div className="mt-2 flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 focus-within:border-brand-accent/60">
+                      <DailyTrackerIcon className="h-4 w-4 text-brand-accent" />
+                      <input
+                        type="number"
+                        min={dailyTrackerInputConfig.min}
+                        max={dailyTrackerInputConfig.max}
+                        step={dailyTrackerInputConfig.step}
+                        value={dailyTrackerValue}
+                        onChange={(event) => setDailyTrackerValue(event.target.value)}
+                        className="w-full bg-transparent text-sm text-brand-text outline-none"
+                        placeholder={dailyTrackerInputConfig.placeholder}
+                      />
+                      <span className="rounded-md border border-white/10 bg-black/20 px-2 py-1 text-xs text-brand-muted">
+                        {dailyTrackerInputConfig.unit}
+                      </span>
+                    </div>
+                  </label>
+
+                  <div className="mt-4 rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-brand-muted">
+                    {selectedDailyTrackerEntry ? (
+                      <p>
+                        Ya hay un registro en esta fecha. Valor actual:{" "}
+                        <span className="font-semibold text-brand-text">
+                          {formatDailyTrackerValue(
+                            dailyTrackerMetric,
+                            selectedDailyTrackerEntry.value
+                          )}
+                        </span>
+                      </p>
+                    ) : (
+                      <p>No existe ningun registro para esta fecha todavia.</p>
+                    )}
+                  </div>
+
+                  <div className="mt-4">
+                    <BrandButton onClick={saveDailyTrackerEntry} disabled={dailyTrackerSaving}>
+                      <Save className="mr-1 h-4 w-4" />
+                      {dailyTrackerSaving
+                        ? "Guardando..."
+                        : selectedDailyTrackerEntry
+                          ? "Sobrescribir registro"
+                          : "Guardar registro"}
+                    </BrandButton>
+                  </div>
+                </article>
+
+                <article className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                        Vista activa
+                      </p>
+                      <h2 className="mt-1 text-lg font-semibold text-brand-text">
+                        Evolucion de {dailyTrackerInputConfig.title.toLowerCase()}
+                      </h2>
+                    </div>
+                    <div className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-sm text-brand-text">
+                      <DailyTrackerIcon className="h-4 w-4 text-brand-accent" />
+                      {dailyTrackerInputConfig.title}
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    {dailyTrackerLoading ? (
+                      <Skeleton className="h-56 w-full" />
+                    ) : dailyTrackerChartPoints.length === 0 ? (
+                      <div className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">
+                        Todavia no hay registros guardados para {dailyTrackerInputConfig.title.toLowerCase()}.
+                      </div>
+                    ) : (
+                      <ProgressChart
+                        title={`Historico de ${dailyTrackerInputConfig.title.toLowerCase()}`}
+                        points={dailyTrackerChartPoints}
+                        color={dailyTrackerInputConfig.color}
+                        unit={` ${dailyTrackerInputConfig.unit}`}
+                      />
+                    )}
+                  </div>
+                </article>
+              </div>
+            </motion.section>
+
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="mb-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Historico</p>
+                <h2 className="mt-1 text-lg font-semibold text-brand-text">
+                  Registros de {dailyTrackerInputConfig.title.toLowerCase()}
+                </h2>
+              </div>
+
+              {dailyTrackerLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </div>
+              ) : dailyTrackerHistory.length === 0 ? (
+                <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                  No hay registros guardados para esta vista.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {dailyTrackerHistory.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      onClick={() => {
+                        setDailyTrackerDate(entry.date);
+                        setDailyTrackerValue(
+                          dailyTrackerMetric === "steps"
+                            ? String(Math.round(entry.value))
+                            : String(entry.value)
+                        );
+                      }}
+                      className={
+                        entry.date === dailyTrackerDate
+                          ? "flex w-full items-center justify-between gap-3 rounded-xl border border-brand-accent/45 bg-brand-accent/10 px-4 py-3 text-left"
+                          : "flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left transition hover:border-brand-accent/35 hover:bg-black/25"
+                      }
+                    >
+                      <div>
+                        <p className="font-semibold text-brand-text">{formatDateLabel(entry.date)}</p>
+                        <p className="mt-1 text-xs text-brand-muted">
+                          Actualizado a las {formatTimeLabel(entry.timestamp)}
+                        </p>
+                      </div>
+                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-brand-text">
+                        <DailyTrackerIcon className="h-4 w-4 text-brand-accent" />
+                        {formatDailyTrackerValue(dailyTrackerMetric, entry.value)}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </section>

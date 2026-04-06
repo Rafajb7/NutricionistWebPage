@@ -10,6 +10,8 @@ import {
 } from "@/lib/google/sheets";
 import { logError, logInfo } from "@/lib/logger";
 
+const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
 function requiredNumberSchema(options: { min: number; max: number; integer?: boolean }) {
   const base = options.integer
     ? z.number().int().min(options.min).max(options.max)
@@ -29,6 +31,7 @@ function requiredNumberSchema(options: { min: number; max: number; integer?: boo
 
 const payloadSchema = z
   .object({
+    date: z.string().regex(DATE_ONLY_REGEX).optional(),
     pesoAyunasKg: requiredNumberSchema({ min: 20, max: 250 }),
     pesoNocturnoKg: requiredNumberSchema({ min: 20, max: 300 }),
     pasosDiarios: requiredNumberSchema({ min: 0, max: 100000, integer: true }),
@@ -55,6 +58,55 @@ function formatDateOnly(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function getPeakModeAccessibleRange(activeMode: Awaited<ReturnType<typeof getActiveCompetitionMode>> | null, today: string) {
+  if (!activeMode) return null;
+
+  const maxDate = activeMode.endsOn.localeCompare(today) < 0 ? activeMode.endsOn : today;
+  if (activeMode.startsOn.localeCompare(maxDate) > 0) return null;
+
+  return {
+    minDate: activeMode.startsOn,
+    maxDate
+  };
+}
+
+function clampDateWithinRange(date: string, range: { minDate: string; maxDate: string }): string {
+  if (date.localeCompare(range.minDate) < 0) return range.minDate;
+  if (date.localeCompare(range.maxDate) > 0) return range.maxDate;
+  return date;
+}
+
+function resolveSelectedPeakDate(input: {
+  requestedDate?: string | null;
+  activeMode: Awaited<ReturnType<typeof getActiveCompetitionMode>> | null;
+  today: string;
+}): string {
+  const range = getPeakModeAccessibleRange(input.activeMode, input.today);
+  if (!range) return input.today;
+
+  const requestedDate = input.requestedDate?.trim();
+  if (!requestedDate || !DATE_ONLY_REGEX.test(requestedDate)) {
+    return range.maxDate;
+  }
+
+  return clampDateWithinRange(requestedDate, range);
+}
+
+function isPeakDateAccessible(input: {
+  date: string;
+  activeMode: Awaited<ReturnType<typeof getActiveCompetitionMode>> | null;
+  today: string;
+}): boolean {
+  if (!DATE_ONLY_REGEX.test(input.date)) return false;
+  const range = getPeakModeAccessibleRange(input.activeMode, input.today);
+  if (!range) return false;
+
+  return (
+    input.date.localeCompare(range.minDate) >= 0 &&
+    input.date.localeCompare(range.maxDate) <= 0
+  );
 }
 
 function mapGoogleSheetsError(error: unknown): string {
@@ -100,7 +152,7 @@ function mapGoogleSheetsError(error: unknown): string {
   return "No se pudo conectar con Google Sheets.";
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const auth = await requireSession();
   if (!auth.session) return auth.response;
 
@@ -122,9 +174,18 @@ export async function GET() {
 
     const activeMode = getActiveCompetitionMode(competitions);
     const today = formatDateOnly(new Date());
+    const selectedDate = resolveSelectedPeakDate({
+      requestedDate: req.nextUrl.searchParams.get("date"),
+      activeMode,
+      today
+    });
     const todayLog =
       logs
         .filter((row) => row.fecha === today)
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0] ?? null;
+    const selectedLog =
+      logs
+        .filter((row) => row.fecha === selectedDate)
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0] ?? null;
 
     return NextResponse.json({
@@ -133,6 +194,9 @@ export async function GET() {
       today,
       todayLog,
       todaySubmitted: Boolean(todayLog),
+      selectedDate,
+      selectedLog,
+      selectedSubmitted: Boolean(selectedLog),
       logs,
       warning
     });
@@ -169,29 +233,37 @@ export async function POST(req: NextRequest) {
     }
 
     const today = formatDateOnly(new Date());
+    const targetDate = parsed.data.date ?? today;
+    if (!isPeakDateAccessible({ date: targetDate, activeMode, today })) {
+      return NextResponse.json(
+        { error: "Solo puedes editar fechas dentro del periodo activo y hasta el dia de hoy." },
+        { status: 409 }
+      );
+    }
     const username = auth.session.username.trim().replace(/^@/, "");
+    const { date: _date, ...formData } = parsed.data;
 
     await upsertPeakModeDailyLogForUser({
       username,
       row: {
         timestamp: new Date().toISOString(),
-        fecha: today,
+        fecha: targetDate,
         nombre: auth.session.name,
         usuario: username,
         modo: activeMode.mode,
-        ...parsed.data
+        ...formData
       }
     });
 
     logInfo("Peak mode daily log upserted", {
       username,
       mode: activeMode.mode,
-      date: today
+      date: targetDate
     });
 
     return NextResponse.json({
       ok: true,
-      date: today,
+      date: targetDate,
       mode: activeMode.mode
     });
   } catch (error) {

@@ -26,10 +26,20 @@ const GOAL_HEADERS = [
   "Peso objetivo kg"
 ];
 
+const DAILY_TRACKER_HEADERS = [
+  "Timestamp",
+  "Nombre",
+  "Usuario",
+  "Tipo",
+  "Fecha",
+  "Valor"
+];
+
 type AchievementSheetsInfo = {
   spreadsheetId: string;
   marksWorksheetName: string;
   goalsWorksheetName: string;
+  dailyTrackerWorksheetName: string;
 };
 
 export type StrengthMark = {
@@ -50,6 +60,18 @@ export type StrengthGoal = {
   exercise: StrengthExercise;
   targetDate: string;
   targetWeightKg: number;
+};
+
+export type DailyTrackerMetric = "steps" | "weight";
+
+export type DailyTrackerEntry = {
+  id: string;
+  timestamp: string;
+  nombre: string;
+  usuario: string;
+  metric: DailyTrackerMetric;
+  date: string;
+  value: number;
 };
 
 const spreadsheetIdCache = new Map<string, string>();
@@ -238,12 +260,14 @@ async function ensureAchievementsSheetsReady(): Promise<AchievementSheetsInfo> {
   const spreadsheetName = env.GOOGLE_ACHIEVEMENTS_SHEET_NAME.trim();
   const marksWorksheetName = env.GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME.trim();
   const goalsWorksheetName = env.GOOGLE_ACHIEVEMENTS_GOALS_WORKSHEET_NAME.trim();
+  const dailyTrackerWorksheetName = "Registro diario";
 
   const cacheKey = [
     spreadsheetIdFromEnv ?? "",
     spreadsheetName,
     marksWorksheetName,
-    goalsWorksheetName
+    goalsWorksheetName,
+    dailyTrackerWorksheetName
   ].join("::");
 
   let pending = achievementsSheetInitCache.get(cacheKey);
@@ -253,12 +277,17 @@ async function ensureAchievementsSheetsReady(): Promise<AchievementSheetsInfo> {
         ? spreadsheetIdFromEnv
         : await resolveSpreadsheetIdByName(spreadsheetName, {
             createIfMissing: true,
-            initialWorksheetTitles: [marksWorksheetName, goalsWorksheetName]
+            initialWorksheetTitles: [
+              marksWorksheetName,
+              goalsWorksheetName,
+              dailyTrackerWorksheetName
+            ]
           });
 
       await Promise.all([
         ensureWorksheetExists(spreadsheetId, marksWorksheetName),
-        ensureWorksheetExists(spreadsheetId, goalsWorksheetName)
+        ensureWorksheetExists(spreadsheetId, goalsWorksheetName),
+        ensureWorksheetExists(spreadsheetId, dailyTrackerWorksheetName)
       ]);
 
       await Promise.all([
@@ -271,13 +300,19 @@ async function ensureAchievementsSheetsReady(): Promise<AchievementSheetsInfo> {
           spreadsheetId,
           worksheetName: goalsWorksheetName,
           headers: GOAL_HEADERS
+        }),
+        ensureHeaderRow({
+          spreadsheetId,
+          worksheetName: dailyTrackerWorksheetName,
+          headers: DAILY_TRACKER_HEADERS
         })
       ]);
 
       return {
         spreadsheetId,
         marksWorksheetName,
-        goalsWorksheetName
+        goalsWorksheetName,
+        dailyTrackerWorksheetName
       };
     })();
     achievementsSheetInitCache.set(cacheKey, pending);
@@ -467,6 +502,116 @@ export async function upsertStrengthGoal(input: {
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetsInfo.spreadsheetId,
     range: `'${sheetsInfo.goalsWorksheetName}'!A:F`,
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [rowValues]
+    }
+  });
+}
+
+export async function listDailyTrackerEntriesForUser(username: string): Promise<DailyTrackerEntry[]> {
+  const sheetsInfo = await ensureAchievementsSheetsReady();
+  const sheets = await getSheetsClient();
+  const targetUsername = normalizeUsername(username);
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetsInfo.spreadsheetId,
+    range: `'${sheetsInfo.dailyTrackerWorksheetName}'!A2:F`,
+    valueRenderOption: "FORMATTED_VALUE",
+    dateTimeRenderOption: "FORMATTED_STRING"
+  });
+
+  const rows = (res.data.values as string[][] | undefined) ?? [];
+  const entries: DailyTrackerEntry[] = [];
+
+  rows.forEach((row, index) => {
+    const rowUsername = normalizeUsername(String(row[2] ?? ""));
+    if (!rowUsername || rowUsername !== targetUsername) return;
+
+    const metric = String(row[3] ?? "").trim().toLowerCase();
+    if (metric !== "steps" && metric !== "weight") return;
+
+    const date = String(row[4] ?? "").trim();
+    const value = parseNumber(row[5]);
+    if (!date || value === null) return;
+
+    entries.push({
+      id: `daily-tracker-${index + 2}`,
+      timestamp: String(row[0] ?? ""),
+      nombre: String(row[1] ?? ""),
+      usuario: rowUsername,
+      metric,
+      date,
+      value
+    });
+  });
+
+  return entries.sort((a, b) => {
+    const byDate = b.date.localeCompare(a.date);
+    if (byDate !== 0) return byDate;
+    return b.timestamp.localeCompare(a.timestamp);
+  });
+}
+
+export async function upsertDailyTrackerEntry(input: {
+  name: string;
+  username: string;
+  metric: DailyTrackerMetric;
+  date: string;
+  value: number;
+}): Promise<void> {
+  const sheetsInfo = await ensureAchievementsSheetsReady();
+  const sheets = await getSheetsClient();
+  const normalizedUsername = normalizeUsername(input.username);
+
+  const read = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetsInfo.spreadsheetId,
+    range: `'${sheetsInfo.dailyTrackerWorksheetName}'!A2:F`,
+    valueRenderOption: "FORMATTED_VALUE"
+  });
+  const rows = (read.data.values as string[][] | undefined) ?? [];
+
+  let rowNumber: number | null = null;
+  rows.forEach((row, index) => {
+    if (rowNumber !== null) return;
+    const rowUsername = normalizeUsername(String(row[2] ?? ""));
+    const rowMetric = String(row[3] ?? "").trim().toLowerCase();
+    const rowDate = String(row[4] ?? "").trim();
+
+    if (
+      rowUsername === normalizedUsername &&
+      rowMetric === input.metric &&
+      rowDate === input.date
+    ) {
+      rowNumber = index + 2;
+    }
+  });
+
+  const rowValues = [
+    new Date().toISOString(),
+    input.name,
+    input.username.trim().replace(/^@/, ""),
+    input.metric,
+    input.date,
+    input.value
+  ];
+
+  if (rowNumber !== null) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetsInfo.spreadsheetId,
+      range: `'${sheetsInfo.dailyTrackerWorksheetName}'!A${rowNumber}:F${rowNumber}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [rowValues]
+      }
+    });
+    return;
+  }
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: sheetsInfo.spreadsheetId,
+    range: `'${sheetsInfo.dailyTrackerWorksheetName}'!A:F`,
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
