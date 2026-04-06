@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -29,6 +29,8 @@ import {
   ClipboardCheck,
   Dumbbell,
   Repeat2,
+  ChevronLeft,
+  ChevronRight,
   type LucideIcon
 } from "lucide-react";
 import { toast } from "sonner";
@@ -181,6 +183,9 @@ type PeakModeDailyResponse = {
   today: string;
   todayLog: PeakModeDailyLog | null;
   todaySubmitted: boolean;
+  selectedDate: string;
+  selectedLog: PeakModeDailyLog | null;
+  selectedSubmitted: boolean;
   warning?: string;
 };
 
@@ -341,6 +346,13 @@ function toLocalDateOnly(value: Date): string {
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function shiftDateOnly(value: string, days: number): string | null {
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setDate(parsed.getDate() + days);
+  return toLocalDateOnly(parsed);
 }
 
 function getIsoWeekRange(value: string): { weekStart: string; weekEnd: string } | null {
@@ -597,9 +609,14 @@ export function DashboardShell({ user }: DashboardShellProps) {
   );
   const [peakLoading, setPeakLoading] = useState(true);
   const [peakSaving, setPeakSaving] = useState(false);
+  const [peakToday, setPeakToday] = useState(() => toLocalDateOnly(new Date()));
+  const [peakSelectedDate, setPeakSelectedDate] = useState("");
+  const [peakSelectedSubmitted, setPeakSelectedSubmitted] = useState(false);
   const [peakTodaySubmitted, setPeakTodaySubmitted] = useState(false);
   const [showPeakReminder, setShowPeakReminder] = useState(false);
   const [peakWarning, setPeakWarning] = useState("");
+  const peakSelectedDateRef = useRef("");
+  const peakFormDirtyRef = useRef(false);
   const dashboardCacheKey = useMemo(
     () =>
       `mat:dashboard-cache:v${DASHBOARD_CACHE_VERSION}:${user.username.trim().toLowerCase()}`,
@@ -660,6 +677,23 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const selectedMetricUnit: "cm" | "kg" =
     selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
   const peakModeEnabled = peakMode !== "none";
+  const peakMaxNavigableDate = useMemo(() => {
+    if (!peakActiveWindow) return null;
+    return peakActiveWindow.endsOn.localeCompare(peakToday) < 0
+      ? peakActiveWindow.endsOn
+      : peakToday;
+  }, [peakActiveWindow, peakToday]);
+  const canGoToPreviousPeakDate = Boolean(
+    peakActiveWindow &&
+      peakSelectedDate &&
+      peakSelectedDate.localeCompare(peakActiveWindow.startsOn) > 0
+  );
+  const canGoToNextPeakDate = Boolean(
+    peakMaxNavigableDate &&
+      peakSelectedDate &&
+      peakSelectedDate.localeCompare(peakMaxNavigableDate) < 0
+  );
+  const isViewingTodayPeakDate = Boolean(peakSelectedDate && peakSelectedDate === peakToday);
 
   const uniqueDailySteps = useMemo(() => {
     const byDate = new Map<string, { date: string; value: number; timestamp: string }>();
@@ -746,12 +780,20 @@ export function DashboardShell({ user }: DashboardShellProps) {
   }, [router]);
 
   const loadPeakModeData = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; targetDate?: string; forceFormSync?: boolean }) => {
       const silent = Boolean(options?.silent);
       if (!silent) setPeakLoading(true);
 
       try {
-        const res = await fetch("/api/tools/peak-mode-daily", { cache: "no-store" });
+        const requestedDate = options?.targetDate?.trim() ?? peakSelectedDateRef.current;
+        const params = new URLSearchParams();
+        if (requestedDate) {
+          params.set("date", requestedDate);
+        }
+        const url = params.size
+          ? `/api/tools/peak-mode-daily?${params.toString()}`
+          : "/api/tools/peak-mode-daily";
+        const res = await fetch(url, { cache: "no-store" });
         if (res.status === 401) {
           window.location.href = "/login";
           return;
@@ -762,30 +804,51 @@ export function DashboardShell({ user }: DashboardShellProps) {
           throw new Error(json.error ?? "No se pudo cargar el formulario diario.");
         }
 
+        const nextSelectedDate = json.selectedDate?.trim() || json.today || "";
+        const shouldSyncForm =
+          Boolean(options?.forceFormSync) ||
+          !silent ||
+          !peakFormDirtyRef.current ||
+          requestedDate !== nextSelectedDate;
+
+        setPeakToday(json.today ?? toLocalDateOnly(new Date()));
         setPeakMode(json.mode ?? "none");
         setPeakActiveWindow(json.activeWindow ?? null);
         setPeakTodaySubmitted(Boolean(json.todaySubmitted));
+        setPeakSelectedSubmitted(Boolean(json.selectedSubmitted));
         setPeakWarning(json.warning?.trim() ?? "");
+        peakSelectedDateRef.current = nextSelectedDate;
+        setPeakSelectedDate(nextSelectedDate);
 
-        if (json.todayLog) {
-          setPeakDailyForm(toPeakModeFormFromLog(json.todayLog));
-        } else if (!silent) {
-          setPeakDailyForm(createEmptyPeakModeForm());
+        if (shouldSyncForm) {
+          peakFormDirtyRef.current = false;
+          if (json.selectedLog) {
+            setPeakDailyForm(toPeakModeFormFromLog(json.selectedLog));
+          } else {
+            setPeakDailyForm(createEmptyPeakModeForm());
+          }
         }
 
         const modeEnabled = json.mode === "titan" || json.mode === "diablo";
         if (!silent) {
           setShowPeakReminder(modeEnabled && !json.todaySubmitted);
+        } else if (!modeEnabled) {
+          setShowPeakReminder(false);
         }
       } catch (error) {
         console.error(error);
         if (!silent) {
           toast.error("Error al cargar el formulario diario.");
+          setPeakToday(toLocalDateOnly(new Date()));
           setPeakMode("none");
           setPeakActiveWindow(null);
+          setPeakSelectedDate("");
+          setPeakSelectedSubmitted(false);
           setPeakTodaySubmitted(false);
           setShowPeakReminder(false);
           setPeakWarning("");
+          peakSelectedDateRef.current = "";
+          peakFormDirtyRef.current = false;
         }
       } finally {
         if (!silent) setPeakLoading(false);
@@ -984,10 +1047,30 @@ export function DashboardShell({ user }: DashboardShellProps) {
     key: K,
     value: PeakModeFormState[K]
   ) {
+    peakFormDirtyRef.current = true;
     setPeakDailyForm((current) => ({
       ...current,
       [key]: value
     }));
+  }
+
+  async function goToPeakDate(date: string) {
+    await loadPeakModeData({
+      silent: true,
+      targetDate: date,
+      forceFormSync: true
+    });
+  }
+
+  async function movePeakDate(offset: -1 | 1) {
+    if (!peakSelectedDate) return;
+
+    const nextDate = shiftDateOnly(peakSelectedDate, offset);
+    if (!nextDate) return;
+    if (peakActiveWindow && nextDate.localeCompare(peakActiveWindow.startsOn) < 0) return;
+    if (peakMaxNavigableDate && nextDate.localeCompare(peakMaxNavigableDate) > 0) return;
+
+    await goToPeakDate(nextDate);
   }
 
   async function submitPeakModeDailyForm() {
@@ -1034,6 +1117,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
       tuvoEntreno: peakDailyForm.tuvoEntreno === "si",
       dobleSesion: peakDailyForm.tuvoEntreno === "si" ? peakDailyForm.dobleSesion : false
     };
+    const targetDate = peakSelectedDate || peakToday || toLocalDateOnly(new Date());
 
     if (Object.values(payload).some((value) => value === null)) {
       toast.error("Revisa los valores numericos del formulario diario.");
@@ -1047,7 +1131,10 @@ export function DashboardShell({ user }: DashboardShellProps) {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          date: targetDate,
+          ...payload
+        })
       });
 
       if (res.status === 401) {
@@ -1061,10 +1148,18 @@ export function DashboardShell({ user }: DashboardShellProps) {
         return;
       }
 
-      toast.success("Formulario diario guardado.");
-      setPeakTodaySubmitted(true);
+      peakFormDirtyRef.current = false;
+      toast.success(
+        targetDate === peakToday
+          ? "Formulario diario guardado."
+          : `Formulario del ${formatDateLabel(targetDate)} guardado.`
+      );
       setShowPeakReminder(false);
-      await loadPeakModeData({ silent: true });
+      await loadPeakModeData({
+        silent: true,
+        targetDate,
+        forceFormSync: true
+      });
     } catch (error) {
       console.error(error);
       toast.error("Error al guardar el formulario diario.");
@@ -1293,7 +1388,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                 : "rounded-2xl border border-violet-400/30 bg-violet-950/20 p-4"
             }
           >
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs uppercase tracking-[0.22em] text-brand-muted">
                   {formatPeakModeName(peakMode)}
@@ -1309,15 +1404,57 @@ export function DashboardShell({ user }: DashboardShellProps) {
                   </p>
                 ) : null}
               </div>
-              <span
-                className={
-                  peakTodaySubmitted
-                    ? "rounded-lg border border-emerald-300/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-200"
-                    : "rounded-lg border border-amber-300/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-200"
-                }
-              >
-                {peakTodaySubmitted ? "Completado hoy" : "Pendiente hoy"}
-              </span>
+              <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                <div className="flex items-center gap-2 self-end rounded-xl border border-white/10 bg-black/20 p-1">
+                  <button
+                    type="button"
+                    onClick={() => void movePeakDate(-1)}
+                    disabled={!canGoToPreviousPeakDate}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-black/20 text-brand-text transition hover:border-brand-accent/45 hover:bg-black/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Ver dia anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <div className="min-w-[168px] px-2 text-center">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-brand-muted">
+                      Fecha del registro
+                    </p>
+                    <p className="mt-0.5 text-sm font-semibold text-brand-text">
+                      {peakSelectedDate ? formatDateLabel(peakSelectedDate) : formatDateLabel(peakToday)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void movePeakDate(1)}
+                    disabled={!canGoToNextPeakDate}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-black/20 text-brand-text transition hover:border-brand-accent/45 hover:bg-black/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Ver dia siguiente"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+                <span
+                  className={
+                    peakSelectedSubmitted
+                      ? "rounded-lg border border-emerald-300/30 bg-emerald-500/10 px-3 py-1.5 text-center text-xs font-semibold text-emerald-200"
+                      : "rounded-lg border border-amber-300/30 bg-amber-500/10 px-3 py-1.5 text-center text-xs font-semibold text-amber-200"
+                  }
+                >
+                  {peakSelectedSubmitted
+                    ? isViewingTodayPeakDate
+                      ? "Completado hoy"
+                      : "Registro existente"
+                    : isViewingTodayPeakDate
+                      ? "Pendiente hoy"
+                      : "Sin registro"}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-brand-muted">
+              {peakSelectedSubmitted
+                ? "Ya existe un registro para esta fecha. Si lo guardas de nuevo, se sobrescribira."
+                : "No hay registro guardado para esta fecha. Puedes completarlo ahora si esta dentro de la ventana activa."}
             </div>
 
             <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
@@ -1841,6 +1978,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                   type="button"
                   onClick={() => {
                     setShowPeakReminder(false);
+                    void goToPeakDate(peakToday || toLocalDateOnly(new Date()));
                     document.getElementById("peak-daily-form")?.scrollIntoView({
                       behavior: "smooth",
                       block: "start"
