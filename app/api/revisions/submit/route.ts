@@ -1,12 +1,16 @@
 import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import { appendRevisionRows } from "@/lib/google/sheets";
+import { recordRevisionIssueLog, upsertRevisionRows } from "@/lib/google/sheets";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { buildRevisionRows } from "@/lib/revisions";
 import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
 import { appendStrengthMark } from "@/lib/google/achievements";
 import { logError, logInfo } from "@/lib/logger";
+import {
+  isRevisionMeasurementQuestion,
+  normalizeRevisionMeasurementAnswer
+} from "@/lib/revision-measurements";
 
 const MAX_DAILY_STEPS_VALUE = 100_000;
 
@@ -68,38 +72,79 @@ function getStepsAverageFromAnswers(
   return value;
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
 export async function POST(req: NextRequest) {
   const auth = await requireSession();
   if (!auth.session) return auth.response;
 
+  let revisionDateForLog = getTodayDateString();
   try {
     const json = await req.json();
     const parsed = submitSchema.safeParse(json);
     if (!parsed.success) {
+      await recordRevisionIssueLog({
+        username: auth.session.username,
+        message: "Payload invalido al guardar los campos de una revision."
+      });
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
 
     const fecha = parsed.data.revisionDate ?? getTodayDateString();
+    revisionDateForLog = fecha;
     const normalizedUsername = auth.session.username.trim().toLowerCase();
     const stepsDailyEntries = parsed.data.stepsDailyEntries ?? [];
     if (stepsDailyEntries.length) {
       const uniqueDates = new Set(stepsDailyEntries.map((entry) => entry.date));
       if (uniqueDates.size !== stepsDailyEntries.length) {
+        await recordRevisionIssueLog({
+          username: auth.session.username,
+          message: `Fechas de pasos duplicadas al guardar la revision del ${fecha}.`
+        });
         return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
       }
     }
     const stepsAverage = getStepsAverageFromAnswers(parsed.data.answers);
+    const normalizedAnswers = parsed.data.answers.map((item) => {
+      if (!isRevisionMeasurementQuestion(item.question)) {
+        return item;
+      }
+
+      const normalizedAnswer = normalizeRevisionMeasurementAnswer(item.answer);
+      return {
+        question: item.question,
+        answer: normalizedAnswer
+      };
+    });
+
+    const hasInvalidMeasurementAnswer = normalizedAnswers.some(
+      (item) => isRevisionMeasurementQuestion(item.question) && !item.answer
+    );
+    if (hasInvalidMeasurementAnswer) {
+      await recordRevisionIssueLog({
+        username: auth.session.username,
+        message: `Valor numerico invalido en medidas corporales al guardar la revision del ${fecha}.`
+      });
+      return NextResponse.json(
+        { error: "Invalid measurement value in revision." },
+        { status: 400 }
+      );
+    }
+
     const rows = buildRevisionRows({
       nombre: auth.session.name,
       usuario: auth.session.username,
       fecha,
-      answers: parsed.data.answers.map((item) => ({
+      answers: normalizedAnswers.map((item) => ({
         pregunta: item.question,
         respuesta: item.answer
       }))
     });
 
-    await appendRevisionRows(rows);
+    await upsertRevisionRows(rows);
     deleteMemoryCache(`revisions:${normalizedUsername}`);
 
     let stepsStoredCount = 0;
@@ -124,6 +169,12 @@ export async function POST(req: NextRequest) {
           entriesCount: stepsDailyEntries.length,
           error
         });
+        await recordRevisionIssueLog({
+          username: auth.session.username,
+          message:
+            `La revision del ${fecha} se guardo, pero fallo el registro diario de pasos ` +
+            `(${stepsDailyEntries.length} dias): ${getErrorMessage(error)}`
+        });
       }
     } else if (stepsAverage !== null) {
       try {
@@ -143,6 +194,12 @@ export async function POST(req: NextRequest) {
           stepsAverage,
           error
         });
+        await recordRevisionIssueLog({
+          username: auth.session.username,
+          message:
+            `La revision del ${fecha} se guardo, pero fallo el historico de pasos ` +
+            `con media ${Math.round(stepsAverage)}: ${getErrorMessage(error)}`
+        });
       }
     }
 
@@ -156,6 +213,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     logError("Failed to store revision answers", error);
+    await recordRevisionIssueLog({
+      username: auth.session.username,
+      message:
+        `Error al guardar los campos de la revision del ${revisionDateForLog}: ` +
+        getErrorMessage(error)
+    });
     return NextResponse.json({ error: "Could not save revision." }, { status: 500 });
   }
 }
