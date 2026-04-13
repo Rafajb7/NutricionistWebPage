@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
 import type { RevisionRow } from "@/lib/google/types";
+import { logError } from "@/lib/logger";
 import { DEFAULT_EXERCISE_CATALOG } from "@/lib/routines/default-exercises";
 
 type AppUser = {
@@ -101,6 +102,12 @@ type PeakModeSheetInfo = {
 };
 
 const peakModeSheetInitCache = new Map<string, Promise<PeakModeSheetInfo>>();
+type RevisionErrorLogSheetInfo = {
+  spreadsheetId: string;
+  worksheetName: string;
+};
+
+let revisionErrorLogSheetPromise: Promise<RevisionErrorLogSheetInfo> | null = null;
 
 const ROUTINE_EXERCISE_HEADERS = ["Grupo muscular", "Ejercicio", "Activo"];
 const ROUTINE_LOG_HEADERS = [
@@ -143,6 +150,9 @@ const PEAK_MODE_LOG_HEADERS = [
   "Sesion de entreno",
   "Doble sesion"
 ];
+
+const REVISION_ERROR_LOG_SPREADSHEET_NAME = "Log";
+const REVISION_ERROR_LOG_HEADERS = ["Nombre de usuario", "Fecha y hora", "Mensaje de error"];
 
 function normalizeHeader(value: string): string {
   return value
@@ -219,6 +229,14 @@ function normalizeRoutineEffortLevel(
 
 function normalizeComparableValue(value: string | undefined): string {
   return String(value ?? "").trim();
+}
+
+function normalizeRevisionQuestionKey(value: string | undefined): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase();
 }
 
 function isFalseLike(value: string | undefined): boolean {
@@ -323,6 +341,74 @@ async function resolveSpreadsheetIdByName(
   worksheetTitleCache.set(createdId, initialTitle);
   worksheetNamesCache.set(createdId, new Set([initialTitle]));
   return createdId;
+}
+
+async function resolveSpreadsheetIdByNameInFolder(
+  name: string,
+  folderId: string
+): Promise<string | null> {
+  const drive = await getDriveClient();
+  const query =
+    `name='${escapeQueryValue(name)}' and ` +
+    `mimeType='application/vnd.google-apps.spreadsheet' and ` +
+    `'${escapeQueryValue(folderId)}' in parents and trashed=false`;
+  const res = await drive.files.list({
+    q: query,
+    fields: "files(id,name,modifiedTime)",
+    orderBy: "modifiedTime desc",
+    pageSize: 10
+  });
+  return res.data.files?.[0]?.id ?? null;
+}
+
+async function getFileParentFolderId(fileId: string): Promise<string | null> {
+  const drive = await getDriveClient();
+  const res = await drive.files.get({
+    fileId,
+    fields: "parents"
+  });
+  return res.data.parents?.[0] ?? null;
+}
+
+async function createSpreadsheetInFolder(input: {
+  name: string;
+  folderId: string;
+  initialWorksheetTitle?: string;
+}): Promise<string> {
+  const sheets = await getSheetsClient();
+  const initialTitle = input.initialWorksheetTitle?.trim() || "Sheet1";
+  const created = await sheets.spreadsheets.create({
+    requestBody: {
+      properties: { title: input.name },
+      sheets: [{ properties: { title: initialTitle } }]
+    },
+    fields: "spreadsheetId,sheets.properties.title"
+  });
+
+  const spreadsheetId = created.data.spreadsheetId;
+  if (!spreadsheetId) {
+    throw new Error(`Failed to create spreadsheet "${input.name}".`);
+  }
+
+  const drive = await getDriveClient();
+  const currentMeta = await drive.files.get({
+    fileId: spreadsheetId,
+    fields: "parents"
+  });
+  const currentParents = (currentMeta.data.parents ?? []).join(",");
+
+  await drive.files.update({
+    fileId: spreadsheetId,
+    addParents: input.folderId,
+    removeParents: currentParents || undefined,
+    fields: "id,parents"
+  });
+
+  spreadsheetIdCache.set(input.name, spreadsheetId);
+  worksheetTitleCache.set(spreadsheetId, initialTitle);
+  worksheetNamesCache.set(spreadsheetId, new Set([initialTitle]));
+
+  return spreadsheetId;
 }
 
 async function getWorksheetTitles(spreadsheetId: string): Promise<Set<string>> {
@@ -462,6 +548,60 @@ async function ensureHeaderRow(input: {
       values: [input.headers]
     }
   });
+}
+
+async function ensureRevisionErrorLogSheetReady(): Promise<RevisionErrorLogSheetInfo> {
+  if (revisionErrorLogSheetPromise) {
+    return revisionErrorLogSheetPromise;
+  }
+
+  revisionErrorLogSheetPromise = (async () => {
+    const env = getEnv();
+    const usersSpreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_USERS_SHEET_NAME);
+    const usersFolderId = await getFileParentFolderId(usersSpreadsheetId);
+
+    let spreadsheetId: string;
+    if (usersFolderId) {
+      const existingId = await resolveSpreadsheetIdByNameInFolder(
+        REVISION_ERROR_LOG_SPREADSHEET_NAME,
+        usersFolderId
+      );
+      spreadsheetId =
+        existingId ??
+        (await createSpreadsheetInFolder({
+          name: REVISION_ERROR_LOG_SPREADSHEET_NAME,
+          folderId: usersFolderId,
+          initialWorksheetTitle: "Log"
+        }));
+    } else {
+      spreadsheetId = await resolveSpreadsheetIdByName(REVISION_ERROR_LOG_SPREADSHEET_NAME, {
+        createIfMissing: true,
+        initialWorksheetTitle: "Log"
+      });
+    }
+
+    const worksheetName = await resolveWorksheetName({
+      spreadsheetId
+    });
+
+    await ensureHeaderRow({
+      spreadsheetId,
+      worksheetName,
+      headers: REVISION_ERROR_LOG_HEADERS
+    });
+
+    return {
+      spreadsheetId,
+      worksheetName
+    };
+  })();
+
+  try {
+    return await revisionErrorLogSheetPromise;
+  } catch (error) {
+    revisionErrorLogSheetPromise = null;
+    throw error;
+  }
 }
 
 async function ensureRoutineExerciseSheetSeeded(input: {
@@ -811,6 +951,62 @@ export async function appendRevisionRows(rows: RevisionRow[]): Promise<void> {
   });
 }
 
+export async function upsertRevisionRows(rows: RevisionRow[]): Promise<void> {
+  if (!rows.length) return;
+
+  const env = getEnv();
+  const sheets = await getSheetsClient();
+  const spreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_REVISION_SHEET_NAME);
+  const groups = new Map<
+    string,
+    {
+      username: string;
+      date: string;
+      questionKeys: Set<string>;
+    }
+  >();
+
+  for (const row of rows) {
+    const username = row.usuario;
+    const date = normalizeComparableValue(row.fecha);
+    const groupKey = `${normalizeUsername(username).toLowerCase()}::${date}`;
+    const current = groups.get(groupKey) ?? {
+      username,
+      date,
+      questionKeys: new Set<string>()
+    };
+    current.questionKeys.add(normalizeRevisionQuestionKey(row.pregunta));
+    groups.set(groupKey, current);
+  }
+
+  const rowsToDelete: RevisionSheetRow[] = [];
+  for (const group of groups.values()) {
+    const existingRows = await listRevisionSheetRowsForUser(group.username);
+    rowsToDelete.push(
+      ...existingRows.filter(
+        (row) =>
+          normalizeComparableValue(row.fecha) === group.date &&
+          group.questionKeys.has(normalizeRevisionQuestionKey(row.pregunta))
+      )
+    );
+  }
+
+  if (rowsToDelete.length) {
+    await deleteRevisionSheetRows({
+      spreadsheetId,
+      worksheetName: env.GOOGLE_REVISION_WORKSHEET_NAME,
+      rows: rowsToDelete
+    });
+  }
+
+  await appendRevisionRowsWithClient({
+    sheetsClient: sheets,
+    spreadsheetId,
+    worksheetName: env.GOOGLE_REVISION_WORKSHEET_NAME,
+    rows
+  });
+}
+
 export async function listRevisionRowsForUser(username: string): Promise<RevisionRow[]> {
   const env = getEnv();
   const values = await getValuesBySheetName(
@@ -878,15 +1074,31 @@ export async function deleteRevisionRowsByDateForUser(input: {
   );
   if (!rowsToDelete.length) return 0;
 
-  const worksheetMeta = await getWorksheetMetadataByTitle({
+  await deleteRevisionSheetRows({
     spreadsheetId,
-    worksheetName: env.GOOGLE_REVISION_WORKSHEET_NAME
+    worksheetName: env.GOOGLE_REVISION_WORKSHEET_NAME,
+    rows: rowsToDelete
+  });
+
+  return rowsToDelete.length;
+}
+
+async function deleteRevisionSheetRows(input: {
+  spreadsheetId: string;
+  worksheetName: string;
+  rows: Array<{ rowNumber: number }>;
+}): Promise<void> {
+  if (!input.rows.length) return;
+
+  const worksheetMeta = await getWorksheetMetadataByTitle({
+    spreadsheetId: input.spreadsheetId,
+    worksheetName: input.worksheetName
   });
 
   const sheets = await getSheetsClient();
-  const sortedRows = [...rowsToDelete].sort((a, b) => b.rowNumber - a.rowNumber);
+  const sortedRows = [...input.rows].sort((a, b) => b.rowNumber - a.rowNumber);
   await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
+    spreadsheetId: input.spreadsheetId,
     requestBody: {
       requests: sortedRows.map((row) => ({
         deleteDimension: {
@@ -900,8 +1112,6 @@ export async function deleteRevisionRowsByDateForUser(input: {
       }))
     }
   });
-
-  return rowsToDelete.length;
 }
 
 export async function readRoutineExerciseCatalog(): Promise<RoutineExerciseGroup[]> {
@@ -1339,6 +1549,33 @@ export async function appendRevisionRowsWithClient(input: {
       ])
     }
   });
+}
+
+export async function recordRevisionIssueLog(input: {
+  username: string;
+  message: string;
+}): Promise<void> {
+  try {
+    const sheet = await ensureRevisionErrorLogSheetReady();
+    const sheets = await getSheetsClient();
+    const timestamp = new Date().toISOString();
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheet.spreadsheetId,
+      range: `'${sheet.worksheetName}'!A:C`,
+      valueInputOption: "USER_ENTERED",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [[normalizeUsername(input.username), timestamp, input.message]]
+      }
+    });
+  } catch (error) {
+    logError("Failed to append revision issue log", {
+      username: input.username,
+      message: input.message,
+      error
+    });
+  }
 }
 
 export type { AppUser };

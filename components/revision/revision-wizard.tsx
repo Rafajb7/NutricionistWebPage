@@ -8,6 +8,11 @@ import { ArrowLeft, ArrowRight, Upload, CheckCircle2, Trash2, Plus } from "lucid
 import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
+import {
+  isRevisionMeasurementQuestion,
+  normalizeRevisionMeasurementAnswer,
+  parseRevisionMeasurementValue
+} from "@/lib/revision-measurements";
 
 const photoLabels = ["Frente", "Perfil izquierdo", "Perfil derecho", "Espalda"];
 const WEIGHT_AVERAGE_QUESTION = "PESO MEDIO SEMANAL (KG)";
@@ -85,6 +90,7 @@ export function RevisionWizard() {
 
   const isWeightQuestion = questions[currentIndex] === WEIGHT_AVERAGE_QUESTION;
   const isStepsQuestion = questions[currentIndex] === STEPS_AVERAGE_QUESTION;
+  const isMeasurementQuestion = isRevisionMeasurementQuestion(questions[currentIndex] ?? "");
 
   useEffect(() => {
     let active = true;
@@ -247,7 +253,9 @@ export function RevisionWizard() {
           ? (weightAverage === null ? "" : `${weightAverage.toFixed(2)} kg`)
           : question === STEPS_AVERAGE_QUESTION
             ? (stepsAverage === null ? "" : `${Math.round(stepsAverage)} pasos`)
-            : (answers[index] ?? "").trim()
+            : isRevisionMeasurementQuestion(question)
+              ? normalizeRevisionMeasurementAnswer(answers[index] ?? "")
+              : (answers[index] ?? "").trim()
     }));
   }
 
@@ -496,6 +504,31 @@ export function RevisionWizard() {
                       </span>
                     </p>
                   </div>
+                ) : isMeasurementQuestion ? (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm text-brand-muted">
+                      Introduce una medida numerica en centimetros. Puedes escribir con coma o con punto y se guardara normalizada para Google Sheets.
+                    </p>
+                    <label className="block rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted transition focus-within:border-brand-accent/60">
+                      <span className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                        Medida corporal
+                      </span>
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          value={currentAnswer}
+                          onChange={(event) =>
+                            updateCurrentAnswer(event.target.value.replace(/[^\d.,]/g, ""))
+                          }
+                          inputMode="decimal"
+                          placeholder="Ej: 74,5"
+                          className="w-full rounded-lg border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                        <span className="rounded-md border border-white/15 bg-black/20 px-2 py-1 text-xs text-brand-muted">
+                          cm
+                        </span>
+                      </div>
+                    </label>
+                  </div>
                 ) : (
                   <textarea
                     value={currentAnswer}
@@ -528,6 +561,11 @@ export function RevisionWizard() {
                       if (!validateWeightEntries()) return;
                     } else if (isStepsQuestion) {
                       if (!validateStepsEntries()) return;
+                    } else if (isMeasurementQuestion) {
+                      if (parseRevisionMeasurementValue(currentAnswer) === null) {
+                        toast.error("Introduce una medida valida en centimetros.");
+                        return;
+                      }
                     } else if (!currentAnswer.trim()) {
                       toast.error("Responde antes de continuar.");
                       return;

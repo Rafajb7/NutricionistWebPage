@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
 import { getEnv } from "@/lib/env";
 import { uploadPhotoToDrive } from "@/lib/google/drive";
-import { appendRevisionRows } from "@/lib/google/sheets";
+import { appendRevisionRows, recordRevisionIssueLog } from "@/lib/google/sheets";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -20,18 +20,32 @@ function getTodayDateString(): string {
   return `${year}-${month}-${day}`;
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
 export async function POST(req: Request) {
   const auth = await requireSession();
   if (!auth.session) return auth.response;
 
+  let revisionDateForLog = getTodayDateString();
   try {
     const formData = await req.formData();
     const rawFiles = formData.getAll("photos");
     const files = rawFiles.filter((item): item is File => item instanceof File);
     const labelsRaw = formData.get("labels");
     const revisionDateRaw = formData.get("revisionDate");
+    const parsedRevisionDate =
+      typeof revisionDateRaw === "string" ? revisionDateSchema.safeParse(revisionDateRaw) : null;
+    const fecha = parsedRevisionDate?.success ? parsedRevisionDate.data : getTodayDateString();
+    revisionDateForLog = fecha;
 
     if (!files.length) {
+      await recordRevisionIssueLog({
+        username: auth.session.username,
+        message: `Intento sin archivos al subir fotos para la revision del ${fecha}.`
+      });
       return NextResponse.json({ error: "No files uploaded." }, { status: 400 });
     }
 
@@ -44,9 +58,6 @@ export async function POST(req: Request) {
     }
 
     const maxBytes = getEnv().MAX_UPLOAD_MB * 1024 * 1024;
-    const parsedRevisionDate =
-      typeof revisionDateRaw === "string" ? revisionDateSchema.safeParse(revisionDateRaw) : null;
-    const fecha = parsedRevisionDate?.success ? parsedRevisionDate.data : getTodayDateString();
     const rows: Array<{
       nombre: string;
       fecha: string;
@@ -58,6 +69,12 @@ export async function POST(req: Request) {
     for (let i = 0; i < files.length; i += 1) {
       const file = files[i];
       if (!allowedMimeTypes.has(file.type)) {
+        await recordRevisionIssueLog({
+          username: auth.session.username,
+          message:
+            `Tipo de archivo no permitido al subir fotos para la revision del ${fecha}: ` +
+            `${file.name} (${file.type || "sin mime"}).`
+        });
         return NextResponse.json(
           { error: `Tipo no permitido: ${file.name}` },
           { status: 400 }
@@ -65,6 +82,12 @@ export async function POST(req: Request) {
       }
 
       if (file.size > maxBytes) {
+        await recordRevisionIssueLog({
+          username: auth.session.username,
+          message:
+            `Archivo demasiado grande al subir fotos para la revision del ${fecha}: ` +
+            `${file.name} (${file.size} bytes).`
+        });
         return NextResponse.json(
           { error: `Archivo demasiado grande: ${file.name}` },
           { status: 400 }
@@ -104,6 +127,12 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     logError("Photo upload failed", error);
+    await recordRevisionIssueLog({
+      username: auth.session.username,
+      message:
+        `Error al subir fotos para la revision del ${revisionDateForLog}: ` +
+        getErrorMessage(error)
+    });
     return NextResponse.json({ error: "Could not upload photos." }, { status: 500 });
   }
 }
