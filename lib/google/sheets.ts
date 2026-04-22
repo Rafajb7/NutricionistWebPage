@@ -109,6 +109,13 @@ type RevisionErrorLogSheetInfo = {
 
 let revisionErrorLogSheetPromise: Promise<RevisionErrorLogSheetInfo> | null = null;
 
+type AppEventLogSheetInfo = {
+  spreadsheetId: string;
+  worksheetName: string;
+};
+
+let appEventLogSheetPromise: Promise<AppEventLogSheetInfo> | null = null;
+
 const ROUTINE_EXERCISE_HEADERS = ["Grupo muscular", "Ejercicio", "Activo"];
 const ROUTINE_LOG_HEADERS = [
   "Timestamp",
@@ -153,6 +160,16 @@ const PEAK_MODE_LOG_HEADERS = [
 
 const REVISION_ERROR_LOG_SPREADSHEET_NAME = "Log";
 const REVISION_ERROR_LOG_HEADERS = ["Nombre de usuario", "Fecha y hora", "Mensaje de error"];
+const APP_EVENT_LOG_WORKSHEET_NAME = "Eventos";
+const APP_EVENT_LOG_HEADERS = [
+  "Nivel",
+  "Categoria",
+  "Nombre de usuario",
+  "Fecha y hora",
+  "Ruta",
+  "Mensaje",
+  "Contexto"
+];
 
 function normalizeHeader(value: string): string {
   return value
@@ -311,7 +328,9 @@ async function resolveSpreadsheetIdByName(
     q: query,
     fields: "files(id,name,modifiedTime)",
     orderBy: "modifiedTime desc",
-    pageSize: 10
+    pageSize: 10,
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
   });
   const match = res.data.files?.[0];
   if (match?.id) {
@@ -356,7 +375,9 @@ async function resolveSpreadsheetIdByNameInFolder(
     q: query,
     fields: "files(id,name,modifiedTime)",
     orderBy: "modifiedTime desc",
-    pageSize: 10
+    pageSize: 10,
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
   });
   return res.data.files?.[0]?.id ?? null;
 }
@@ -365,7 +386,8 @@ async function getFileParentFolderId(fileId: string): Promise<string | null> {
   const drive = await getDriveClient();
   const res = await drive.files.get({
     fileId,
-    fields: "parents"
+    fields: "parents",
+    supportsAllDrives: true
   });
   return res.data.parents?.[0] ?? null;
 }
@@ -393,7 +415,8 @@ async function createSpreadsheetInFolder(input: {
   const drive = await getDriveClient();
   const currentMeta = await drive.files.get({
     fileId: spreadsheetId,
-    fields: "parents"
+    fields: "parents",
+    supportsAllDrives: true
   });
   const currentParents = (currentMeta.data.parents ?? []).join(",");
 
@@ -401,7 +424,8 @@ async function createSpreadsheetInFolder(input: {
     fileId: spreadsheetId,
     addParents: input.folderId,
     removeParents: currentParents || undefined,
-    fields: "id,parents"
+    fields: "id,parents",
+    supportsAllDrives: true
   });
 
   spreadsheetIdCache.set(input.name, spreadsheetId);
@@ -556,32 +580,11 @@ async function ensureRevisionErrorLogSheetReady(): Promise<RevisionErrorLogSheet
   }
 
   revisionErrorLogSheetPromise = (async () => {
-    const env = getEnv();
-    const usersSpreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_USERS_SHEET_NAME);
-    const usersFolderId = await getFileParentFolderId(usersSpreadsheetId);
-
-    let spreadsheetId: string;
-    if (usersFolderId) {
-      const existingId = await resolveSpreadsheetIdByNameInFolder(
-        REVISION_ERROR_LOG_SPREADSHEET_NAME,
-        usersFolderId
-      );
-      spreadsheetId =
-        existingId ??
-        (await createSpreadsheetInFolder({
-          name: REVISION_ERROR_LOG_SPREADSHEET_NAME,
-          folderId: usersFolderId,
-          initialWorksheetTitle: "Log"
-        }));
-    } else {
-      spreadsheetId = await resolveSpreadsheetIdByName(REVISION_ERROR_LOG_SPREADSHEET_NAME, {
-        createIfMissing: true,
-        initialWorksheetTitle: "Log"
-      });
-    }
-
+    const spreadsheetId = await resolveOrCreateAppLogSpreadsheetId();
     const worksheetName = await resolveWorksheetName({
-      spreadsheetId
+      spreadsheetId,
+      preferredName: "Log",
+      createIfMissing: true
     });
 
     await ensureHeaderRow({
@@ -601,6 +604,75 @@ async function ensureRevisionErrorLogSheetReady(): Promise<RevisionErrorLogSheet
   } catch (error) {
     revisionErrorLogSheetPromise = null;
     throw error;
+  }
+}
+
+async function resolveOrCreateAppLogSpreadsheetId(): Promise<string> {
+  const env = getEnv();
+  const usersSpreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_USERS_SHEET_NAME);
+  const usersFolderId = await getFileParentFolderId(usersSpreadsheetId);
+
+  if (usersFolderId) {
+    const existingId = await resolveSpreadsheetIdByNameInFolder(
+      REVISION_ERROR_LOG_SPREADSHEET_NAME,
+      usersFolderId
+    );
+    if (existingId) return existingId;
+
+    return createSpreadsheetInFolder({
+      name: REVISION_ERROR_LOG_SPREADSHEET_NAME,
+      folderId: usersFolderId,
+      initialWorksheetTitle: "Log"
+    });
+  }
+
+  return resolveSpreadsheetIdByName(REVISION_ERROR_LOG_SPREADSHEET_NAME, {
+    createIfMissing: true,
+    initialWorksheetTitle: "Log"
+  });
+}
+
+async function ensureAppEventLogSheetReady(): Promise<AppEventLogSheetInfo> {
+  if (appEventLogSheetPromise) {
+    return appEventLogSheetPromise;
+  }
+
+  appEventLogSheetPromise = (async () => {
+    const spreadsheetId = await resolveOrCreateAppLogSpreadsheetId();
+    const worksheetName = await resolveWorksheetName({
+      spreadsheetId,
+      preferredName: APP_EVENT_LOG_WORKSHEET_NAME,
+      createIfMissing: true
+    });
+
+    await ensureHeaderRow({
+      spreadsheetId,
+      worksheetName,
+      headers: APP_EVENT_LOG_HEADERS
+    });
+
+    return {
+      spreadsheetId,
+      worksheetName
+    };
+  })();
+
+  try {
+    return await appEventLogSheetPromise;
+  } catch (error) {
+    appEventLogSheetPromise = null;
+    throw error;
+  }
+}
+
+function serializeAppEventContext(context: unknown): string {
+  if (context === undefined) return "";
+  try {
+    const serialized = JSON.stringify(context);
+    if (!serialized) return "";
+    return serialized.length > 4000 ? `${serialized.slice(0, 3997)}...` : serialized;
+  } catch {
+    return "[unserializable]";
   }
 }
 
@@ -1573,6 +1645,47 @@ export async function recordRevisionIssueLog(input: {
     logError("Failed to append revision issue log", {
       username: input.username,
       message: input.message,
+      error
+    });
+  }
+}
+
+export async function recordAppEventLog(input: {
+  category: string;
+  message: string;
+  level?: "info" | "warn" | "error";
+  path?: string;
+  username?: string;
+  context?: unknown;
+}): Promise<void> {
+  try {
+    const sheet = await ensureAppEventLogSheetReady();
+    const sheets = await getSheetsClient();
+    const timestamp = new Date().toISOString();
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheet.spreadsheetId,
+      range: `'${sheet.worksheetName}'!A:G`,
+      valueInputOption: "USER_ENTERED",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [[
+          input.level ?? "error",
+          input.category.trim(),
+          normalizeUsername(input.username ?? ""),
+          timestamp,
+          input.path?.trim() ?? "",
+          input.message.trim(),
+          serializeAppEventContext(input.context)
+        ]]
+      }
+    });
+  } catch (error) {
+    logError("Failed to append app event log", {
+      category: input.category,
+      message: input.message,
+      path: input.path,
+      username: input.username,
       error
     });
   }

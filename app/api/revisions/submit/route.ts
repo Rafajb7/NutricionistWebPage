@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import { recordRevisionIssueLog, upsertRevisionRows } from "@/lib/google/sheets";
+import {
+  recordAppEventLog,
+  recordRevisionIssueLog,
+  upsertRevisionRows
+} from "@/lib/google/sheets";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { buildRevisionRows } from "@/lib/revisions";
 import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
@@ -213,6 +217,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     logError("Failed to store revision answers", error);
+    await recordAppEventLog({
+      level: "error",
+      category: "revision-submit-server-error",
+      path: "/api/revisions/submit",
+      username: auth.session.username,
+      message: getErrorMessage(error),
+      context: {
+        revisionDate: revisionDateForLog
+      }
+    });
     await recordRevisionIssueLog({
       username: auth.session.username,
       message:

@@ -3,11 +3,22 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
 import { getEnv } from "@/lib/env";
 import { uploadPhotoToDrive } from "@/lib/google/drive";
-import { appendRevisionRows, recordRevisionIssueLog } from "@/lib/google/sheets";
+import {
+  appendRevisionRows,
+  recordAppEventLog,
+  recordRevisionIssueLog
+} from "@/lib/google/sheets";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { logError, logInfo } from "@/lib/logger";
+import {
+  getAcceptedRevisionPhotoMimeTypes,
+  isAcceptedRevisionPhotoFileName,
+  normalizeRevisionPhotoMimeType,
+  resolveRevisionPhotoTypeFromFileName,
+  resolveRevisionPhotoMimeType
+} from "@/lib/revision-photos";
 
-const allowedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const allowedMimeTypes = getAcceptedRevisionPhotoMimeTypes();
 
 const labelsSchema = z.array(z.string().min(1).max(80)).max(10);
 const revisionDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -42,6 +53,16 @@ export async function POST(req: Request) {
     revisionDateForLog = fecha;
 
     if (!files.length) {
+      await recordAppEventLog({
+        level: "warn",
+        category: "revision-photo-empty-upload",
+        path: "/api/photos/upload",
+        username: auth.session.username,
+        message: `Intento sin archivos para la revision del ${fecha}.`,
+        context: {
+          revisionDate: fecha
+        }
+      });
       await recordRevisionIssueLog({
         username: auth.session.username,
         message: `Intento sin archivos al subir fotos para la revision del ${fecha}.`
@@ -68,20 +89,21 @@ export async function POST(req: Request) {
 
     for (let i = 0; i < files.length; i += 1) {
       const file = files[i];
-      if (!allowedMimeTypes.has(file.type)) {
-        await recordRevisionIssueLog({
-          username: auth.session.username,
-          message:
-            `Tipo de archivo no permitido al subir fotos para la revision del ${fecha}: ` +
-            `${file.name} (${file.type || "sin mime"}).`
-        });
-        return NextResponse.json(
-          { error: `Tipo no permitido: ${file.name}` },
-          { status: 400 }
-        );
-      }
+      const declaredMimeType = normalizeRevisionPhotoMimeType(file.type);
 
       if (file.size > maxBytes) {
+        await recordAppEventLog({
+          level: "warn",
+          category: "revision-photo-too-large",
+          path: "/api/photos/upload",
+          username: auth.session.username,
+          message: `Foto rechazada por tamano: ${file.name}`,
+          context: {
+            fileName: file.name,
+            revisionDate: fecha,
+            sizeBytes: file.size
+          }
+        });
         await recordRevisionIssueLog({
           username: auth.session.username,
           message:
@@ -95,10 +117,68 @@ export async function POST(req: Request) {
       }
 
       const buffer = Buffer.from(await file.arrayBuffer());
+      const resolvedPhotoType =
+        resolveRevisionPhotoMimeType({
+          buffer,
+          declaredMimeType
+        }) ?? resolveRevisionPhotoTypeFromFileName(file.name);
+
+      if (
+        !resolvedPhotoType &&
+        !allowedMimeTypes.has(declaredMimeType) &&
+        !isAcceptedRevisionPhotoFileName(file.name)
+      ) {
+        await recordRevisionIssueLog({
+          username: auth.session.username,
+          message:
+            `Tipo de archivo no permitido al subir fotos para la revision del ${fecha}: ` +
+            `${file.name} (${declaredMimeType || "sin mime"}).`
+        });
+        await recordAppEventLog({
+          level: "warn",
+          category: "revision-photo-rejected",
+          path: "/api/photos/upload",
+          username: auth.session.username,
+          message: `Foto rechazada por formato no compatible: ${file.name}`,
+          context: {
+            declaredMimeType,
+            fileName: file.name,
+            revisionDate: fecha,
+            sizeBytes: file.size
+          }
+        });
+        return NextResponse.json(
+          { error: `Formato no permitido: ${file.name}` },
+          { status: 400 }
+        );
+      }
+
+      if (
+        resolvedPhotoType &&
+        declaredMimeType &&
+        resolvedPhotoType.mimeType !== declaredMimeType
+      ) {
+        await recordAppEventLog({
+          level: "warn",
+          category: "revision-photo-mime-mismatch",
+          path: "/api/photos/upload",
+          username: auth.session.username,
+          message: `Discrepancia de MIME detectada en foto de revision: ${file.name}`,
+          context: {
+            declaredMimeType,
+            detectedMimeType: resolvedPhotoType.mimeType,
+            detectedFormat: resolvedPhotoType.format,
+            fileName: file.name,
+            revisionDate: fecha,
+            sizeBytes: file.size
+          }
+        });
+      }
+
       const uploaded = await uploadPhotoToDrive({
         username: auth.session.username,
         originalFileName: file.name,
-        mimeType: file.type,
+        mimeType: resolvedPhotoType?.mimeType ?? declaredMimeType,
         buffer
       });
       const label = labels[i] ?? "Imagen adjunta";
@@ -127,6 +207,16 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     logError("Photo upload failed", error);
+    await recordAppEventLog({
+      level: "error",
+      category: "revision-photo-upload-failed",
+      path: "/api/photos/upload",
+      username: auth.session.username,
+      message: getErrorMessage(error),
+      context: {
+        revisionDate: revisionDateForLog
+      }
+    });
     await recordRevisionIssueLog({
       username: auth.session.username,
       message:

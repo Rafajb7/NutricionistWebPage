@@ -4,7 +4,7 @@ import { checkRateLimit } from "@/lib/auth/rate-limit";
 import { createSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { isBcryptHash, verifyPassword } from "@/lib/auth/password";
 import { shouldUseSecureCookie } from "@/lib/auth/cookie";
-import { readUsersFromSheet } from "@/lib/google/sheets";
+import { readUsersFromSheet, recordAppEventLog } from "@/lib/google/sheets";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -95,6 +95,12 @@ export async function POST(req: NextRequest) {
     return response;
   } catch (error) {
     logError("Login failed", error);
+    await recordAppEventLog({
+      level: "error",
+      category: "login-server-error",
+      path: "/api/login",
+      message: error instanceof Error ? error.message : String(error)
+    });
     return NextResponse.json({ error: "Server error." }, { status: 500 });
   }
 }

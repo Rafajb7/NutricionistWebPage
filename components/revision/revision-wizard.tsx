@@ -8,6 +8,12 @@ import { ArrowLeft, ArrowRight, Upload, CheckCircle2, Trash2, Plus } from "lucid
 import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
+import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
+import {
+  isLikelyAcceptedRevisionPhotoFile,
+  REVISION_PHOTO_ACCEPT_ATTRIBUTE,
+  REVISION_PHOTO_MAX_FILES
+} from "@/lib/revision-photos";
 import {
   isRevisionMeasurementQuestion,
   normalizeRevisionMeasurementAnswer,
@@ -87,6 +93,9 @@ export function RevisionWizard() {
   const [stage, setStage] = useState<WizardStage>("questions");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [finalizingRevision, setFinalizingRevision] = useState(false);
+  const [completionMessage, setCompletionMessage] = useState(
+    "Tus respuestas se guardaron correctamente y el historico ya esta actualizado."
+  );
 
   const isWeightQuestion = questions[currentIndex] === WEIGHT_AVERAGE_QUESTION;
   const isStepsQuestion = questions[currentIndex] === STEPS_AVERAGE_QUESTION;
@@ -287,8 +296,8 @@ export function RevisionWizard() {
       return;
     }
 
-    if (!options?.skipPhotos && selectedFiles.length > 4) {
-      toast.error("Máximo 4 fotos.");
+    if (!options?.skipPhotos && selectedFiles.length > REVISION_PHOTO_MAX_FILES) {
+      toast.error(`Maximo ${REVISION_PHOTO_MAX_FILES} fotos.`);
       return;
     }
 
@@ -308,38 +317,123 @@ export function RevisionWizard() {
         window.location.href = "/login";
         return;
       }
-      const answersJson = (await answersRes.json()) as { error?: string };
       if (!answersRes.ok) {
-        toast.error(answersJson.error ?? "No se pudo guardar la revisión.");
+        const message = await readResponseErrorMessage(
+          answersRes,
+          "No se pudo guardar la revision."
+        );
+        await reportClientEvent({
+          level: "warn",
+          category: "revision-submit-failed",
+          path: "/revision/new",
+          message,
+          context: {
+            revisionDate,
+            selectedFiles: selectedFiles.map((file) => ({
+              name: file.name,
+              sizeBytes: file.size,
+              type: file.type || ""
+            })),
+            status: answersRes.status
+          }
+        });
+        toast.error(message);
         return;
       }
 
+      const failedPhotoUploads: string[] = [];
       if (!options?.skipPhotos && selectedFiles.length) {
-        const form = new FormData();
-        selectedFiles.forEach((file) => form.append("photos", file));
-        form.append("labels", JSON.stringify(photoLabels.slice(0, selectedFiles.length)));
-        form.append("revisionDate", revisionDate);
+        for (let index = 0; index < selectedFiles.length; index += 1) {
+          const file = selectedFiles[index];
+          try {
+            const form = new FormData();
+            form.append("photos", file);
+            form.append("labels", JSON.stringify([photoLabels[index] ?? `Foto ${index + 1}`]));
+            form.append("revisionDate", revisionDate);
 
-        const photosRes = await fetch("/api/photos/upload", {
-          method: "POST",
-          body: form
-        });
-        if (photosRes.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        const photosJson = (await photosRes.json()) as { error?: string };
-        if (!photosRes.ok) {
-          toast.error(photosJson.error ?? "No se pudieron subir las fotos.");
-          return;
+            const photosRes = await fetch("/api/photos/upload", {
+              method: "POST",
+              body: form
+            });
+            if (photosRes.status === 401) {
+              window.location.href = "/login";
+              return;
+            }
+            if (photosRes.ok) {
+              continue;
+            }
+
+            const message = await readResponseErrorMessage(
+              photosRes,
+              `No se pudo subir la foto ${file.name}.`
+            );
+            failedPhotoUploads.push(file.name);
+            await reportClientEvent({
+              level: "warn",
+              category: "revision-photo-upload-failed",
+              path: "/revision/new",
+              message,
+              context: {
+                fileName: file.name,
+                declaredMimeType: file.type || "",
+                label: photoLabels[index] ?? `Foto ${index + 1}`,
+                responseContentType: photosRes.headers.get("content-type") ?? "",
+                revisionDate,
+                sizeBytes: file.size,
+                status: photosRes.status
+              }
+            });
+          } catch (error) {
+            failedPhotoUploads.push(file.name);
+            await reportClientEvent({
+              level: "error",
+              category: "revision-photo-upload-client-error",
+              path: "/revision/new",
+              message: error instanceof Error ? error.message : String(error),
+              context: {
+                fileName: file.name,
+                declaredMimeType: file.type || "",
+                label: photoLabels[index] ?? `Foto ${index + 1}`,
+                revisionDate,
+                sizeBytes: file.size
+              }
+            });
+          }
         }
       }
 
-      toast.success("Revisión completada.");
+      if (failedPhotoUploads.length) {
+        setCompletionMessage(
+          "La revision se guardo, pero algunas fotos no se pudieron subir. Puedes anadirlas despues desde el dashboard."
+        );
+        toast.error(
+          failedPhotoUploads.length === 1
+            ? `La revision se guardo, pero fallo 1 foto: ${failedPhotoUploads[0]}.`
+            : `La revision se guardo, pero fallaron ${failedPhotoUploads.length} fotos.`
+        );
+      } else {
+        setCompletionMessage(
+          "Tus respuestas se guardaron correctamente y el historico ya esta actualizado."
+        );
+        toast.success("Revision completada.");
+      }
       setStage("done");
     } catch (error) {
       console.error(error);
-      toast.error("Error finalizando la revisión.");
+      await reportClientEvent({
+        level: "error",
+        category: "revision-finalize-client-error",
+        path: "/revision/new",
+        message: error instanceof Error ? error.message : String(error),
+        context: {
+          selectedFiles: selectedFiles.map((file) => ({
+            name: file.name,
+            sizeBytes: file.size,
+            type: file.type || ""
+          }))
+        }
+      });
+      toast.error("Error finalizando la revision.");
     } finally {
       setFinalizingRevision(false);
     }
@@ -596,11 +690,18 @@ export function RevisionWizard() {
               <input
                 type="file"
                 multiple
-                accept="image/jpeg,image/png,image/webp"
+                accept={REVISION_PHOTO_ACCEPT_ATTRIBUTE}
                 className="hidden"
                 onChange={(event) => {
                   const files = Array.from(event.target.files ?? []);
-                  setSelectedFiles(files.slice(0, 4));
+                  const invalidFile = files.find(
+                    (file) => !isLikelyAcceptedRevisionPhotoFile(file)
+                  );
+                  if (invalidFile) {
+                    toast.error(`Formato no compatible: ${invalidFile.name}`);
+                    return;
+                  }
+                  setSelectedFiles(files.slice(0, REVISION_PHOTO_MAX_FILES));
                 }}
               />
             </label>
@@ -635,9 +736,7 @@ export function RevisionWizard() {
           >
             <CheckCircle2 className="mx-auto h-12 w-12 text-brand-accent" />
             <h2 className="mt-4 text-2xl font-semibold text-brand-text">Revisión completada</h2>
-            <p className="mt-2 text-brand-muted">
-              Tus respuestas se guardaron correctamente y el histórico ya está actualizado.
-            </p>
+            <p className="mt-2 text-brand-muted">{completionMessage}</p>
             <Link href="/dashboard" className="mt-5 inline-block">
               <BrandButton>Volver al dashboard</BrandButton>
             </Link>
