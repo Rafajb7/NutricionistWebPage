@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
+import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
 
 export function LoginForm() {
   const [username, setUsername] = useState("");
@@ -22,16 +23,36 @@ export function LoginForm() {
         body: JSON.stringify({ username, password })
       });
 
-      const json = (await res.json()) as { error?: string; mustChangePassword?: boolean };
       if (!res.ok) {
-        toast.error(json.error ?? "No se pudo iniciar sesión.");
+        const message = await readResponseErrorMessage(res, "No se pudo iniciar sesion.");
+        if (res.status >= 500 || res.status === 429) {
+          await reportClientEvent({
+            level: res.status >= 500 ? "error" : "warn",
+            category: "login-response-error",
+            path: "/login",
+            message,
+            usernameHint: username,
+            context: {
+              status: res.status
+            }
+          });
+        }
+        toast.error(message);
         return;
       }
 
+      const json = (await res.json()) as { error?: string; mustChangePassword?: boolean };
       toast.success("Sesión iniciada");
       window.location.href = json.mustChangePassword ? "/password/change" : "/dashboard";
     } catch (error) {
       console.error(error);
+      await reportClientEvent({
+        level: "error",
+        category: "login-client-error",
+        path: "/login",
+        message: error instanceof Error ? error.message : String(error),
+        usernameHint: username
+      });
       toast.error("Error de conexion.");
     } finally {
       setLoading(false);

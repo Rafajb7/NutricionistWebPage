@@ -82,7 +82,9 @@ export async function ensureDriveFolder(
   const list = await drive.files.list({
     q: query,
     fields: "files(id,name)",
-    pageSize: 10
+    pageSize: 10,
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
   });
 
   const existing = list.data.files?.[0];
@@ -94,7 +96,8 @@ export async function ensureDriveFolder(
       mimeType: "application/vnd.google-apps.folder",
       parents: [parentId]
     },
-    fields: "id"
+    fields: "id",
+    supportsAllDrives: true
   });
 
   if (!create.data.id) {
@@ -136,7 +139,8 @@ export async function uploadPhotoToDrive(input: UploadPhotoInput): Promise<{
       mimeType: input.mimeType,
       body: Readable.from(input.buffer)
     },
-    fields: "id,webViewLink"
+    fields: "id,webViewLink",
+    supportsAllDrives: true
   });
 
   const fileId = created.data.id;
@@ -167,7 +171,9 @@ async function findUserFolderInRoot(
       "trashed=false"
     ].join(" and "),
     fields: "files(id,name)",
-    pageSize: 300
+    pageSize: 300,
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
   });
 
   const target = normalizeUserFolderKey(username);
@@ -237,7 +243,8 @@ export async function uploadCommunityAttachmentToDrive(
       mimeType: input.mimeType,
       body: Readable.from(input.buffer)
     },
-    fields: "id,name,mimeType,size,createdTime"
+    fields: "id,name,mimeType,size,createdTime",
+    supportsAllDrives: true
   });
 
   const fileId = created.data.id;
@@ -262,7 +269,7 @@ export async function uploadCommunityAttachmentToDrive(
 
 export async function deleteDriveFileById(fileId: string): Promise<void> {
   const drive = await getDriveClient();
-  await drive.files.delete({ fileId });
+  await drive.files.delete({ fileId, supportsAllDrives: true });
 }
 
 export async function getCommunityAttachmentMetadata(
@@ -272,7 +279,8 @@ export async function getCommunityAttachmentMetadata(
   try {
     const response = await drive.files.get({
       fileId,
-      fields: "id,name,mimeType,appProperties,trashed"
+      fields: "id,name,mimeType,appProperties,trashed",
+      supportsAllDrives: true
     });
     const appProperties = response.data.appProperties ?? {};
     return {
@@ -304,7 +312,9 @@ export async function listNutritionPlanPdfsForUser(username: string): Promise<Nu
     q: [`'${userFolderId}' in parents`, "trashed=false"].join(" and "),
     fields: "files(id,name,mimeType,createdTime,modifiedTime,size,shortcutDetails)",
     orderBy: "modifiedTime desc",
-    pageSize: 200
+    pageSize: 200,
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
   });
 
   const seen = new Set<string>();
@@ -365,7 +375,8 @@ export async function uploadNutritionPlanPdfForUser(
       mimeType: input.mimeType || "application/pdf",
       body: Readable.from(input.buffer)
     },
-    fields: "id,name,mimeType,createdTime,modifiedTime,size"
+    fields: "id,name,mimeType,createdTime,modifiedTime,size",
+    supportsAllDrives: true
   });
 
   if (!created.data.id) {
@@ -389,9 +400,9 @@ export async function downloadDriveFile(fileId: string): Promise<{
 }> {
   const drive = await getDriveReadOnlyClient();
   const [metadata, media] = await Promise.all([
-    drive.files.get({ fileId, fields: "name,mimeType" }),
+    drive.files.get({ fileId, fields: "name,mimeType", supportsAllDrives: true }),
     drive.files.get(
-      { fileId, alt: "media" },
+      { fileId, alt: "media", supportsAllDrives: true },
       {
         responseType: "arraybuffer"
       }
@@ -457,7 +468,8 @@ export async function canUserAccessPhotoFile(input: {
   try {
     const file = await drive.files.get({
       fileId: input.fileId,
-      fields: "parents,appProperties,trashed"
+      fields: "parents,appProperties,trashed",
+      supportsAllDrives: true
     });
     if (file.data.trashed) return false;
 
@@ -471,7 +483,8 @@ export async function canUserAccessPhotoFile(input: {
 
     const userFolder = await drive.files.get({
       fileId: userFolderId,
-      fields: "name,mimeType,parents,trashed"
+      fields: "name,mimeType,parents,trashed",
+      supportsAllDrives: true
     });
     if (userFolder.data.trashed) return false;
     if (userFolder.data.mimeType !== "application/vnd.google-apps.folder") return false;
@@ -485,7 +498,8 @@ export async function canUserAccessPhotoFile(input: {
 
     const fotosFolder = await drive.files.get({
       fileId: fotosFolderId,
-      fields: "name,trashed"
+      fields: "name,trashed",
+      supportsAllDrives: true
     });
     if (fotosFolder.data.trashed) return false;
 

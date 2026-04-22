@@ -39,6 +39,12 @@ import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
 import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
+import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
+import {
+  isLikelyAcceptedRevisionPhotoFile,
+  REVISION_PHOTO_ACCEPT_ATTRIBUTE,
+  REVISION_PHOTO_MAX_FILES
+} from "@/lib/revision-photos";
 
 type SessionUser = {
   username: string;
@@ -114,8 +120,6 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DASHBOARD_CACHE_TTL_MS = 90 * 1000;
 const DASHBOARD_CACHE_VERSION = 2;
-const REVISION_PHOTO_MAX_FILES = 4;
-const REVISION_PHOTO_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 type DashboardClientCache = {
   timestamp: number;
@@ -1218,41 +1222,102 @@ export function DashboardShell({ user }: DashboardShellProps) {
       return;
     }
 
-    const invalidFile = selectedFiles.find((file) => !REVISION_PHOTO_ALLOWED_MIME_TYPES.has(file.type));
+    const invalidFile = selectedFiles.find((file) => !isLikelyAcceptedRevisionPhotoFile(file));
     if (invalidFile) {
-      toast.error(`Formato no permitido: ${invalidFile.name}`);
+      toast.error(`Formato no compatible: ${invalidFile.name}`);
       return;
     }
 
-    const form = new FormData();
-    selectedFiles.forEach((file) => form.append("photos", file));
-    form.append("revisionDate", fecha);
-
     setUploadingRevisionDate(fecha);
     try {
-      const res = await fetch("/api/photos/upload", {
-        method: "POST",
-        body: form
-      });
-      if (res.status === 401) {
-        window.location.href = "/login";
-        return;
+      const failedUploads: string[] = [];
+
+      for (const file of selectedFiles) {
+        try {
+          const form = new FormData();
+          form.append("photos", file);
+          form.append("revisionDate", fecha);
+
+          const res = await fetch("/api/photos/upload", {
+            method: "POST",
+            body: form
+          });
+          if (res.status === 401) {
+            window.location.href = "/login";
+            return;
+          }
+
+          if (res.ok) {
+            continue;
+          }
+
+          const message = await readResponseErrorMessage(
+            res,
+            `No se pudo subir la foto ${file.name}.`
+          );
+          failedUploads.push(file.name);
+          await reportClientEvent({
+            level: "warn",
+            category: "dashboard-revision-photo-upload-failed",
+            path: "/dashboard",
+            message,
+            context: {
+              fileName: file.name,
+              declaredMimeType: file.type || "",
+              responseContentType: res.headers.get("content-type") ?? "",
+              revisionDate: fecha,
+              sizeBytes: file.size,
+              status: res.status
+            }
+          });
+        } catch (error) {
+          failedUploads.push(file.name);
+          await reportClientEvent({
+            level: "error",
+            category: "dashboard-revision-photo-client-error-single",
+            path: "/dashboard",
+            message: error instanceof Error ? error.message : String(error),
+            context: {
+              fileName: file.name,
+              declaredMimeType: file.type || "",
+              revisionDate: fecha,
+              sizeBytes: file.size
+            }
+          });
+        }
       }
 
-      const json = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        toast.error(json.error ?? "No se pudieron subir las fotos.");
-        return;
+      if (failedUploads.length) {
+        toast.error(
+          failedUploads.length === 1
+            ? `No se pudo subir 1 foto: ${failedUploads[0]}.`
+            : `No se pudieron subir ${failedUploads.length} fotos.`
+        );
+      } else {
+        toast.success(
+          selectedFiles.length === 1
+            ? "Foto añadida a la revisión."
+            : "Fotos añadidas a la revisión."
+        );
       }
 
       await refreshRevisionEntries();
-      toast.success(
-        selectedFiles.length === 1
-          ? "Foto añadida a la revisión."
-          : "Fotos añadidas a la revisión."
-      );
     } catch (error) {
       console.error(error);
+      await reportClientEvent({
+        level: "error",
+        category: "dashboard-revision-photo-client-error",
+        path: "/dashboard",
+        message: error instanceof Error ? error.message : String(error),
+        context: {
+          revisionDate: fecha,
+          selectedFiles: selectedFiles.map((file) => ({
+            name: file.name,
+            sizeBytes: file.size,
+            type: file.type || ""
+          }))
+        }
+      });
       toast.error("Error al añadir fotos a la revisión.");
     } finally {
       setUploadingRevisionDate(null);
@@ -1876,7 +1941,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
                                 {uploadingRevisionDate === fecha ? "Subiendo..." : "Añadir fotos"}
                                 <input
                                   type="file"
-                                  accept="image/jpeg,image/png,image/webp"
+                                  accept={REVISION_PHOTO_ACCEPT_ATTRIBUTE}
                                   multiple
                                   className="hidden"
                                   disabled={uploadingRevisionDate === fecha}
