@@ -1,4 +1,5 @@
 export const REVISION_PHOTO_MAX_FILES = 4;
+export const REVISION_PHOTO_VERCEL_SAFE_MAX_BYTES = 4 * 1024 * 1024;
 
 export const REVISION_PHOTO_ACCEPTED_MIME_TYPES = [
   "image/jpeg",
@@ -60,6 +61,16 @@ export function getRevisionPhotoExtension(fileName: string | undefined): string 
   const lastDotIndex = normalizedName.lastIndexOf(".");
   if (lastDotIndex === -1) return "";
   return normalizedName.slice(lastDotIndex);
+}
+
+export function toRevisionPhotoUploadFileName(fileName: string | undefined): string {
+  const normalizedName = String(fileName ?? "").trim();
+  const lastDotIndex = normalizedName.lastIndexOf(".");
+  const baseName =
+    (lastDotIndex === -1 ? normalizedName : normalizedName.slice(0, lastDotIndex)).trim() ||
+    "revision-photo";
+
+  return `${baseName}.jpeg`;
 }
 
 export function isAcceptedRevisionPhotoMimeType(value: string | undefined): boolean {

@@ -3,7 +3,8 @@ import {
   detectRevisionPhotoFormat,
   isLikelyAcceptedRevisionPhotoFile,
   normalizeRevisionPhotoMimeType,
-  resolveRevisionPhotoMimeType
+  resolveRevisionPhotoMimeType,
+  toRevisionPhotoUploadFileName
 } from "@/lib/revision-photos";
 
 describe("revision photo helpers", () => {
@@ -21,6 +22,11 @@ describe("revision photo helpers", () => {
     expect(isLikelyAcceptedRevisionPhotoFile({ name: "archivo.pdf", type: "application/pdf" })).toBe(
       false
     );
+  });
+
+  it("normalizes upload file names to jpeg", () => {
+    expect(toRevisionPhotoUploadFileName("IMG_1234.HEIC")).toBe("IMG_1234.jpeg");
+    expect(toRevisionPhotoUploadFileName("foto")).toBe("foto.jpeg");
   });
 
   it("detects jpeg buffers", () => {

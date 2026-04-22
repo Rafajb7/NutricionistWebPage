@@ -9,6 +9,7 @@ import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
 import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
+import { prepareRevisionPhotoForUpload } from "@/lib/revision-photo-client";
 import {
   isLikelyAcceptedRevisionPhotoFile,
   REVISION_PHOTO_ACCEPT_ATTRIBUTE,
@@ -346,8 +347,9 @@ export function RevisionWizard() {
         for (let index = 0; index < selectedFiles.length; index += 1) {
           const file = selectedFiles[index];
           try {
+            const preparedPhoto = await prepareRevisionPhotoForUpload({ file });
             const form = new FormData();
-            form.append("photos", file);
+            form.append("photos", preparedPhoto.file);
             form.append("labels", JSON.stringify([photoLabels[index] ?? `Foto ${index + 1}`]));
             form.append("revisionDate", revisionDate);
 
@@ -377,9 +379,14 @@ export function RevisionWizard() {
                 fileName: file.name,
                 declaredMimeType: file.type || "",
                 label: photoLabels[index] ?? `Foto ${index + 1}`,
+                outputFileName: preparedPhoto.file.name,
+                outputMimeType: preparedPhoto.outputMimeType,
+                outputSizeBytes: preparedPhoto.outputSizeBytes,
+                originalSizeBytes: preparedPhoto.originalSizeBytes,
+                wasCompressed: preparedPhoto.wasCompressed,
                 responseContentType: photosRes.headers.get("content-type") ?? "",
                 revisionDate,
-                sizeBytes: file.size,
+                sizeBytes: preparedPhoto.outputSizeBytes,
                 status: photosRes.status
               }
             });
@@ -682,6 +689,9 @@ export function RevisionWizard() {
             <h2 className="text-2xl font-semibold text-brand-text">Subida de fotos (opcional)</h2>
             <p className="mt-2 text-sm text-brand-muted">
               Puedes subir hasta 4 imágenes: Frente, Perfil izquierdo, Perfil derecho y Espalda.
+            </p>
+            <p className="mt-2 text-xs text-brand-muted">
+              Si alguna foto pesa demasiado, la web la optimiza automáticamente antes de subirla.
             </p>
 
             <label className="mt-5 flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-brand-accent/40 bg-black/20 p-6 text-sm text-brand-muted hover:border-brand-accent/70">
