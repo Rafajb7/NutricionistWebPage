@@ -40,6 +40,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
 import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
 import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
+import { prepareRevisionPhotoForUpload } from "@/lib/revision-photo-client";
 import {
   isLikelyAcceptedRevisionPhotoFile,
   REVISION_PHOTO_ACCEPT_ATTRIBUTE,
@@ -1234,8 +1235,9 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
       for (const file of selectedFiles) {
         try {
+          const preparedPhoto = await prepareRevisionPhotoForUpload({ file });
           const form = new FormData();
-          form.append("photos", file);
+          form.append("photos", preparedPhoto.file);
           form.append("revisionDate", fecha);
 
           const res = await fetch("/api/photos/upload", {
@@ -1264,9 +1266,14 @@ export function DashboardShell({ user }: DashboardShellProps) {
             context: {
               fileName: file.name,
               declaredMimeType: file.type || "",
+              outputFileName: preparedPhoto.file.name,
+              outputMimeType: preparedPhoto.outputMimeType,
+              outputSizeBytes: preparedPhoto.outputSizeBytes,
+              originalSizeBytes: preparedPhoto.originalSizeBytes,
+              wasCompressed: preparedPhoto.wasCompressed,
               responseContentType: res.headers.get("content-type") ?? "",
               revisionDate: fecha,
-              sizeBytes: file.size,
+              sizeBytes: preparedPhoto.outputSizeBytes,
               status: res.status
             }
           });
