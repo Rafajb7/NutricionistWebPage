@@ -68,17 +68,6 @@ const EMPTY_COMMENT_STATE: CommentState = {
   items: []
 };
 
-function toRelative(value: string): string {
-  const parsed = new Date(value).getTime();
-  if (!Number.isFinite(parsed)) return "";
-  const diffMin = Math.floor((Date.now() - parsed) / 60_000);
-  if (diffMin < 1) return "ahora";
-  if (diffMin < 60) return `hace ${diffMin} min`;
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `hace ${diffHours} h`;
-  return `hace ${Math.floor(diffHours / 24)} d`;
-}
-
 function isAllowedFile(file: File): boolean {
   return ["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(file.type);
 }
@@ -368,7 +357,7 @@ export function CommunityShell({ user }: CommunityShellProps) {
               return (
                 <article key={post.postId} className="rounded-2xl border border-white/10 bg-brand-surface/75 p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div><p className="text-sm font-semibold text-brand-text">{post.authorName} <span className="text-brand-muted">@{post.authorUsername}</span></p><p className="text-xs text-brand-muted">{toRelative(post.createdAt)}</p></div>
+                    <div><p className="text-sm font-semibold text-brand-text">{post.authorName} <span className="text-brand-muted">@{post.authorUsername}</span></p></div>
                     <div className="flex items-center gap-2">
                       {(isAdmin || post.status !== "active") ? <span className="rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-[11px] text-brand-muted">{post.status}</span> : null}
                       {post.permissions.canEdit ? <button type="button" onClick={() => editPost(post)} className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-2.5 py-1.5 text-xs text-brand-text hover:bg-white/10"><Pencil className="h-3.5 w-3.5" />Editar</button> : null}
@@ -410,7 +399,7 @@ export function CommunityShell({ user }: CommunityShellProps) {
                   </div>
                   <div className="mt-3 border-t border-white/10 pt-3"><button type="button" onClick={() => toggleComments(post.postId)} className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-1.5 text-xs text-brand-text"><MessageCircle className="h-3.5 w-3.5 text-brand-accent" />{cState.open ? "Ocultar" : "Ver"} comentarios ({post.commentCount})</button></div>
                   {cState.open ? <div className="mt-3 space-y-3 rounded-xl border border-white/10 bg-black/15 p-3">
-                    {cState.loading ? <Skeleton className="h-14 w-full" /> : cState.items.length === 0 ? <p className="text-sm text-brand-muted">Sin comentarios.</p> : cState.items.map((comment) => <article key={comment.commentId} className="rounded-lg border border-white/10 bg-black/25 p-3"><div className="flex items-start justify-between gap-2"><p className="text-xs text-brand-muted"><span className="font-semibold text-brand-text">{comment.authorName}</span> @{comment.authorUsername} · {toRelative(comment.createdAt)}</p><div className="flex items-center gap-2">{comment.permissions.canEdit ? <button type="button" onClick={() => editComment(post.postId, comment)} className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[11px] text-brand-text"><Pencil className="h-3 w-3" />Editar</button> : null}{comment.permissions.canDelete ? <button type="button" onClick={() => removeComment(post.postId, comment.commentId)} className="inline-flex items-center gap-1 rounded-md border border-red-300/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-200"><Trash2 className="h-3 w-3" />Eliminar</button> : null}</div></div><p className="mt-2 whitespace-pre-wrap text-sm text-brand-text">{comment.status === "active" ? comment.content : "Comentario eliminado."}</p></article>)}
+                    {cState.loading ? <Skeleton className="h-14 w-full" /> : cState.items.length === 0 ? <p className="text-sm text-brand-muted">Sin comentarios.</p> : cState.items.map((comment) => <article key={comment.commentId} className="rounded-lg border border-white/10 bg-black/25 p-3"><div className="flex items-start justify-between gap-2"><p className="text-xs text-brand-muted"><span className="font-semibold text-brand-text">{comment.authorName}</span> @{comment.authorUsername}</p><div className="flex items-center gap-2">{comment.permissions.canEdit ? <button type="button" onClick={() => editComment(post.postId, comment)} className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[11px] text-brand-text"><Pencil className="h-3 w-3" />Editar</button> : null}{comment.permissions.canDelete ? <button type="button" onClick={() => removeComment(post.postId, comment.commentId)} className="inline-flex items-center gap-1 rounded-md border border-red-300/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-200"><Trash2 className="h-3 w-3" />Eliminar</button> : null}</div></div><p className="mt-2 whitespace-pre-wrap text-sm text-brand-text">{comment.status === "active" ? comment.content : "Comentario eliminado."}</p></article>)}
                     {cState.cursor ? <div className="flex justify-center"><BrandButton variant="ghost" onClick={() => loadComments(post.postId, false)} disabled={cState.loadingMore}>{cState.loadingMore ? "Cargando..." : "Cargar más comentarios"}</BrandButton></div> : null}
                     {post.status === "active" ? <div className="rounded-xl border border-white/10 bg-black/20 p-3"><textarea value={cState.input} onChange={(event) => patchCommentState(post.postId, { input: event.target.value })} rows={3} maxLength={2000} placeholder="Escribe un comentario..." className="w-full resize-y rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60" /><div className="mt-2 flex justify-end"><BrandButton onClick={() => sendComment(post.postId)} disabled={cState.sending}>{cState.sending ? "Enviando..." : "Comentar"}</BrandButton></div></div> : null}
                   </div> : null}
