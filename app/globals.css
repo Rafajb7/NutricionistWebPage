@@ -127,3 +127,28 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   margin: 0;
   padding: 0;
 }
+
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: var(--brand-surface);
+  color: var(--brand-text);
+}
+
+select option:checked {
+  background-color: var(--brand-accent);
+  color: #050505;
+}
+
+select option:hover,
+select option:focus {
+  background-color: rgba(247, 204, 47, 0.22);
+  color: var(--brand-text);
+}
+
+select option:disabled {
+  color: var(--brand-muted);
+}

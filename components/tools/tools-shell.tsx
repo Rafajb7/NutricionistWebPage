@@ -203,7 +203,7 @@ function formatDateLabel(date: string): string {
   return parsed.toLocaleDateString("es-ES", {
     day: "2-digit",
     month: "2-digit",
-    year: "2-digit"
+    year: "numeric"
   });
 }
 
@@ -844,6 +844,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
 
   useEffect(() => {
     router.prefetch("/dashboard");
+    router.prefetch("/nutrition-plans");
     router.prefetch("/community");
     router.prefetch("/revision/new");
   }, [router]);
@@ -1694,6 +1695,11 @@ export function ToolsShell({ user }: ToolsShellProps) {
               <Link href="/tools">
                 <BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">
                   Herramientas
+                </BrandButton>
+              </Link>
+              <Link href="/nutrition-plans">
+                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  Planes nutricionales
                 </BrandButton>
               </Link>
               <Link href="/community">

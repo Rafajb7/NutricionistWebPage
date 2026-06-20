@@ -36,7 +36,8 @@ const submitSchema = z.object({
       })
     )
     .length(7)
-    .optional()
+    .optional(),
+  syncDerivedMetrics: z.boolean().optional()
 });
 const STEPS_AVERAGE_QUESTION = "numero de pasos";
 
@@ -100,8 +101,9 @@ export async function POST(req: NextRequest) {
     const fecha = parsed.data.revisionDate ?? getTodayDateString();
     revisionDateForLog = fecha;
     const normalizedUsername = auth.session.username.trim().toLowerCase();
+    const syncDerivedMetrics = parsed.data.syncDerivedMetrics ?? true;
     const stepsDailyEntries = parsed.data.stepsDailyEntries ?? [];
-    if (stepsDailyEntries.length) {
+    if (syncDerivedMetrics && stepsDailyEntries.length) {
       const uniqueDates = new Set(stepsDailyEntries.map((entry) => entry.date));
       if (uniqueDates.size !== stepsDailyEntries.length) {
         await recordRevisionIssueLog({
@@ -180,7 +182,7 @@ export async function POST(req: NextRequest) {
             `(${stepsDailyEntries.length} dias): ${getErrorMessage(error)}`
         });
       }
-    } else if (stepsAverage !== null) {
+    } else if (syncDerivedMetrics && stepsAverage !== null) {
       try {
         await appendStrengthMark({
           name: auth.session.name,
@@ -210,6 +212,7 @@ export async function POST(req: NextRequest) {
     logInfo("Revision answers stored", {
       username: auth.session.username,
       count: rows.length,
+      syncDerivedMetrics,
       stepsStored: stepsStoredCount > 0,
       stepsStoredCount
     });

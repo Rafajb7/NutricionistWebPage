@@ -55,7 +55,8 @@ function toLocalIsoDate(value: Date): string {
 function formatShortDate(value: Date): string {
   const day = String(value.getDate()).padStart(2, "0");
   const month = String(value.getMonth() + 1).padStart(2, "0");
-  return `${day}/${month}`;
+  const year = value.getFullYear();
+  return `${day}/${month}/${year}`;
 }
 
 function getPreviousWeekDates(referenceDate = new Date()): Array<{ date: string; label: string }> {

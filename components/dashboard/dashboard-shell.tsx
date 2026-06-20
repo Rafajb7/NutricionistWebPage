@@ -13,8 +13,9 @@ import {
   Eye,
   BellRing,
   X,
-  Trash2,
   ImagePlus,
+  Pencil,
+  Save,
   Scale,
   Footprints,
   Droplets,
@@ -38,7 +39,6 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
-import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
 import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
 import { prepareRevisionPhotoForUpload } from "@/lib/revision-photo-client";
 import {
@@ -60,6 +60,8 @@ type RevisionEntry = {
   respuesta: string;
   imageUrl: string | null;
 };
+
+type RevisionDraft = Record<string, string>;
 
 type DashboardShellProps = {
   user: SessionUser;
@@ -93,6 +95,9 @@ type MetricPoint = {
   value: number;
 };
 
+type ChartUnit = "cm" | "kg" | "pasos";
+type ExpandedDashboardChart = "weight" | "body" | "steps";
+
 const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "CINTURA", label: "CINTURA" },
   { key: "CADERA", label: "CADERA" },
@@ -101,6 +106,8 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "MUSLO", label: "MUSLO" },
   { key: "PESO_MEDIO", label: "PESO MEDIO" }
 ];
+
+const BODY_METRIC_OPTIONS = METRIC_OPTIONS.filter((option) => option.key !== "PESO_MEDIO");
 
 const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
   CINTURA: "CINTURA",
@@ -120,26 +127,24 @@ const METRIC_QUESTION_KEY: Record<string, MetricKey> = {
 
 const NEW_PLAN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DASHBOARD_CACHE_TTL_MS = 90 * 1000;
-const DASHBOARD_CACHE_VERSION = 2;
+const DASHBOARD_CACHE_VERSION = 3;
+const REVISION_CALENDAR_WEEKDAYS = ["L", "M", "X", "J", "V", "S", "D"];
 
 type DashboardClientCache = {
   timestamp: number;
   revisions: RevisionEntry[];
   plans: NutritionPlan[];
-  stepsMarks?: AchievementMark[];
+  dailyTrackerEntries?: DailyTrackerEntry[];
 };
 
-type AchievementMark = {
+type DailyTrackerEntry = {
   id: string;
   timestamp: string;
-  exercise: string;
+  nombre: string;
+  usuario: string;
+  metric: "steps" | "weight";
   date: string;
-  weightKg: number;
-};
-
-type AchievementsResponse = {
-  marks?: AchievementMark[];
-  error?: string;
+  value: number;
 };
 
 type WeeklyStepsAverage = {
@@ -322,7 +327,11 @@ function parseInputNumber(raw: string): number | null {
 function formatMetricDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
+  return parsed.toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  });
 }
 
 function formatDateLabel(date: string): string {
@@ -353,6 +362,59 @@ function toLocalDateOnly(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function getMonthKeyFromDate(value: string | null | undefined): string {
+  if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value.slice(0, 7);
+  return toLocalDateOnly(new Date()).slice(0, 7);
+}
+
+function shiftMonthKey(monthKey: string, offset: -1 | 1): string {
+  const [yearRaw, monthRaw] = monthKey.split("-").map(Number);
+  const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+  const monthIndex = Number.isFinite(monthRaw) ? monthRaw - 1 : new Date().getMonth();
+  const shifted = new Date(year, monthIndex + offset, 1);
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthLabel(monthKey: string): string {
+  const [yearRaw, monthRaw] = monthKey.split("-").map(Number);
+  const parsed = new Date(yearRaw, monthRaw - 1, 1);
+  if (Number.isNaN(parsed.getTime())) return monthKey;
+  return parsed.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+}
+
+function getRevisionCalendarCells(monthKey: string): Array<string | null> {
+  const [yearRaw, monthRaw] = monthKey.split("-").map(Number);
+  const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+  const monthIndex = Number.isFinite(monthRaw) ? monthRaw - 1 : new Date().getMonth();
+  const firstDay = new Date(year, monthIndex, 1);
+  const leadingEmptyCells = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const cells: Array<string | null> = Array.from({ length: leadingEmptyCells }, () => null);
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = new Date(year, monthIndex, day);
+    cells.push(toLocalDateOnly(date));
+  }
+
+  return cells;
+}
+
+function getRevisionDraftKey(item: RevisionEntry, index: number): string {
+  return `${index}:${item.pregunta}`;
+}
+
+function normalizeRevisionEditQuestion(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function isStepsAverageRevisionQuestion(question: string): boolean {
+  return normalizeRevisionEditQuestion(question).startsWith("numero de pasos");
+}
+
 function shiftDateOnly(value: string, days: number): string | null {
   const parsed = new Date(`${value}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return null;
@@ -376,19 +438,25 @@ function getIsoWeekRange(value: string): { weekStart: string; weekEnd: string } 
   };
 }
 
-function formatStepsValue(value: number): string {
-  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Math.round(value));
-}
-
-function formatWeekRangeLabel(weekStart: string, weekEnd: string): string {
-  return `${formatDateLabel(weekStart)} - ${formatDateLabel(weekEnd)}`;
-}
-
-function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | "kg" | "pasos" }) {
+function EvolutionChart({
+  points,
+  unit,
+  framed = true
+}: {
+  points: MetricPoint[];
+  unit: ChartUnit;
+  framed?: boolean;
+}) {
   if (points.length === 0) {
     return (
-      <div className="rounded-xl border border-white/10 bg-black/25 p-6 text-sm text-brand-muted">
-        No hay datos para esta métrica.
+      <div
+        className={
+          framed
+            ? "rounded-xl border border-white/10 bg-black/25 p-6 text-sm text-brand-muted"
+            : "flex min-h-[220px] items-center justify-center rounded-xl border border-white/10 bg-black/20 p-4 text-center text-sm text-brand-muted"
+        }
+      >
+        No hay datos para esta metrica.
       </div>
     );
   }
@@ -424,7 +492,7 @@ function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | 
   };
 
   return (
-    <div className="min-w-0 rounded-xl border border-white/10 bg-black/25 p-4">
+    <div className={framed ? "min-w-0 rounded-xl border border-white/10 bg-black/25 p-4" : "min-w-0"}>
       <div className="min-w-0 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full">
           {ticks.map((tick, index) => (
@@ -473,19 +541,24 @@ function EvolutionChart({ points, unit }: { points: MetricPoint[]; unit: "cm" | 
   );
 }
 
-function formatPlanSize(sizeBytes: number | null): string {
-  if (!sizeBytes || sizeBytes <= 0) return "Tamaño desconocido";
-  const mb = sizeBytes / (1024 * 1024);
-  if (mb >= 1) return `${mb.toFixed(1)} MB`;
-  const kb = sizeBytes / 1024;
-  return `${kb.toFixed(0)} KB`;
-}
-
-function formatPlanDate(date: string | null): string {
-  if (!date) return "Sin fecha";
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString("es-ES");
+function ChartExpandButton({
+  label,
+  onClick
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="absolute right-4 top-4 hidden h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/35 text-brand-muted outline-none transition hover:border-brand-accent/55 hover:bg-brand-accent/10 hover:text-brand-text focus:border-brand-accent/70 focus:text-brand-text lg:inline-flex"
+    >
+      <Eye className="h-4 w-4" />
+    </button>
+  );
 }
 
 function getPlanModifiedTimestamp(plan: NutritionPlan): number | null {
@@ -498,12 +571,6 @@ function getPlanModifiedTimestamp(plan: NutritionPlan): number | null {
   if (!hasModified) return created;
   if (!hasCreated) return modified;
   return Math.max(modified, created);
-}
-
-function getPlanDisplayDate(plan: NutritionPlan): string {
-  const ts = getPlanModifiedTimestamp(plan);
-  if (ts === null) return "Sin fecha";
-  return formatPlanDate(new Date(ts).toISOString());
 }
 
 function PeakNumberField(props: {
@@ -598,15 +665,21 @@ export function DashboardShell({ user }: DashboardShellProps) {
   const [plansLoading, setPlansLoading] = useState(true);
   const [plans, setPlans] = useState<NutritionPlan[]>([]);
   const [query, setQuery] = useState("");
-  const [date, setDate] = useState("");
   const [openDate, setOpenDate] = useState<string | null>(null);
-  const [deletingDate, setDeletingDate] = useState<string | null>(null);
+  const [revisionCalendarOpen, setRevisionCalendarOpen] = useState(false);
+  const [revisionCalendarMonth, setRevisionCalendarMonth] = useState(() =>
+    getMonthKeyFromDate(toLocalDateOnly(new Date()))
+  );
+  const [editingDate, setEditingDate] = useState<string | null>(null);
+  const [revisionDraft, setRevisionDraft] = useState<RevisionDraft>({});
+  const [savingRevisionDate, setSavingRevisionDate] = useState<string | null>(null);
   const [uploadingRevisionDate, setUploadingRevisionDate] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<NutritionPlan | null>(null);
   const [newPlanPopup, setNewPlanPopup] = useState<NewPlanPopupState | null>(null);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>("CINTURA");
-  const [stepsMarks, setStepsMarks] = useState<AchievementMark[]>([]);
+  const [expandedChart, setExpandedChart] = useState<ExpandedDashboardChart | null>(null);
+  const [dailyTrackerEntries, setDailyTrackerEntries] = useState<DailyTrackerEntry[]>([]);
   const [peakMode, setPeakMode] = useState<PeakMode>("none");
   const [peakActiveWindow, setPeakActiveWindow] = useState<ActivePeakWindow | null>(null);
   const [peakDailyForm, setPeakDailyForm] = useState<PeakModeFormState>(() =>
@@ -630,7 +703,6 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
   const groupedEntries = useMemo(() => {
     const filtered = entries.filter((entry) => {
-      if (date && entry.fecha !== date) return false;
       if (!query.trim()) return true;
       const q = query.toLowerCase();
       return (
@@ -646,7 +718,42 @@ export function DashboardShell({ user }: DashboardShellProps) {
     }
 
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [entries, query, date]);
+  }, [entries, query]);
+
+  const revisionDayCounts = useMemo(() => {
+    return new Map(groupedEntries.map(([fecha, items]) => [fecha, items.length]));
+  }, [groupedEntries]);
+
+  const selectedRevisionIndex = useMemo(() => {
+    if (!openDate) return -1;
+    return groupedEntries.findIndex(([fecha]) => fecha === openDate);
+  }, [groupedEntries, openDate]);
+
+  const effectiveSelectedRevisionIndex =
+    selectedRevisionIndex >= 0 ? selectedRevisionIndex : groupedEntries.length ? 0 : -1;
+  const selectedRevisionGroup =
+    effectiveSelectedRevisionIndex >= 0 ? groupedEntries[effectiveSelectedRevisionIndex] : null;
+  const canGoToPreviousRevision =
+    effectiveSelectedRevisionIndex >= 0 && effectiveSelectedRevisionIndex < groupedEntries.length - 1;
+  const canGoToNextRevision = effectiveSelectedRevisionIndex > 0;
+  const revisionCalendarCells = useMemo(
+    () => getRevisionCalendarCells(revisionCalendarMonth),
+    [revisionCalendarMonth]
+  );
+
+  useEffect(() => {
+    setOpenDate((currentOpenDate) => {
+      if (currentOpenDate && groupedEntries.some(([fecha]) => fecha === currentOpenDate)) {
+        return currentOpenDate;
+      }
+      return groupedEntries[0]?.[0] ?? null;
+    });
+  }, [groupedEntries]);
+
+  useEffect(() => {
+    if (!openDate) return;
+    setRevisionCalendarMonth(getMonthKeyFromDate(openDate));
+  }, [openDate]);
 
   const metricSeriesByKey = useMemo(() => {
     const initial: Record<MetricKey, MetricPoint[]> = {
@@ -673,14 +780,12 @@ export function DashboardShell({ user }: DashboardShellProps) {
     return initial;
   }, [entries]);
 
-  const availableMetricOptions = useMemo(
-    () => METRIC_OPTIONS.filter((option) => metricSeriesByKey[option.key].length > 0),
-    [metricSeriesByKey]
-  );
-
+  const bodyMetricOptionsForSelect = BODY_METRIC_OPTIONS;
+  const weightMetricSeries = metricSeriesByKey.PESO_MEDIO;
   const selectedMetricSeries = metricSeriesByKey[selectedMetric];
-  const selectedMetricUnit: "cm" | "kg" =
-    selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
+  const selectedMetricLabel =
+    bodyMetricOptionsForSelect.find((option) => option.key === selectedMetric)?.label ??
+    "METRICA";
   const peakModeEnabled = peakMode !== "none";
   const peakMaxNavigableDate = useMemo(() => {
     if (!peakActiveWindow) return null;
@@ -700,26 +805,26 @@ export function DashboardShell({ user }: DashboardShellProps) {
   );
   const isViewingTodayPeakDate = Boolean(peakSelectedDate && peakSelectedDate === peakToday);
 
-  const uniqueDailySteps = useMemo(() => {
+  const uniqueDailyTrackerSteps = useMemo(() => {
     const byDate = new Map<string, { date: string; value: number; timestamp: string }>();
 
-    for (const mark of stepsMarks) {
-      if (mark.exercise !== DAILY_STEPS_EXERCISE) continue;
-      if (!Number.isFinite(mark.weightKg) || mark.weightKg < 0) continue;
-      if (!parseIsoDateOnly(mark.date)) continue;
+    for (const entry of dailyTrackerEntries) {
+      if (entry.metric !== "steps") continue;
+      if (!Number.isFinite(entry.value) || entry.value < 0) continue;
+      if (!parseIsoDateOnly(entry.date)) continue;
 
-      const existing = byDate.get(mark.date);
-      if (!existing || mark.timestamp.localeCompare(existing.timestamp) > 0) {
-        byDate.set(mark.date, {
-          date: mark.date,
-          value: Math.round(mark.weightKg),
-          timestamp: mark.timestamp
+      const existing = byDate.get(entry.date);
+      if (!existing || entry.timestamp.localeCompare(existing.timestamp) > 0) {
+        byDate.set(entry.date, {
+          date: entry.date,
+          value: Math.round(entry.value),
+          timestamp: entry.timestamp
         });
       }
     }
 
     return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
-  }, [stepsMarks]);
+  }, [dailyTrackerEntries]);
 
   const weeklyStepsAverages = useMemo<WeeklyStepsAverage[]>(() => {
     const byWeek = new Map<
@@ -727,7 +832,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
       { weekStart: string; weekEnd: string; totalSteps: number; daysCount: number }
     >();
 
-    for (const day of uniqueDailySteps) {
+    for (const day of uniqueDailyTrackerSteps) {
       const week = getIsoWeekRange(day.date);
       if (!week) continue;
 
@@ -750,7 +855,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
         averageSteps: item.totalSteps / Math.max(item.daysCount, 1),
         daysCount: item.daysCount
       }));
-  }, [uniqueDailySteps]);
+  }, [uniqueDailyTrackerSteps]);
 
   const weeklyStepsChartSeries = useMemo<MetricPoint[]>(() => {
     return weeklyStepsAverages.map((item) => ({
@@ -759,27 +864,9 @@ export function DashboardShell({ user }: DashboardShellProps) {
     }));
   }, [weeklyStepsAverages]);
 
-  const currentWeekSteps = useMemo(() => {
-    const currentWeek = getIsoWeekRange(toLocalDateOnly(new Date()));
-    if (!currentWeek) return null;
-
-    return (
-      weeklyStepsAverages.find((item) => item.weekStart === currentWeek.weekStart) ?? {
-        weekStart: currentWeek.weekStart,
-        weekEnd: currentWeek.weekEnd,
-        averageSteps: 0,
-        daysCount: 0
-      }
-    );
-  }, [weeklyStepsAverages]);
-
-  const latestWeekWithData = useMemo(() => {
-    if (!weeklyStepsAverages.length) return null;
-    return weeklyStepsAverages[weeklyStepsAverages.length - 1];
-  }, [weeklyStepsAverages]);
-
   useEffect(() => {
     router.prefetch("/tools");
+    router.prefetch("/nutrition-plans");
     router.prefetch("/community");
     router.prefetch("/revision/new");
   }, [router]);
@@ -902,10 +989,12 @@ export function DashboardShell({ user }: DashboardShellProps) {
         if (isFresh) {
           const cachedRevisions = Array.isArray(cached.revisions) ? cached.revisions : [];
           const cachedPlans = Array.isArray(cached.plans) ? cached.plans : [];
-          const cachedStepsMarks = Array.isArray(cached.stepsMarks) ? cached.stepsMarks : [];
+          const cachedDailyTrackerEntries = Array.isArray(cached.dailyTrackerEntries)
+            ? cached.dailyTrackerEntries
+            : [];
           setEntries(cachedRevisions);
           setPlans(cachedPlans);
-          setStepsMarks(cachedStepsMarks);
+          setDailyTrackerEntries(cachedDailyTrackerEntries);
           if (cachedRevisions.length) {
             setOpenDate(cachedRevisions[0].fecha);
           }
@@ -919,16 +1008,16 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
     async function load() {
       try {
-        const [revisionsRes, plansRes, achievementsRes] = await Promise.all([
+        const [revisionsRes, plansRes, dailyTrackerRes] = await Promise.all([
           fetch("/api/revisions"),
           fetch("/api/nutrition-plans"),
-          fetch("/api/tools/achievements", { cache: "no-store" })
+          fetch("/api/tools/daily-tracker", { cache: "no-store" })
         ]);
 
         if (
           revisionsRes.status === 401 ||
           plansRes.status === 401 ||
-          achievementsRes.status === 401
+          dailyTrackerRes.status === 401
         ) {
           window.location.href = "/login";
           return;
@@ -939,13 +1028,16 @@ export function DashboardShell({ user }: DashboardShellProps) {
 
         const revisionsJson = (await revisionsRes.json()) as { revisions: RevisionEntry[] };
         const plansJson = (await plansRes.json()) as { plans: NutritionPlan[] };
-        let nextStepsMarks: AchievementMark[] = [];
-        if (achievementsRes.ok) {
-          const achievementsJson = (await achievementsRes.json()) as AchievementsResponse;
-          const marks = Array.isArray(achievementsJson.marks) ? achievementsJson.marks : [];
-          nextStepsMarks = marks.filter((mark) => mark.exercise === DAILY_STEPS_EXERCISE);
+        let nextDailyTrackerEntries: DailyTrackerEntry[] = [];
+        if (dailyTrackerRes.ok) {
+          const dailyTrackerJson = (await dailyTrackerRes.json()) as {
+            entries?: DailyTrackerEntry[];
+          };
+          nextDailyTrackerEntries = Array.isArray(dailyTrackerJson.entries)
+            ? dailyTrackerJson.entries
+            : [];
         } else {
-          console.error("No se pudieron cargar los logros para pasos semanales.");
+          console.error("No se pudieron cargar los registros de pasos y peso.");
         }
         const nextEntries = revisionsJson.revisions ?? [];
         const nextPlans = plansJson.plans ?? [];
@@ -953,7 +1045,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
         if (!active) return;
         setEntries(nextEntries);
         setPlans(nextPlans);
-        setStepsMarks(nextStepsMarks);
+        setDailyTrackerEntries(nextDailyTrackerEntries);
         if (nextEntries.length) {
           setOpenDate(nextEntries[0].fecha);
         }
@@ -963,7 +1055,7 @@ export function DashboardShell({ user }: DashboardShellProps) {
             timestamp: Date.now(),
             revisions: nextEntries,
             plans: nextPlans,
-            stepsMarks: nextStepsMarks
+            dailyTrackerEntries: nextDailyTrackerEntries
           };
           window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
         } catch {
@@ -987,12 +1079,10 @@ export function DashboardShell({ user }: DashboardShellProps) {
   }, [dashboardCacheKey, router]);
 
   useEffect(() => {
-    if (!availableMetricOptions.length) return;
-    const selectedAvailable = availableMetricOptions.some((option) => option.key === selectedMetric);
-    if (!selectedAvailable) {
-      setSelectedMetric(availableMetricOptions[0].key);
+    if (selectedMetric === "PESO_MEDIO") {
+      setSelectedMetric("CINTURA");
     }
-  }, [availableMetricOptions, selectedMetric]);
+  }, [selectedMetric]);
 
   useEffect(() => {
     if (plansLoading || !plans.length) return;
@@ -1208,11 +1298,111 @@ export function DashboardShell({ user }: DashboardShellProps) {
         timestamp: Date.now(),
         revisions: nextEntries,
         plans,
-        stepsMarks
+        dailyTrackerEntries
       };
       window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
     } catch {
       // ignore local storage errors
+    }
+  }
+
+  function goToRevisionByOffset(offset: -1 | 1) {
+    if (effectiveSelectedRevisionIndex < 0) return;
+    const nextGroup = groupedEntries[effectiveSelectedRevisionIndex + offset];
+    if (!nextGroup) return;
+    setOpenDate(nextGroup[0]);
+    setEditingDate(null);
+    setRevisionDraft({});
+    setRevisionCalendarOpen(false);
+  }
+
+  function selectRevisionDate(fecha: string) {
+    if (!revisionDayCounts.has(fecha)) return;
+    setOpenDate(fecha);
+    setEditingDate(null);
+    setRevisionDraft({});
+    setRevisionCalendarOpen(false);
+  }
+
+  function startEditingRevision(fecha: string, textItems: RevisionEntry[]) {
+    const nextDraft: RevisionDraft = {};
+    textItems.forEach((item, index) => {
+      nextDraft[getRevisionDraftKey(item, index)] = item.respuesta;
+    });
+    setEditingDate(fecha);
+    setRevisionDraft(nextDraft);
+  }
+
+  function cancelEditingRevision() {
+    setEditingDate(null);
+    setRevisionDraft({});
+  }
+
+  function updateRevisionDraftValue(item: RevisionEntry, index: number, value: string) {
+    const key = getRevisionDraftKey(item, index);
+    setRevisionDraft((current) => ({
+      ...current,
+      [key]: value
+    }));
+  }
+
+  async function saveRevisionDraft(fecha: string, textItems: RevisionEntry[]) {
+    if (!textItems.length) return;
+
+    const answers = textItems.map((item, index) => {
+      const key = getRevisionDraftKey(item, index);
+      return {
+        question: item.pregunta,
+        answer: (revisionDraft[key] ?? item.respuesta).trim()
+      };
+    });
+
+    if (answers.some((item) => !item.answer)) {
+      toast.error("Todas las respuestas deben tener contenido antes de guardar.");
+      return;
+    }
+
+    const syncDerivedMetrics = textItems.some((item, index) => {
+      if (!isStepsAverageRevisionQuestion(item.pregunta)) return false;
+      const key = getRevisionDraftKey(item, index);
+      return (revisionDraft[key] ?? item.respuesta).trim() !== item.respuesta.trim();
+    });
+
+    setSavingRevisionDate(fecha);
+    try {
+      const response = await fetch("/api/revisions/submit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          revisionDate: fecha,
+          answers,
+          syncDerivedMetrics
+        })
+      });
+
+      if (response.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const json = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        toast.error(json.error ?? "No se pudo modificar la revision.");
+        return;
+      }
+
+      setEditingDate(null);
+      setRevisionDraft({});
+      toast.success("Revision modificada.");
+      await refreshRevisionEntries();
+      setOpenDate(fecha);
+    } catch (error) {
+      console.error(error);
+      toast.error("Error al modificar la revision.");
+    } finally {
+      setSavingRevisionDate(null);
     }
   }
 
@@ -1331,57 +1521,33 @@ export function DashboardShell({ user }: DashboardShellProps) {
     }
   }
 
-  async function deleteRevisionDate(fecha: string) {
-    const confirmed = window.confirm(
-      "¿Seguro que quieres eliminar este registro? Esta información se borrará definitivamente."
-    );
-    if (!confirmed) return;
-
-    setDeletingDate(fecha);
-    try {
-      const response = await fetch("/api/revisions", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: fecha })
-      });
-
-      if (response.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-
-      const json = (await response.json()) as { error?: string };
-      if (!response.ok) {
-        toast.error(json.error ?? "No se pudo eliminar el registro.");
-        return;
-      }
-
-      const nextEntries = entries.filter((entry) => entry.fecha !== fecha);
-      setEntries(nextEntries);
-      if (openDate === fecha) {
-        setOpenDate(nextEntries[0]?.fecha ?? null);
-      }
-
-      try {
-        const payload: DashboardClientCache = {
-          timestamp: Date.now(),
-          revisions: nextEntries,
-          plans,
-          stepsMarks
-        };
-        window.localStorage.setItem(dashboardCacheKey, JSON.stringify(payload));
-      } catch {
-        // ignore local storage errors
-      }
-
-      toast.success("Registro eliminado.");
-    } catch (error) {
-      console.error(error);
-      toast.error("Error al eliminar el registro.");
-    } finally {
-      setDeletingDate(null);
-    }
-  }
+  const selectedRevisionDate = selectedRevisionGroup?.[0] ?? null;
+  const selectedRevisionItems = selectedRevisionGroup?.[1] ?? [];
+  const selectedTextItems = selectedRevisionItems.filter((item) => !item.imageUrl);
+  const selectedImageItems = selectedRevisionItems.filter((item) => item.imageUrl);
+  const selectedRevisionIsEditing = Boolean(
+    selectedRevisionDate && editingDate === selectedRevisionDate
+  );
+  const expandedChartDetails =
+    expandedChart === "weight"
+      ? {
+          eyebrow: "Peso medio",
+          points: weightMetricSeries,
+          unit: "kg" as const
+        }
+      : expandedChart === "body"
+        ? {
+            eyebrow: "Metricas corporales",
+            points: selectedMetricSeries,
+            unit: "cm" as const
+          }
+        : expandedChart === "steps"
+          ? {
+              eyebrow: "Pasos medios",
+              points: weeklyStepsChartSeries,
+              unit: "pasos" as const
+            }
+          : null;
 
   return (
     <MotionPage>
@@ -1398,6 +1564,11 @@ export function DashboardShell({ user }: DashboardShellProps) {
               <Link href="/tools">
                 <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
                   Herramientas
+                </BrandButton>
+              </Link>
+              <Link href="/nutrition-plans">
+                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  Planes nutricionales
                 </BrandButton>
               </Link>
               <Link href="/community">
@@ -1702,169 +1873,74 @@ export function DashboardShell({ user }: DashboardShellProps) {
         ) : null}
 
         <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Actividad diaria</p>
-            <h2 className="mt-1 text-lg font-semibold text-brand-text">Media semanal de pasos</h2>
+          <div className="mb-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Evolucion</p>
+            <h2 className="mt-1 text-lg font-semibold text-brand-text">
+              Graficas de seguimiento
+            </h2>
           </div>
 
-          {weeklyStepsAverages.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">
-              Aun no hay registros de pasos diarios en Logros. Guarda pasos en Herramientas para
-              ver la media semanal y su historico.
-            </div>
-          ) : (
-            <>
-              <div className="mt-4 grid gap-3 md:grid-cols-3">
-                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
-                    Media esta semana
-                  </p>
-                  <p className="mt-2 text-2xl font-semibold text-brand-text">
-                    {currentWeekSteps ? `${formatStepsValue(currentWeekSteps.averageSteps)} pasos/dia` : "Sin datos"}
-                  </p>
-                  {currentWeekSteps ? (
-                    <p className="mt-1 text-xs text-brand-muted">
-                      {formatWeekRangeLabel(currentWeekSteps.weekStart, currentWeekSteps.weekEnd)}
-                    </p>
-                  ) : null}
-                </article>
-
-                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
-                    Dias registrados (semana actual)
-                  </p>
-                  <p className="mt-2 text-2xl font-semibold text-brand-text">
-                    {currentWeekSteps?.daysCount ?? 0}
-                  </p>
-                </article>
-
-                <article className="rounded-xl border border-white/10 bg-black/20 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
-                    Ultima semana con datos
-                  </p>
-                  <p className="mt-2 text-base font-semibold text-brand-text">
-                    {latestWeekWithData
-                      ? formatWeekRangeLabel(latestWeekWithData.weekStart, latestWeekWithData.weekEnd)
-                      : "Sin datos"}
-                  </p>
-                  <p className="mt-1 text-xs text-brand-muted">
-                    {latestWeekWithData
-                      ? `${formatStepsValue(latestWeekWithData.averageSteps)} pasos/dia`
-                      : ""}
-                  </p>
-                </article>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <article className="relative rounded-2xl border border-white/10 bg-black/20 p-4">
+              <ChartExpandButton
+                label="Ver grafica de peso medio ampliada"
+                onClick={() => setExpandedChart("weight")}
+              />
+              <div className="mb-3 min-h-[4.5rem] pr-12 lg:pr-10">
+                <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                  Peso medio
+                </p>
               </div>
+              <EvolutionChart points={weightMetricSeries} unit="kg" framed={false} />
+            </article>
 
-              <div className="mt-4">
-                <EvolutionChart points={weeklyStepsChartSeries} unit="pasos" />
+            <article className="relative rounded-2xl border border-white/10 bg-black/20 p-4">
+              <ChartExpandButton
+                label="Ver grafica de metricas ampliada"
+                onClick={() => setExpandedChart("body")}
+              />
+              <div className="mb-3 flex min-h-[4.5rem] flex-col gap-3 pr-12 sm:flex-row sm:items-start sm:justify-between lg:pr-10">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                    Metricas corporales
+                  </p>
+                </div>
+                <label className="w-full text-xs text-brand-muted sm:max-w-[13rem]">
+                  <select
+                    value={selectedMetric}
+                    onChange={(event) => setSelectedMetric(event.target.value as MetricKey)}
+                    aria-label="Seleccionar metrica corporal"
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    {bodyMetricOptionsForSelect.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
-            </>
-          )}
+              <EvolutionChart points={selectedMetricSeries} unit="cm" framed={false} />
+            </article>
+
+            <article className="relative rounded-2xl border border-white/10 bg-black/20 p-4">
+              <ChartExpandButton
+                label="Ver grafica de pasos ampliada"
+                onClick={() => setExpandedChart("steps")}
+              />
+              <div className="mb-3 min-h-[4.5rem] pr-12 lg:pr-10">
+                <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                  Pasos medios
+                </p>
+              </div>
+              <EvolutionChart points={weeklyStepsChartSeries} unit="pasos" framed={false} />
+            </article>
+          </div>
         </section>
 
         <section className="space-y-4">
           <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
-                  Planes nutricionales
-                </p>
-                <h2 className="mt-1 text-lg font-semibold text-brand-text">PDFs de planificación</h2>
-              </div>
-            </div>
-
-            {plansLoading ? (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {Array.from({ length: 3 }).map((_, index) => (
-                  <div
-                    key={index}
-                    className="rounded-xl border border-white/10 bg-black/25 p-3"
-                  >
-                    <Skeleton className="h-36 w-full rounded-lg" />
-                    <Skeleton className="mt-3 h-4 w-4/5" />
-                    <Skeleton className="mt-2 h-3 w-2/5" />
-                  </div>
-                ))}
-              </div>
-            ) : plans.length === 0 ? (
-              <div className="rounded-xl border border-white/10 bg-black/25 p-6 text-sm text-brand-muted">
-                Aún no hay PDFs en tu carpeta de planes nutricionales.
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {plans.map((plan) => (
-                  <article
-                    key={plan.id}
-                    className="overflow-hidden rounded-xl border border-white/10 bg-black/25"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => openPlanViewer(plan)}
-                      className="block w-full"
-                    >
-                      <img
-                        src={`/api/nutrition-plans/${plan.id}/thumbnail`}
-                        alt={plan.name}
-                        className="h-32 w-full object-cover"
-                      />
-                    </button>
-                    <div className="space-y-2 p-3">
-                      <p className="min-h-10 text-sm font-medium text-brand-text">{plan.name}</p>
-                      <p className="text-xs text-brand-muted">
-                        {getPlanDisplayDate(plan)} · {formatPlanSize(plan.sizeBytes)}
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openPlanViewer(plan)}
-                          className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/40 px-3 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                          Ver
-                        </button>
-                        <a
-                          href={`/api/nutrition-plans/${plan.id}?download=1`}
-                          className="inline-flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs text-brand-text transition hover:bg-white/10"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          Descargar
-                        </a>
-                      </div>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Evolución</p>
-                <h2 className="mt-1 text-lg font-semibold text-brand-text">Análisis de métricas (cm / kg)</h2>
-              </div>
-              <label className="w-full max-w-sm text-sm text-brand-muted">
-                Métrica
-                <select
-                  value={selectedMetric}
-                  onChange={(event) => setSelectedMetric(event.target.value as MetricKey)}
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                >
-                  {METRIC_OPTIONS.map((option) => (
-                    <option key={option.key} value={option.key}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="mt-4">
-              <EvolutionChart points={selectedMetricSeries} unit={selectedMetricUnit} />
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <label className="relative min-w-0 w-full">
                 <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
                 <input
@@ -1874,15 +1950,82 @@ export function DashboardShell({ user }: DashboardShellProps) {
                   className="min-w-0 w-full max-w-full rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                 />
               </label>
-              <label className="relative min-w-0 w-full">
-                <Calendar className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(event) => setDate(event.target.value)}
-                  className="date-input-responsive block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                />
-              </label>
+              <div className="relative min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setRevisionCalendarOpen((current) => !current)}
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-brand-text outline-none transition hover:border-brand-accent/50 hover:bg-black/30 md:w-auto"
+                  aria-label="Abrir calendario de revisiones"
+                >
+                  <Calendar className="h-4 w-4 text-brand-accent" />
+                  <span>{selectedRevisionDate ? formatDateLabel(selectedRevisionDate) : "Calendario"}</span>
+                </button>
+
+                {revisionCalendarOpen ? (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-[min(92vw,22rem)] rounded-xl border border-white/10 bg-[#111114] p-3 shadow-glow">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRevisionCalendarMonth((current) => shiftMonthKey(current, -1))
+                        }
+                        className="rounded-lg border border-white/15 p-2 text-brand-text transition hover:bg-white/10"
+                        aria-label="Mes anterior"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <p className="text-sm font-semibold capitalize text-brand-text">
+                        {formatMonthLabel(revisionCalendarMonth)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRevisionCalendarMonth((current) => shiftMonthKey(current, 1))
+                        }
+                        className="rounded-lg border border-white/15 p-2 text-brand-text transition hover:bg-white/10"
+                        aria-label="Mes siguiente"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] uppercase tracking-[0.14em] text-brand-muted">
+                      {REVISION_CALENDAR_WEEKDAYS.map((day) => (
+                        <span key={day} className="py-1">
+                          {day}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-1 grid grid-cols-7 gap-1">
+                      {revisionCalendarCells.map((cell, index) => {
+                        if (!cell) {
+                          return <div key={`empty-${index}`} className="aspect-square" />;
+                        }
+
+                        const hasRevision = revisionDayCounts.has(cell);
+                        const isSelected = selectedRevisionDate === cell;
+                        return (
+                          <button
+                            key={cell}
+                            type="button"
+                            onClick={() => selectRevisionDate(cell)}
+                            disabled={!hasRevision}
+                            className={
+                              isSelected
+                                ? "aspect-square rounded-lg border border-brand-accent/70 bg-brand-accent/15 text-sm font-semibold text-brand-text"
+                                : hasRevision
+                                  ? "aspect-square rounded-lg border border-red-400/35 bg-red-500/10 text-sm font-semibold text-red-200 transition hover:bg-red-500/20"
+                                  : "aspect-square rounded-lg border border-transparent text-sm text-brand-muted/45"
+                            }
+                          >
+                            {Number(cell.slice(8))}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -1900,121 +2043,159 @@ export function DashboardShell({ user }: DashboardShellProps) {
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-8 text-center text-brand-muted">
               No hay revisiones para los filtros actuales.
             </div>
-          ) : (
-            <div className="space-y-3">
-              {groupedEntries.map(([fecha, items], index) => {
-                const isOpen = openDate === fecha;
-                const textItems = items.filter((item) => !item.imageUrl);
-                const imageItems = items.filter((item) => item.imageUrl);
-                return (
-                  <motion.article
-                    key={fecha}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="overflow-hidden rounded-2xl border border-white/10 bg-brand-surface/75 transition hover:border-brand-accent/40 hover:shadow-glow"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setOpenDate(isOpen ? null : fecha)}
-                      className="flex w-full items-center justify-between px-5 py-4 text-left"
+          ) : selectedRevisionDate ? (
+            <motion.article
+              key={selectedRevisionDate}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="overflow-hidden rounded-2xl border border-white/10 bg-brand-surface/75 transition hover:border-brand-accent/40 hover:shadow-glow"
+            >
+              <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 px-4 py-4">
+                <button
+                  type="button"
+                  onClick={() => goToRevisionByOffset(1)}
+                  disabled={!canGoToPreviousRevision}
+                  className="inline-flex aspect-square items-center justify-center rounded-xl border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
+                  aria-label="Revision anterior"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <div className="min-w-0 text-center">
+                  <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                    Revision seleccionada
+                  </p>
+                  <h2 className="mt-1 truncate text-lg font-semibold text-brand-text">
+                    {formatDateLabel(selectedRevisionDate)}
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => goToRevisionByOffset(-1)}
+                  disabled={!canGoToNextRevision}
+                  className="inline-flex aspect-square items-center justify-center rounded-xl border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
+                  aria-label="Revision posterior"
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="border-t border-white/10">
+                <div className="space-y-3 p-4">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <label
+                      className={
+                        uploadingRevisionDate === selectedRevisionDate
+                          ? "inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text opacity-65"
+                          : "inline-flex cursor-pointer items-center gap-1 rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text transition hover:bg-brand-accent/20"
+                      }
                     >
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Fecha</p>
-                        <h2 className="text-lg font-semibold text-brand-text">{fecha}</h2>
-                      </div>
-                      <p className="text-sm text-brand-muted">{items.length} registros</p>
-                    </button>
+                      <ImagePlus className="h-3.5 w-3.5" />
+                      {uploadingRevisionDate === selectedRevisionDate ? "Subiendo..." : "Anadir fotos"}
+                      <input
+                        type="file"
+                        accept={REVISION_PHOTO_ACCEPT_ATTRIBUTE}
+                        multiple
+                        className="hidden"
+                        disabled={uploadingRevisionDate === selectedRevisionDate}
+                        onChange={(event) => {
+                          const selectedFiles = Array.from(event.currentTarget.files ?? []);
+                          event.currentTarget.value = "";
+                          void addPhotosToRevision(selectedRevisionDate, selectedFiles);
+                        }}
+                      />
+                    </label>
 
-                    <AnimatePresence initial={false}>
-                      {isOpen ? (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.25 }}
-                          className="border-t border-white/10"
+                    {selectedTextItems.length ? (
+                      selectedRevisionIsEditing ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void saveRevisionDraft(selectedRevisionDate, selectedTextItems)}
+                            disabled={savingRevisionDate === selectedRevisionDate}
+                            className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/40 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text transition hover:bg-brand-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Save className="h-3.5 w-3.5" />
+                            {savingRevisionDate === selectedRevisionDate ? "Guardando..." : "Guardar cambios"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEditingRevision}
+                            disabled={savingRevisionDate === selectedRevisionDate}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                            Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => startEditingRevision(selectedRevisionDate, selectedTextItems)}
+                          disabled={uploadingRevisionDate === selectedRevisionDate}
+                          className="inline-flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          <div className="space-y-3 p-4">
-                            <div className="flex flex-wrap justify-end gap-2">
-                              <label
-                                className={
-                                  uploadingRevisionDate === fecha
-                                    ? "inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text opacity-65"
-                                    : "inline-flex cursor-pointer items-center gap-1 rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-3 py-1.5 text-xs font-medium text-brand-text transition hover:bg-brand-accent/20"
-                                }
-                              >
-                                <ImagePlus className="h-3.5 w-3.5" />
-                                {uploadingRevisionDate === fecha ? "Subiendo..." : "Añadir fotos"}
-                                <input
-                                  type="file"
-                                  accept={REVISION_PHOTO_ACCEPT_ATTRIBUTE}
-                                  multiple
-                                  className="hidden"
-                                  disabled={uploadingRevisionDate === fecha}
-                                  onChange={(event) => {
-                                    const selectedFiles = Array.from(event.currentTarget.files ?? []);
-                                    event.currentTarget.value = "";
-                                    void addPhotosToRevision(fecha, selectedFiles);
-                                  }}
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                onClick={() => deleteRevisionDate(fecha)}
-                                disabled={deletingDate === fecha || uploadingRevisionDate === fecha}
-                                className="inline-flex items-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                {deletingDate === fecha ? "Eliminando..." : "Eliminar registro"}
-                              </button>
-                            </div>
-                            {textItems.map((item, itemIndex) => (
-                              <div
-                                key={`${fecha}-${itemIndex}`}
-                                className="rounded-xl border border-white/10 bg-black/25 p-4"
-                              >
-                                <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
-                                  {item.pregunta}
-                                </p>
-                                <p className="mt-2 whitespace-pre-wrap text-sm text-brand-text">
-                                  {item.respuesta}
-                                </p>
-                              </div>
-                            ))}
+                          <Pencil className="h-3.5 w-3.5" />
+                          Modificar
+                        </button>
+                      )
+                    ) : null}
+                  </div>
 
-                            {imageItems.length ? (
-                              <div className="rounded-xl border border-white/10 bg-black/25 p-4">
-                                <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
-                                  Galeria de fotos
-                                </p>
-                                <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                                  {imageItems.map((item, itemIndex) => (
-                                    <button
-                                      key={`${fecha}-img-${itemIndex}`}
-                                      type="button"
-                                      onClick={() => setLightboxImage(item.imageUrl)}
-                                      className="overflow-hidden rounded-lg border border-white/15"
-                                    >
-                                      <img
-                                        src={item.imageUrl ?? ""}
-                                        alt={item.pregunta}
-                                        className="h-28 w-full object-cover transition duration-300 hover:scale-[1.05]"
-                                      />
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        </motion.div>
-                      ) : null}
-                    </AnimatePresence>
-                  </motion.article>
-                );
-              })}
-            </div>
-          )}
+                  {selectedTextItems.map((item, itemIndex) => {
+                    const draftKey = getRevisionDraftKey(item, itemIndex);
+                    return (
+                      <div
+                        key={`${selectedRevisionDate}-${itemIndex}`}
+                        className="rounded-xl border border-white/10 bg-black/25 p-4"
+                      >
+                        <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                          {item.pregunta}
+                        </p>
+                        {selectedRevisionIsEditing ? (
+                          <textarea
+                            value={revisionDraft[draftKey] ?? item.respuesta}
+                            onChange={(event) =>
+                              updateRevisionDraftValue(item, itemIndex, event.target.value)
+                            }
+                            rows={3}
+                            className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 p-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          />
+                        ) : (
+                          <p className="mt-2 whitespace-pre-wrap text-sm text-brand-text">
+                            {item.respuesta}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {selectedImageItems.length ? (
+                    <div className="rounded-xl border border-white/10 bg-black/25 p-4">
+                      <p className="text-xs uppercase tracking-[0.18em] text-brand-muted">
+                        Galeria de fotos
+                      </p>
+                      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+                        {selectedImageItems.map((item, itemIndex) => (
+                          <button
+                            key={`${selectedRevisionDate}-img-${itemIndex}`}
+                            type="button"
+                            onClick={() => setLightboxImage(item.imageUrl)}
+                            className="overflow-hidden rounded-lg border border-white/15"
+                          >
+                            <img
+                              src={item.imageUrl ?? ""}
+                              alt={item.pregunta}
+                              className="h-28 w-full object-cover transition duration-300 hover:scale-[1.05]"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </motion.article>
+          ) : null}
         </section>
       </div>
 
@@ -2124,6 +2305,72 @@ export function DashboardShell({ user }: DashboardShellProps) {
               </button>
             </div>
           </motion.aside>
+        ) : null}
+
+        {expandedChartDetails ? (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 lg:p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setExpandedChart(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, y: 14 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 210, damping: 24 }}
+              className="w-[min(92vw,72rem)] max-h-[86vh] overflow-y-auto rounded-2xl border border-brand-accent/30 bg-[#0f0f11] p-5 shadow-glow"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                    {expandedChartDetails.eyebrow}
+                  </p>
+                  {expandedChart === "body" ? (
+                    <p className="mt-1 text-sm font-semibold text-brand-text">
+                      {selectedMetricLabel}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-end justify-end gap-2">
+                  {expandedChart === "body" ? (
+                    <label className="w-48 text-xs text-brand-muted">
+                      <select
+                        value={selectedMetric}
+                        onChange={(event) => setSelectedMetric(event.target.value as MetricKey)}
+                        aria-label="Seleccionar metrica corporal"
+                        className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      >
+                        {bodyMetricOptionsForSelect.map((option) => (
+                          <option key={option.key} value={option.key}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setExpandedChart(null)}
+                    className="inline-flex h-10 items-center gap-2 rounded-xl border border-white/15 bg-black/20 px-3 text-sm text-brand-text outline-none transition hover:border-brand-accent/55 hover:bg-white/10 focus:border-brand-accent/70"
+                  >
+                    <X className="h-4 w-4" />
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-black/25 p-4">
+                <EvolutionChart
+                  points={expandedChartDetails.points}
+                  unit={expandedChartDetails.unit}
+                  framed={false}
+                />
+              </div>
+            </motion.div>
+          </motion.div>
         ) : null}
 
         {selectedPlan ? (
