@@ -204,7 +204,11 @@ function formatDateTimeLabel(dateTime: string): string {
 function formatMetricDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
+  return parsed.toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  });
 }
 
 function normalizeMetricQuestion(question: string): string {
@@ -244,7 +248,11 @@ function formatPlanSize(sizeBytes: number | null): string {
 function getPlanDisplayDate(plan: NutritionPlan): string {
   const ts = Date.parse(plan.modifiedTime ?? plan.createdTime ?? "");
   if (!Number.isFinite(ts)) return "Sin fecha";
-  return new Date(ts).toLocaleDateString("es-ES");
+  return new Date(ts).toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  });
 }
 
 function getPeakMetricNumericValue(log: PeakModeDailyLog, key: PeakMetricKey): number {

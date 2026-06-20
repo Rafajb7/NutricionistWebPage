@@ -1,21 +1,14 @@
 import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
-import {
-  deleteRevisionRowsByDateForUser,
-  listRevisionRowsForUser
-} from "@/lib/google/sheets";
+import { listRevisionRowsForUser } from "@/lib/google/sheets";
 import { toRevisionEntry } from "@/lib/revisions";
-import { deleteMemoryCache, getOrSetMemoryCache } from "@/lib/cache/memory-cache";
-import { logError, logInfo } from "@/lib/logger";
+import { getOrSetMemoryCache } from "@/lib/cache/memory-cache";
+import { logError } from "@/lib/logger";
 
 const querySchema = z.object({
   date: z.string().optional(),
   q: z.string().optional()
-});
-
-const deleteSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 });
 
 const REVISION_CACHE_TTL_MS = 45_000;
@@ -62,37 +55,12 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function DELETE(req: NextRequest) {
+export async function DELETE() {
   const auth = await requireSession();
   if (!auth.session) return auth.response;
 
-  try {
-    const json = await req.json();
-    const parsed = deleteSchema.safeParse(json);
-    if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
-    }
-
-    const deletedCount = await deleteRevisionRowsByDateForUser({
-      username: auth.session.username,
-      date: parsed.data.date
-    });
-
-    if (!deletedCount) {
-      return NextResponse.json({ error: "Revision rows not found." }, { status: 404 });
-    }
-
-    const cacheKey = `revisions:${auth.session.username.trim().toLowerCase()}`;
-    deleteMemoryCache(cacheKey);
-    logInfo("Revision rows deleted by date", {
-      username: auth.session.username,
-      date: parsed.data.date,
-      count: deletedCount
-    });
-
-    return NextResponse.json({ ok: true, count: deletedCount });
-  } catch (error) {
-    logError("Failed to delete revisions", error);
-    return NextResponse.json({ error: "Could not delete revisions." }, { status: 500 });
-  }
+  return NextResponse.json(
+    { error: "Revision deletion is disabled. Use modification instead." },
+    { status: 405 }
+  );
 }

@@ -94,6 +94,7 @@ export function CommunityShell({ user }: CommunityShellProps) {
   useEffect(() => {
     router.prefetch("/dashboard");
     router.prefetch("/tools");
+    router.prefetch("/nutrition-plans");
   }, [router]);
 
   useEffect(() => {
@@ -297,6 +298,7 @@ export function CommunityShell({ user }: CommunityShellProps) {
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
               <Link href="/dashboard"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Dashboard</BrandButton></Link>
               <Link href="/tools"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Herramientas</BrandButton></Link>
+              {!isAdmin ? <Link href="/nutrition-plans"><BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">Planes nutricionales</BrandButton></Link> : null}
               <Link href="/community"><BrandButton className="w-full justify-center px-4 py-2 sm:w-auto">Comunidad</BrandButton></Link>
               <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto" onClick={handleLogout}><LogOut className="mr-2 h-4 w-4" />Logout</BrandButton>
             </div>
