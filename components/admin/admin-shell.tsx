@@ -56,6 +56,16 @@ type CompetitionEvent = {
 type AchievementMark = { id: string; timestamp: string; exercise: string; date: string; weightKg: number };
 type AchievementGoal = { id: string; timestamp: string; exercise: string; targetDate: string; targetWeightKg: number };
 
+type DailyTrackerEntry = {
+  id: string;
+  timestamp: string;
+  nombre: string;
+  usuario: string;
+  metric: "steps" | "weight";
+  date: string;
+  value: number;
+};
+
 type NutritionPlan = {
   id: string;
   name: string;
@@ -96,6 +106,7 @@ type AdminUserData = {
     competitions: CompetitionEvent[];
     peakModeLogs: PeakModeDailyLog[];
     nutritionPlans: NutritionPlan[];
+    dailyTrackerEntries: DailyTrackerEntry[];
     achievements: { marks: AchievementMark[]; goals: AchievementGoal[] };
   };
 };
@@ -108,6 +119,13 @@ type MetricKey =
   | "MUSLO"
   | "PESO_MEDIO";
 type MetricPoint = { date: string; value: number };
+type StepsTableRow = {
+  id: string;
+  date: string;
+  value: number;
+  source: string;
+  recordedAt: string | null;
+};
 
 type PeakMetricKey =
   | "pesoAyunasKg"
@@ -134,6 +152,7 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; label: string }> = [
   { key: "MUSLO", label: "Muslo" },
   { key: "PESO_MEDIO", label: "Peso medio" }
 ];
+const LEGACY_DAILY_STEPS_EXERCISE = "Pasos diarios";
 
 const PEAK_METRIC_OPTIONS: Array<{
   key: PeakMetricKey;
@@ -231,11 +250,19 @@ function metricKeyFromQuestion(question: string): MetricKey | null {
   return null;
 }
 
+function isStepsRevisionQuestion(question: string): boolean {
+  return normalizeMetricQuestion(question).startsWith("NUMERODEPASOS");
+}
+
 function parseMetricValue(raw: string): number | null {
   const match = raw.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
   if (!match) return null;
   const value = Number(match[0]);
   return Number.isFinite(value) ? value : null;
+}
+
+function formatStepsValue(value: number): string {
+  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Math.round(value));
 }
 
 function formatPlanSize(sizeBytes: number | null): string {
@@ -479,9 +506,64 @@ export function AdminShell({ user }: AdminShellProps) {
     return out;
   }, [selectedData]);
 
+  const stepsTableRows = useMemo<StepsTableRow[]>(() => {
+    const byDate = new Map<string, StepsTableRow>();
+
+    for (const entry of selectedData?.tools.dailyTrackerEntries ?? []) {
+      if (entry.metric !== "steps") continue;
+      byDate.set(entry.date, {
+        id: entry.id,
+        date: entry.date,
+        value: entry.value,
+        source: "Registro diario",
+        recordedAt: entry.timestamp || null
+      });
+    }
+
+    for (const mark of selectedData?.tools.achievements.marks ?? []) {
+      if (normalizeMetricQuestion(mark.exercise) !== normalizeMetricQuestion(LEGACY_DAILY_STEPS_EXERCISE)) {
+        continue;
+      }
+      if (byDate.has(mark.date)) continue;
+      byDate.set(mark.date, {
+        id: mark.id,
+        date: mark.date,
+        value: mark.weightKg,
+        source: "Historico anterior",
+        recordedAt: mark.timestamp || null
+      });
+    }
+
+    if (byDate.size === 0) {
+      for (const entry of selectedData?.dashboard.revisions ?? []) {
+        if (!isStepsRevisionQuestion(entry.pregunta)) continue;
+        const value = parseMetricValue(entry.respuesta);
+        if (value === null) continue;
+        byDate.set(entry.fecha, {
+          id: `revision-steps-${entry.fecha}`,
+          date: entry.fecha,
+          value,
+          source: "Revision",
+          recordedAt: null
+        });
+      }
+    }
+
+    return Array.from(byDate.values()).sort((a, b) => {
+      const byDateDesc = b.date.localeCompare(a.date);
+      if (byDateDesc !== 0) return byDateDesc;
+      return (b.recordedAt ?? "").localeCompare(a.recordedAt ?? "");
+    });
+  }, [selectedData]);
+
   const availableMetricOptions = useMemo(
-    () => METRIC_OPTIONS.filter((opt) => metricSeriesByKey[opt.key].length > 0),
-    [metricSeriesByKey]
+    () =>
+      METRIC_OPTIONS.filter(
+        (opt) =>
+          metricSeriesByKey[opt.key].length > 0 ||
+          (opt.key === "PESO_MEDIO" && stepsTableRows.length > 0)
+      ),
+    [metricSeriesByKey, stepsTableRows]
   );
   const selectedMetricUnit: "cm" | "kg" =
     selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
@@ -780,6 +862,56 @@ export function AdminShell({ user }: AdminShellProps) {
                 </label>
               </div>
               <div className="mt-4"><EvolutionChart points={metricSeriesByKey[selectedMetric]} unit={selectedMetricUnit} /></div>
+              {selectedMetric === "PESO_MEDIO" ? (
+                <div className="mt-4">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <h4 className="text-sm font-semibold text-brand-text">
+                        Pasos introducidos por el usuario
+                      </h4>
+                      <p className="text-xs text-brand-muted">
+                        Registros guardados desde la revision y desde la herramienta Pasos y peso.
+                      </p>
+                    </div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                      {stepsTableRows.length} registro{stepsTableRows.length === 1 ? "" : "s"}
+                    </p>
+                  </div>
+
+                  {stepsTableRows.length === 0 ? (
+                    <p className="mt-3 rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">
+                      Este usuario no tiene pasos registrados.
+                    </p>
+                  ) : (
+                    <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
+                      <table className="min-w-[620px] w-full text-sm">
+                        <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Fecha</th>
+                            <th className="px-3 py-2 text-left">Pasos</th>
+                            <th className="px-3 py-2 text-left">Origen</th>
+                            <th className="px-3 py-2 text-left">Registro</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stepsTableRows.map((row) => (
+                            <tr key={row.id} className="border-t border-white/10">
+                              <td className="px-3 py-2 text-brand-text">{formatDateLabel(row.date)}</td>
+                              <td className="px-3 py-2 font-semibold text-brand-text">
+                                {formatStepsValue(row.value)} pasos
+                              </td>
+                              <td className="px-3 py-2 text-brand-muted">{row.source}</td>
+                              <td className="px-3 py-2 text-brand-muted">
+                                {row.recordedAt ? formatDateTimeLabel(row.recordedAt) : "-"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ) : null}
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">

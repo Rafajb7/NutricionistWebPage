@@ -8,8 +8,7 @@ import {
 } from "@/lib/google/sheets";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { buildRevisionRows } from "@/lib/revisions";
-import { DAILY_STEPS_EXERCISE } from "@/lib/achievements/strength-exercises";
-import { appendStrengthMark } from "@/lib/google/achievements";
+import { upsertDailyTrackerEntry } from "@/lib/google/achievements";
 import { logError, logInfo } from "@/lib/logger";
 import {
   isRevisionMeasurementQuestion,
@@ -175,18 +174,18 @@ export async function POST(req: NextRequest) {
     if (stepsDailyEntries.length) {
       try {
         for (const entry of stepsDailyEntries) {
-          await appendStrengthMark({
+          await upsertDailyTrackerEntry({
             name: auth.session.name,
             username: auth.session.username,
-            exercise: DAILY_STEPS_EXERCISE,
+            metric: "steps",
             date: entry.date,
-            weightKg: entry.steps
+            value: entry.steps
           });
         }
         stepsStoredCount = stepsDailyEntries.length;
-        deleteMemoryCache(`strength-achievements:${normalizedUsername}`);
+        deleteMemoryCache(`daily-tracker:${normalizedUsername}`);
       } catch (error) {
-        logError("Failed to store weekly daily-steps entries from revision", {
+        logError("Failed to store weekly daily tracker steps from revision", {
           username: auth.session.username,
           date: fecha,
           entriesCount: stepsDailyEntries.length,
@@ -201,17 +200,17 @@ export async function POST(req: NextRequest) {
       }
     } else if (syncDerivedMetrics && stepsAverage !== null) {
       try {
-        await appendStrengthMark({
+        await upsertDailyTrackerEntry({
           name: auth.session.name,
           username: auth.session.username,
-          exercise: DAILY_STEPS_EXERCISE,
+          metric: "steps",
           date: fecha,
-          weightKg: Math.round(stepsAverage)
+          value: Math.round(stepsAverage)
         });
         stepsStoredCount = 1;
-        deleteMemoryCache(`strength-achievements:${normalizedUsername}`);
+        deleteMemoryCache(`daily-tracker:${normalizedUsername}`);
       } catch (error) {
-        logError("Failed to store weekly steps average from revision", {
+        logError("Failed to store weekly steps average in daily tracker from revision", {
           username: auth.session.username,
           date: fecha,
           stepsAverage,
