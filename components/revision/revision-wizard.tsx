@@ -35,6 +35,7 @@ const PREVIOUS_WEEK_DAY_NAMES = [
 ];
 
 type WizardStage = "questions" | "photos" | "done";
+type StepsEntryMode = "average" | "daily";
 type WeeklyStepEntry = { date: string; steps: number };
 
 function normalizeQuestionKey(value: string): string {
@@ -89,6 +90,8 @@ export function RevisionWizard() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const [weightEntries, setWeightEntries] = useState<string[]>([""]);
+  const [stepsEntryMode, setStepsEntryMode] = useState<StepsEntryMode>("average");
+  const [stepsAverageEntry, setStepsAverageEntry] = useState("");
   const [stepsEntries, setStepsEntries] = useState<string[]>(() =>
     Array.from({ length: 7 }, () => "")
   );
@@ -216,6 +219,7 @@ export function RevisionWizard() {
   }
 
   function getNormalizedStepEntries(): WeeklyStepEntry[] | null {
+    if (stepsEntryMode !== "daily") return null;
     if (stepsEntries.length !== previousWeekDates.length) return null;
 
     const normalized = stepsEntries.map((value, index) => {
@@ -230,6 +234,10 @@ export function RevisionWizard() {
   }
 
   function getStepsAverage(): number | null {
+    if (stepsEntryMode === "average") {
+      return parseStepsValue(stepsAverageEntry);
+    }
+
     const entries = getNormalizedStepEntries();
     if (!entries?.length) return null;
     const sum = entries.reduce((acc, entry) => acc + entry.steps, 0);
@@ -237,6 +245,20 @@ export function RevisionWizard() {
   }
 
   function validateStepsEntries(): boolean {
+    if (stepsEntryMode === "average") {
+      if (stepsAverageEntry.trim().length === 0) {
+        toast.error("Introduce la media semanal de pasos antes de continuar.");
+        return false;
+      }
+
+      if (parseStepsValue(stepsAverageEntry) === null) {
+        toast.error("Introduce una media semanal valida entre 0 y 100000 pasos.");
+        return false;
+      }
+
+      return true;
+    }
+
     if (stepsEntries.length !== previousWeekDates.length) {
       toast.error("Debes registrar los pasos de los 7 dias.");
       return false;
@@ -257,21 +279,44 @@ export function RevisionWizard() {
   function getNormalizedAnswers() {
     const weightAverage = getWeightAverage();
     const stepsAverage = getStepsAverage();
-    return questions.map((question, index) => ({
-      question,
-      answer:
-        question === WEIGHT_AVERAGE_QUESTION
-          ? (weightAverage === null ? "" : `${weightAverage.toFixed(2)} kg`)
-          : question === STEPS_AVERAGE_QUESTION
-            ? (stepsAverage === null ? "" : `${Math.round(stepsAverage)} pasos`)
-            : isRevisionMeasurementQuestion(question)
-              ? normalizeRevisionMeasurementAnswer(answers[index] ?? "")
-              : (answers[index] ?? "").trim()
-    }));
+    return questions
+      .map((question, index) => {
+        const rawAnswer = answers[index] ?? "";
+        const isMeasurement = isRevisionMeasurementQuestion(question);
+        const normalizedAnswer =
+          question === WEIGHT_AVERAGE_QUESTION
+            ? (weightAverage === null ? "" : `${weightAverage.toFixed(2)} kg`)
+            : question === STEPS_AVERAGE_QUESTION
+              ? (stepsAverage === null ? "" : `${Math.round(stepsAverage)} pasos`)
+              : isMeasurement
+                ? normalizeRevisionMeasurementAnswer(rawAnswer)
+                : rawAnswer.trim();
+
+        return {
+          question,
+          answer: normalizedAnswer,
+          rawAnswer,
+          isMeasurement
+        };
+      })
+      .filter((entry) => entry.answer || !entry.isMeasurement)
+      .map(({ question, answer }) => ({ question, answer }));
   }
 
   function validateAllAnswers() {
     const normalizedAnswers = getNormalizedAnswers();
+    const hasInvalidMeasurement = questions.some((question, index) => {
+      const rawAnswer = answers[index] ?? "";
+      return (
+        isRevisionMeasurementQuestion(question) &&
+        rawAnswer.trim().length > 0 &&
+        parseRevisionMeasurementValue(rawAnswer) === null
+      );
+    });
+    if (hasInvalidMeasurement) {
+      toast.error("Introduce una medida valida en centimetros o deja el campo vacio.");
+      return null;
+    }
     if (normalizedAnswers.some((entry) => !entry.answer)) {
       toast.error("Todas las preguntas son obligatorias.");
       return null;
@@ -293,7 +338,7 @@ export function RevisionWizard() {
     const normalizedAnswers = validateAllAnswers();
     if (!normalizedAnswers) return;
     const normalizedStepEntries = getNormalizedStepEntries();
-    if (!normalizedStepEntries) {
+    if (stepsEntryMode === "daily" && !normalizedStepEntries) {
       toast.error("No se pudieron normalizar los pasos diarios de la semana pasada.");
       return;
     }
@@ -312,7 +357,7 @@ export function RevisionWizard() {
         body: JSON.stringify({
           revisionDate,
           answers: normalizedAnswers,
-          stepsDailyEntries: normalizedStepEntries
+          stepsDailyEntries: stepsEntryMode === "daily" ? normalizedStepEntries : undefined
         })
       });
       if (answersRes.status === 401) {
@@ -560,60 +605,121 @@ export function RevisionWizard() {
                   </div>
                 ) : isStepsQuestion ? (
                   <div className="mt-4 space-y-3">
-                    <p className="text-sm text-brand-muted">
-                      Registra los pasos de lunes a domingo de la semana pasada. La media se calcula automaticamente entre 7.
-                    </p>
-                    <div className="overflow-hidden rounded-xl border border-white/10">
-                      <table className="w-full text-sm">
-                        <thead className="bg-black/30 text-xs uppercase tracking-[0.16em] text-brand-muted">
-                          <tr>
-                            <th className="px-3 py-2 text-left">Fecha</th>
-                            <th className="px-3 py-2 text-left">Pasos</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stepsEntries.map((value, index) => (
-                            <tr key={previousWeekDates[index]?.date ?? String(index)} className="border-t border-white/10">
-                              <td className="px-3 py-2 text-brand-text">
-                                {previousWeekDates[index]?.label ?? "-"}
-                              </td>
-                              <td className="px-3 py-2">
-                                <input
-                                  type="number"
-                                  inputMode="numeric"
-                                  step="1"
-                                  min="0"
-                                  max="100000"
-                                  value={value}
-                                  onChange={(event) => {
-                                    const next = [...stepsEntries];
-                                    next[index] = event.target.value;
-                                    setStepsEntries(next);
-                                  }}
-                                  placeholder="Ej: 8500"
-                                  className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                                />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="grid rounded-xl border border-white/10 bg-black/25 p-1 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => setStepsEntryMode("average")}
+                        className={
+                          stepsEntryMode === "average"
+                            ? "rounded-lg bg-brand-accent px-3 py-2 text-sm font-semibold text-black"
+                            : "rounded-lg px-3 py-2 text-sm text-brand-muted transition hover:bg-white/10 hover:text-brand-text"
+                        }
+                      >
+                        Media semanal total
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStepsEntryMode("daily")}
+                        className={
+                          stepsEntryMode === "daily"
+                            ? "rounded-lg bg-brand-accent px-3 py-2 text-sm font-semibold text-black"
+                            : "rounded-lg px-3 py-2 text-sm text-brand-muted transition hover:bg-white/10 hover:text-brand-text"
+                        }
+                      >
+                        Dia a dia
+                      </button>
                     </div>
-                    <p className="text-sm text-brand-muted">
-                      Media registrada:{" "}
-                      <span className="font-semibold text-brand-text">
-                        {getStepsAverage() === null ? "-" : `${Math.round(getStepsAverage()!)} pasos`}
-                      </span>
-                    </p>
+
+                    {stepsEntryMode === "average" ? (
+                      <div className="space-y-3">
+                        <p className="text-sm text-brand-muted">
+                          Introduce la media de pasos de la semana en un unico valor.
+                        </p>
+                        <label className="block rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted transition focus-within:border-brand-accent/60">
+                          <span className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                            Media semanal
+                          </span>
+                          <div className="mt-2 flex items-center gap-2">
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              step="1"
+                              min="0"
+                              max="100000"
+                              value={stepsAverageEntry}
+                              onChange={(event) =>
+                                setStepsAverageEntry(event.target.value.replace(/[^\d]/g, ""))
+                              }
+                              placeholder="Ej: 8500"
+                              className="w-full rounded-lg border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                            <span className="rounded-md border border-white/15 bg-black/20 px-2 py-1 text-xs text-brand-muted">
+                              pasos
+                            </span>
+                          </div>
+                        </label>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <p className="text-sm text-brand-muted">
+                          Registra los pasos de lunes a domingo de la semana pasada. La media se calcula automaticamente entre 7.
+                        </p>
+                        <div className="overflow-hidden rounded-xl border border-white/10">
+                          <table className="w-full text-sm">
+                            <thead className="bg-black/30 text-xs uppercase tracking-[0.16em] text-brand-muted">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Fecha</th>
+                                <th className="px-3 py-2 text-left">Pasos</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stepsEntries.map((value, index) => (
+                                <tr key={previousWeekDates[index]?.date ?? String(index)} className="border-t border-white/10">
+                                  <td className="px-3 py-2 text-brand-text">
+                                    {previousWeekDates[index]?.label ?? "-"}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <input
+                                      type="number"
+                                      inputMode="numeric"
+                                      step="1"
+                                      min="0"
+                                      max="100000"
+                                      value={value}
+                                      onChange={(event) => {
+                                        const next = [...stepsEntries];
+                                        next[index] = event.target.value;
+                                        setStepsEntries(next);
+                                      }}
+                                      placeholder="Ej: 8500"
+                                      className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                    />
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-sm text-brand-muted">
+                          Media registrada:{" "}
+                          <span className="font-semibold text-brand-text">
+                            {getStepsAverage() === null ? "-" : `${Math.round(getStepsAverage()!)} pasos`}
+                          </span>
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ) : isMeasurementQuestion ? (
                   <div className="mt-4 space-y-3">
                     <p className="text-sm text-brand-muted">
                       Introduce una medida numerica en centimetros. Puedes escribir con coma o con punto y se guardara normalizada para Google Sheets.
                     </p>
+                    <div className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-4 py-3 text-sm text-brand-text">
+                      Si no has realizado esta medicion, deja el campo vacio y pulsa Siguiente para pasar a la siguiente pregunta.
+                    </div>
                     <label className="block rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted transition focus-within:border-brand-accent/60">
                       <span className="text-xs uppercase tracking-[0.16em] text-brand-muted">
-                        Medida corporal
+                        Medida corporal opcional
                       </span>
                       <div className="mt-2 flex items-center gap-2">
                         <input
@@ -664,8 +770,11 @@ export function RevisionWizard() {
                     } else if (isStepsQuestion) {
                       if (!validateStepsEntries()) return;
                     } else if (isMeasurementQuestion) {
-                      if (parseRevisionMeasurementValue(currentAnswer) === null) {
-                        toast.error("Introduce una medida valida en centimetros.");
+                      if (
+                        currentAnswer.trim().length > 0 &&
+                        parseRevisionMeasurementValue(currentAnswer) === null
+                      ) {
+                        toast.error("Introduce una medida valida en centimetros o deja el campo vacio.");
                         return;
                       }
                     } else if (!currentAnswer.trim()) {
