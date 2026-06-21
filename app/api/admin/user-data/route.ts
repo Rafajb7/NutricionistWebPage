@@ -1,11 +1,7 @@
 import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
-import {
-  listDailyTrackerEntriesForUser,
-  listStrengthGoalsForUser,
-  listStrengthMarksForUser
-} from "@/lib/google/achievements";
+import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
 import { listCompetitionEventsForUser } from "@/lib/google/calendar";
 import { listNutritionPlanPdfsForUser } from "@/lib/google/drive";
 import {
@@ -47,23 +43,14 @@ export async function GET(req: NextRequest) {
     }
     const sourceUsername = targetUser.username.trim().replace(/^@/, "");
 
-    const [
-      revisionRows,
-      routineLogs,
-      competitions,
-      marks,
-      goals,
-      nutritionPlans,
-      dailyTrackerEntries
-    ] =
+    const [revisionRows, routineLogs, competitions, marks, goals, nutritionPlans] =
       await Promise.all([
         listRevisionRowsForUser(sourceUsername),
         listRoutineLogsForUser(sourceUsername),
         listCompetitionEventsForUser(sourceUsername, { includePast: true }),
         listStrengthMarksForUser(sourceUsername),
         listStrengthGoalsForUser(sourceUsername),
-        listNutritionPlanPdfsForUser(sourceUsername),
-        listDailyTrackerEntriesForUser(sourceUsername)
+        listNutritionPlanPdfsForUser(sourceUsername)
       ]);
 
     let peakModeLogs: Awaited<ReturnType<typeof listPeakModeDailyLogsForUser>> = [];
@@ -95,7 +82,6 @@ export async function GET(req: NextRequest) {
         competitions,
         peakModeLogs,
         nutritionPlans,
-        dailyTrackerEntries,
         achievements: {
           marks,
           goals

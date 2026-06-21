@@ -60,6 +60,14 @@ function formatShortDate(value: Date): string {
   return `${day}/${month}/${year}`;
 }
 
+function formatRevisionWeightValue(value: number): string {
+  return new Intl.NumberFormat("es-ES", {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2
+  }).format(value);
+}
+
 function getPreviousWeekDates(referenceDate = new Date()): Array<{ date: string; label: string }> {
   const localToday = new Date(
     referenceDate.getFullYear(),
@@ -191,6 +199,14 @@ export function RevisionWizard() {
     return sum / values.length;
   }
 
+  function getWeightAverageAnswer(): string {
+    const weightAverage = getWeightAverage();
+    if (weightAverage === null) return "";
+    const values = getValidWeightValues();
+    const detail = values.map(formatRevisionWeightValue).join(", ");
+    return `${formatRevisionWeightValue(weightAverage)} kg (${detail})`;
+  }
+
   function validateWeightEntries(): boolean {
     if (!weightEntries.length) {
       toast.error("Debes registrar al menos un pesaje.");
@@ -277,7 +293,6 @@ export function RevisionWizard() {
   }
 
   function getNormalizedAnswers() {
-    const weightAverage = getWeightAverage();
     const stepsAverage = getStepsAverage();
     return questions
       .map((question, index) => {
@@ -285,7 +300,7 @@ export function RevisionWizard() {
         const isMeasurement = isRevisionMeasurementQuestion(question);
         const normalizedAnswer =
           question === WEIGHT_AVERAGE_QUESTION
-            ? (weightAverage === null ? "" : `${weightAverage.toFixed(2)} kg`)
+            ? getWeightAverageAnswer()
             : question === STEPS_AVERAGE_QUESTION
               ? (stepsAverage === null ? "" : `${Math.round(stepsAverage)} pasos`)
               : isMeasurement

@@ -56,16 +56,6 @@ type CompetitionEvent = {
 type AchievementMark = { id: string; timestamp: string; exercise: string; date: string; weightKg: number };
 type AchievementGoal = { id: string; timestamp: string; exercise: string; targetDate: string; targetWeightKg: number };
 
-type DailyTrackerEntry = {
-  id: string;
-  timestamp: string;
-  nombre: string;
-  usuario: string;
-  metric: "steps" | "weight";
-  date: string;
-  value: number;
-};
-
 type NutritionPlan = {
   id: string;
   name: string;
@@ -106,7 +96,6 @@ type AdminUserData = {
     competitions: CompetitionEvent[];
     peakModeLogs: PeakModeDailyLog[];
     nutritionPlans: NutritionPlan[];
-    dailyTrackerEntries: DailyTrackerEntry[];
     achievements: { marks: AchievementMark[]; goals: AchievementGoal[] };
   };
 };
@@ -119,12 +108,12 @@ type MetricKey =
   | "MUSLO"
   | "PESO_MEDIO";
 type MetricPoint = { date: string; value: number };
-type StepsTableRow = {
+type WeightDetailRow = {
   id: string;
   date: string;
-  value: number;
-  source: string;
-  recordedAt: string | null;
+  average: number;
+  weights: number[];
+  answer: string;
 };
 
 type PeakMetricKey =
@@ -250,10 +239,6 @@ function metricKeyFromQuestion(question: string): MetricKey | null {
   return null;
 }
 
-function isStepsRevisionQuestion(question: string): boolean {
-  return normalizeMetricQuestion(question).startsWith("NUMERODEPASOS");
-}
-
 function parseMetricValue(raw: string): number | null {
   const match = raw.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
   if (!match) return null;
@@ -261,8 +246,27 @@ function parseMetricValue(raw: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function formatStepsValue(value: number): string {
-  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Math.round(value));
+function parseWeightDetailValues(raw: string): number[] {
+  const match = raw.match(/\(([^)]*)\)/);
+  if (!match) return [];
+  return Array.from(match[1].matchAll(/-?\d+(?:[.,]\d+)?/g))
+    .map((item) => Number(item[0].replace(",", ".")))
+    .filter((value) => Number.isFinite(value) && value > 0);
+}
+
+function formatWeightValue(value: number): string {
+  return `${new Intl.NumberFormat("es-ES", {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2
+  }).format(value)} kg`;
+}
+
+function formatAchievementValue(value: number, exercise: string): string {
+  if (normalizeMetricQuestion(exercise) === normalizeMetricQuestion(LEGACY_DAILY_STEPS_EXERCISE)) {
+    return `${new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Math.round(value))} pasos`;
+  }
+  return formatWeightValue(value);
 }
 
 function formatPlanSize(sizeBytes: number | null): string {
@@ -506,64 +510,27 @@ export function AdminShell({ user }: AdminShellProps) {
     return out;
   }, [selectedData]);
 
-  const stepsTableRows = useMemo<StepsTableRow[]>(() => {
-    const byDate = new Map<string, StepsTableRow>();
-
-    for (const entry of selectedData?.tools.dailyTrackerEntries ?? []) {
-      if (entry.metric !== "steps") continue;
-      byDate.set(entry.date, {
-        id: entry.id,
-        date: entry.date,
-        value: entry.value,
-        source: "Registro diario",
-        recordedAt: entry.timestamp || null
-      });
-    }
-
-    for (const mark of selectedData?.tools.achievements.marks ?? []) {
-      if (normalizeMetricQuestion(mark.exercise) !== normalizeMetricQuestion(LEGACY_DAILY_STEPS_EXERCISE)) {
-        continue;
-      }
-      if (byDate.has(mark.date)) continue;
-      byDate.set(mark.date, {
-        id: mark.id,
-        date: mark.date,
-        value: mark.weightKg,
-        source: "Historico anterior",
-        recordedAt: mark.timestamp || null
-      });
-    }
-
-    if (byDate.size === 0) {
-      for (const entry of selectedData?.dashboard.revisions ?? []) {
-        if (!isStepsRevisionQuestion(entry.pregunta)) continue;
-        const value = parseMetricValue(entry.respuesta);
-        if (value === null) continue;
-        byDate.set(entry.fecha, {
-          id: `revision-steps-${entry.fecha}`,
+  const weightDetailRows = useMemo<WeightDetailRow[]>(() => {
+    return (selectedData?.dashboard.revisions ?? [])
+      .filter((entry) => metricKeyFromQuestion(entry.pregunta) === "PESO_MEDIO")
+      .map((entry, index) => {
+        const average = parseMetricValue(entry.respuesta);
+        if (average === null) return null;
+        return {
+          id: `weight-detail-${entry.fecha}-${index}`,
           date: entry.fecha,
-          value,
-          source: "Revision",
-          recordedAt: null
-        });
-      }
-    }
-
-    return Array.from(byDate.values()).sort((a, b) => {
-      const byDateDesc = b.date.localeCompare(a.date);
-      if (byDateDesc !== 0) return byDateDesc;
-      return (b.recordedAt ?? "").localeCompare(a.recordedAt ?? "");
-    });
+          average,
+          weights: parseWeightDetailValues(entry.respuesta),
+          answer: entry.respuesta
+        };
+      })
+      .filter((row): row is WeightDetailRow => row !== null)
+      .sort((a, b) => b.date.localeCompare(a.date));
   }, [selectedData]);
 
   const availableMetricOptions = useMemo(
-    () =>
-      METRIC_OPTIONS.filter(
-        (opt) =>
-          metricSeriesByKey[opt.key].length > 0 ||
-          (opt.key === "PESO_MEDIO" && stepsTableRows.length > 0)
-      ),
-    [metricSeriesByKey, stepsTableRows]
+    () => METRIC_OPTIONS.filter((opt) => metricSeriesByKey[opt.key].length > 0),
+    [metricSeriesByKey]
   );
   const selectedMetricUnit: "cm" | "kg" =
     selectedMetric === "PESO_MEDIO" ? "kg" : "cm";
@@ -867,42 +834,46 @@ export function AdminShell({ user }: AdminShellProps) {
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                       <h4 className="text-sm font-semibold text-brand-text">
-                        Pasos introducidos por el usuario
+                        Pesajes usados para calcular el peso medio
                       </h4>
                       <p className="text-xs text-brand-muted">
-                        Registros guardados desde la revision y desde la herramienta Pasos y peso.
+                        Valores individuales introducidos por el usuario en cada revision.
                       </p>
                     </div>
                     <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
-                      {stepsTableRows.length} registro{stepsTableRows.length === 1 ? "" : "s"}
+                      {weightDetailRows.length} revision{weightDetailRows.length === 1 ? "" : "es"}
                     </p>
                   </div>
 
-                  {stepsTableRows.length === 0 ? (
+                  {weightDetailRows.length === 0 ? (
                     <p className="mt-3 rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-brand-muted">
-                      Este usuario no tiene pasos registrados.
+                      Este usuario no tiene pesajes registrados para peso medio.
                     </p>
                   ) : (
                     <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
-                      <table className="min-w-[620px] w-full text-sm">
+                      <table className="min-w-[720px] w-full text-sm">
                         <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
                           <tr>
                             <th className="px-3 py-2 text-left">Fecha</th>
-                            <th className="px-3 py-2 text-left">Pasos</th>
-                            <th className="px-3 py-2 text-left">Origen</th>
-                            <th className="px-3 py-2 text-left">Registro</th>
+                            <th className="px-3 py-2 text-left">Peso medio</th>
+                            <th className="px-3 py-2 text-left">Pesajes introducidos</th>
+                            <th className="px-3 py-2 text-left">Nº pesajes</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {stepsTableRows.map((row) => (
+                          {weightDetailRows.map((row) => (
                             <tr key={row.id} className="border-t border-white/10">
                               <td className="px-3 py-2 text-brand-text">{formatDateLabel(row.date)}</td>
                               <td className="px-3 py-2 font-semibold text-brand-text">
-                                {formatStepsValue(row.value)} pasos
+                                {formatWeightValue(row.average)}
                               </td>
-                              <td className="px-3 py-2 text-brand-muted">{row.source}</td>
                               <td className="px-3 py-2 text-brand-muted">
-                                {row.recordedAt ? formatDateTimeLabel(row.recordedAt) : "-"}
+                                {row.weights.length
+                                  ? row.weights.map(formatWeightValue).join(", ")
+                                  : "Sin detalle de pesajes"}
+                              </td>
+                              <td className="px-3 py-2 text-brand-text">
+                                {row.weights.length || "-"}
                               </td>
                             </tr>
                           ))}
@@ -1089,7 +1060,7 @@ export function AdminShell({ user }: AdminShellProps) {
                   <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">Marcas maximas</p>
                   {selectedData.tools.achievements.marks.length === 0 ? <p className="mt-2 text-sm text-brand-muted">Sin marcas registradas.</p> : (
                     <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
-                      <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Peso</th></tr></thead><tbody>{selectedData.tools.achievements.marks.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.date)}</td><td className="px-3 py-2 text-brand-text">{item.weightKg} kg</td></tr>)}</tbody></table>
+                      <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Valor</th></tr></thead><tbody>{selectedData.tools.achievements.marks.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.date)}</td><td className="px-3 py-2 text-brand-text">{formatAchievementValue(item.weightKg, item.exercise)}</td></tr>)}</tbody></table>
                     </div>
                   )}
                 </div>
@@ -1097,7 +1068,7 @@ export function AdminShell({ user }: AdminShellProps) {
                   <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">Objetivos</p>
                   {selectedData.tools.achievements.goals.length === 0 ? <p className="mt-2 text-sm text-brand-muted">Sin objetivos registrados.</p> : (
                     <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
-                      <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha objetivo</th><th className="px-3 py-2 text-left">Peso objetivo</th></tr></thead><tbody>{selectedData.tools.achievements.goals.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.targetDate)}</td><td className="px-3 py-2 text-brand-text">{item.targetWeightKg} kg</td></tr>)}</tbody></table>
+                      <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha objetivo</th><th className="px-3 py-2 text-left">Objetivo</th></tr></thead><tbody>{selectedData.tools.achievements.goals.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.targetDate)}</td><td className="px-3 py-2 text-brand-text">{formatAchievementValue(item.targetWeightKg, item.exercise)}</td></tr>)}</tbody></table>
                     </div>
                   )}
                 </div>
