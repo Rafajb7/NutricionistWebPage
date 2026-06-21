@@ -24,7 +24,7 @@ const submitSchema = z.object({
     .array(
       z.object({
         question: z.string().min(1).max(400),
-        answer: z.string().min(1).max(3000)
+        answer: z.string().max(3000)
       })
     )
     .min(1),
@@ -114,16 +114,33 @@ export async function POST(req: NextRequest) {
       }
     }
     const stepsAverage = getStepsAverageFromAnswers(parsed.data.answers);
-    const normalizedAnswers = parsed.data.answers.map((item) => {
+    const hasMissingRequiredAnswer = parsed.data.answers.some(
+      (item) => !isRevisionMeasurementQuestion(item.question) && !item.answer.trim()
+    );
+    if (hasMissingRequiredAnswer) {
+      await recordRevisionIssueLog({
+        username: auth.session.username,
+        message: `Respuesta obligatoria vacia al guardar la revision del ${fecha}.`
+      });
+      return NextResponse.json({ error: "Missing required answer." }, { status: 400 });
+    }
+
+    const normalizedAnswers = parsed.data.answers.flatMap((item) => {
       if (!isRevisionMeasurementQuestion(item.question)) {
-        return item;
+        return [{ question: item.question, answer: item.answer.trim() }];
+      }
+
+      if (!item.answer.trim()) {
+        return [];
       }
 
       const normalizedAnswer = normalizeRevisionMeasurementAnswer(item.answer);
-      return {
-        question: item.question,
-        answer: normalizedAnswer
-      };
+      return [
+        {
+          question: item.question,
+          answer: normalizedAnswer
+        }
+      ];
     });
 
     const hasInvalidMeasurementAnswer = normalizedAnswers.some(
