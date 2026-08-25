@@ -867,7 +867,6 @@ export function DashboardShell({ user }: DashboardShellProps) {
   useEffect(() => {
     router.prefetch("/tools");
     router.prefetch("/nutrition-plans");
-    router.prefetch("/community");
     router.prefetch("/revision/new");
   }, [router]);
 
@@ -1569,11 +1568,6 @@ export function DashboardShell({ user }: DashboardShellProps) {
               <Link href="/nutrition-plans">
                 <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
                   Planes nutricionales
-                </BrandButton>
-              </Link>
-              <Link href="/community">
-                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
-                  Comunidad
                 </BrandButton>
               </Link>
               <div className="px-2 text-left sm:text-right">

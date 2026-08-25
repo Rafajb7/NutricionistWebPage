@@ -17,14 +17,6 @@ type UploadNutritionPlanInput = {
   buffer: Buffer;
 };
 
-type UploadCommunityAttachmentInput = {
-  username: string;
-  postId: string;
-  originalFileName: string;
-  mimeType: string;
-  buffer: Buffer;
-};
-
 export type NutritionPlanFile = {
   id: string;
   name: string;
@@ -32,25 +24,6 @@ export type NutritionPlanFile = {
   createdTime: string | null;
   modifiedTime: string | null;
   sizeBytes: number | null;
-};
-
-export type CommunityAttachmentFile = {
-  id: string;
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  kind: "image" | "pdf";
-  createdTime: string | null;
-};
-
-export type CommunityAttachmentMetadata = {
-  id: string;
-  name: string;
-  mimeType: string;
-  postId: string;
-  ownerUsername: string;
-  fileType: string;
-  trashed: boolean;
 };
 
 function escapeDriveQuery(value: string): string {
@@ -200,101 +173,9 @@ function sanitizeDriveFileName(value: string): string {
   return value.replace(/[^\w.\- ]+/g, "_").trim() || "plan.pdf";
 }
 
-function toCommunityAttachmentKind(mimeType: string): "image" | "pdf" {
-  if (mimeType === "application/pdf") return "pdf";
-  return "image";
-}
-
-async function resolveCommunityRootFolderId(
-  drive: Awaited<ReturnType<typeof getDriveClient>>
-): Promise<string> {
-  const env = getEnv();
-  const configuredId = env.GOOGLE_COMMUNITY_DRIVE_FOLDER_ID?.trim();
-  if (configuredId) return configuredId;
-  return ensureDriveFolder(drive, env.GOOGLE_DRIVE_ROOT_FOLDER_ID, "Comunidad");
-}
-
-export async function uploadCommunityAttachmentToDrive(
-  input: UploadCommunityAttachmentInput
-): Promise<CommunityAttachmentFile> {
-  const drive = await getDriveClient();
-  const rootFolderId = await resolveCommunityRootFolderId(drive);
-  const attachmentsFolderId = await ensureDriveFolder(drive, rootFolderId, "Adjuntos");
-  const normalizedUsername = normalizeUserFolderKey(input.username);
-  if (!normalizedUsername) {
-    throw new Error("Invalid username for community attachment upload.");
-  }
-  const userFolderId = await ensureDriveFolder(drive, attachmentsFolderId, normalizedUsername);
-
-  const now = Date.now();
-  const safeName = sanitizeDriveFileName(input.originalFileName);
-  const fileName = `${now}_${safeName}`;
-  const created = await drive.files.create({
-    requestBody: {
-      name: fileName,
-      parents: [userFolderId],
-      appProperties: {
-        matFileType: "community-attachment",
-        matPostId: input.postId,
-        matUsername: normalizedUsername
-      }
-    },
-    media: {
-      mimeType: input.mimeType,
-      body: Readable.from(input.buffer)
-    },
-    fields: "id,name,mimeType,size,createdTime",
-    supportsAllDrives: true
-  });
-
-  const fileId = created.data.id;
-  if (!fileId) {
-    throw new Error("Community attachment upload failed: missing file id.");
-  }
-
-  const sizeBytes =
-    typeof created.data.size === "string" && created.data.size.trim()
-      ? Number(created.data.size)
-      : input.buffer.length;
-
-  return {
-    id: String(fileId),
-    name: String(created.data.name ?? fileName),
-    mimeType: String(created.data.mimeType ?? input.mimeType),
-    sizeBytes: Number.isFinite(sizeBytes) ? Math.max(0, Math.trunc(sizeBytes)) : input.buffer.length,
-    kind: toCommunityAttachmentKind(String(created.data.mimeType ?? input.mimeType)),
-    createdTime: created.data.createdTime ?? null
-  };
-}
-
 export async function deleteDriveFileById(fileId: string): Promise<void> {
   const drive = await getDriveClient();
   await drive.files.delete({ fileId, supportsAllDrives: true });
-}
-
-export async function getCommunityAttachmentMetadata(
-  fileId: string
-): Promise<CommunityAttachmentMetadata | null> {
-  const drive = await getDriveReadOnlyClient();
-  try {
-    const response = await drive.files.get({
-      fileId,
-      fields: "id,name,mimeType,appProperties,trashed",
-      supportsAllDrives: true
-    });
-    const appProperties = response.data.appProperties ?? {};
-    return {
-      id: String(response.data.id ?? fileId),
-      name: String(response.data.name ?? ""),
-      mimeType: String(response.data.mimeType ?? "application/octet-stream"),
-      postId: String(appProperties.matPostId ?? "").trim(),
-      ownerUsername: normalizeUserFolderKey(String(appProperties.matUsername ?? "")),
-      fileType: String(appProperties.matFileType ?? "").trim(),
-      trashed: Boolean(response.data.trashed)
-    };
-  } catch {
-    return null;
-  }
 }
 
 export async function listNutritionPlanPdfsForUser(username: string): Promise<NutritionPlanFile[]> {

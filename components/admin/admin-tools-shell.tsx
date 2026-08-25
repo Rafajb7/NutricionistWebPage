@@ -10,6 +10,7 @@ import {
   Search,
   Shield,
   Trash2,
+  Utensils,
   UsersRound
 } from "lucide-react";
 import { toast } from "sonner";
@@ -351,11 +352,6 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     Herramientas admin
                   </BrandButton>
                 </Link>
-                <Link href="/community">
-                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
-                    Comunidad
-                  </BrandButton>
-                </Link>
               </div>
               <div className="text-left sm:text-right">
                 <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Administrador</p>
@@ -403,6 +399,13 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
               <CalendarDays className="h-4 w-4" />
               Calendario
             </button>
+            <Link
+              href="/tools/nutrition-management"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/20 px-4 py-2 text-sm text-brand-muted transition hover:bg-white/10"
+            >
+              <Utensils className="h-4 w-4" />
+              Gestion nutricional
+            </Link>
             <span className="inline-flex items-center gap-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 px-3 py-2 text-xs text-brand-text">
               <Shield className="h-4 w-4" />
               Herramientas exclusivas de admin

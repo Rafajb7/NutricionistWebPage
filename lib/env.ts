@@ -21,12 +21,6 @@ const envSchema = z.object({
   GOOGLE_PEAK_MODE_SPREADSHEET_ID: z.string().optional(),
   GOOGLE_PEAK_MODE_SHEET_NAME: z.string().default("ModoPico"),
   GOOGLE_PEAK_MODE_WORKSHEET_NAME: z.string().default("Registro diario"),
-  GOOGLE_COMMUNITY_SPREADSHEET_ID: z.string().optional(),
-  GOOGLE_COMMUNITY_SHEET_NAME: z.string().default("Comunidad"),
-  GOOGLE_COMMUNITY_POSTS_WORKSHEET_NAME: z.string().default("Publicaciones"),
-  GOOGLE_COMMUNITY_COMMENTS_WORKSHEET_NAME: z.string().default("Comentarios"),
-  GOOGLE_COMMUNITY_AUDIT_WORKSHEET_NAME: z.string().default("Auditoria"),
-  GOOGLE_COMMUNITY_DRIVE_FOLDER_ID: z.string().optional(),
   GOOGLE_ACHIEVEMENTS_SPREADSHEET_ID: z.string().optional(),
   GOOGLE_ACHIEVEMENTS_SHEET_NAME: z.string().default("Logros"),
   GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME: z.string().default("Marcas"),
@@ -35,6 +29,8 @@ const envSchema = z.object({
   GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID: z
     .string()
     .default("1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf"),
+  GOOGLE_NUTRITION_MANAGEMENT_SPREADSHEET_ID: z.string().optional(),
+  GOOGLE_NUTRITION_MANAGEMENT_SHEET_NAME: z.string().default("Gestion nutricional"),
   GOOGLE_COMPETITIONS_CALENDAR_ID: z.string().optional(),
   APP_BASE_URL: z.string().url().optional(),
   SMTP_HOST: z.string().optional(),
