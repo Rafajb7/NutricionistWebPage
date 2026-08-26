@@ -139,6 +139,48 @@ export type NutritionPlanVersion = {
   fileName: string;
 };
 
+export type AthletePrivateNote = {
+  athleteUsername: string;
+  notes: string;
+  updatedAt: string;
+};
+
+export type NutritionMealCompletion = {
+  id: string;
+  athleteUsername: string;
+  date: string;
+  planId: string;
+  mealId: string;
+  completed: boolean;
+  updatedAt: string;
+};
+
+export type NutritionChangeRequestStatus = "pending" | "approved" | "denied";
+
+export type NutritionChangeRequest = {
+  id: string;
+  athleteUsername: string;
+  athleteName: string;
+  planId: string;
+  planName: string;
+  mealId: string;
+  mealName: string;
+  entryId: string;
+  originalFoodId: string;
+  originalFoodName: string;
+  originalQuantityG: number;
+  requestedFoodId: string;
+  requestedFoodName: string;
+  requestedQuantityG: number;
+  status: NutritionChangeRequestStatus;
+  athleteNotes: string;
+  adminNotes: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string;
+  resolvedBy: string;
+};
+
 export type NutritionPlanFull = NutritionPlanSummary & {
   meals: Array<
     NutritionPlanMeal & {

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ArrowDown,
   ArrowUp,
@@ -51,6 +52,7 @@ import type {
   NutritionAthleteRestriction,
   NutritionAthleteRestrictionKey,
   NutritionAthleteRestrictionType,
+  NutritionChangeRequest,
   NutritionFood,
   NutritionFoodRestrictionTag,
   NutritionPlanFoodAlternative,
@@ -82,6 +84,12 @@ type LoadResponse = {
   foods?: NutritionFood[];
   plans?: NutritionPlanSummary[];
   restrictions?: NutritionAthleteRestriction[];
+  changeRequests?: NutritionChangeRequest[];
+  error?: string;
+};
+
+type ChangeRequestsResponse = {
+  requests?: NutritionChangeRequest[];
   error?: string;
 };
 
@@ -155,6 +163,10 @@ function formatIntegerValue(value: number, min = 0, max = 10000): string {
 
 function normalizeQuantityG(value: number): number {
   return clampInteger(value, 1, 10000);
+}
+
+function normalizeUsername(value: string): string {
+  return value.trim().replace(/^@/, "").toLowerCase();
 }
 
 function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
@@ -350,6 +362,35 @@ function buildAlternativeFromFood(
   };
 }
 
+function applyChangeRequestToPlanDraft(
+  currentPlan: NutritionPlanFull,
+  request: NutritionChangeRequest,
+  requestedFood: NutritionFood
+): NutritionPlanFull {
+  const now = new Date().toISOString();
+  return normalizePlanGrams({
+    ...currentPlan,
+    meals: currentPlan.meals.map((meal) => ({
+      ...meal,
+      entries: meal.entries.map((entry) => {
+        if (meal.id !== request.mealId || entry.id !== request.entryId) return entry;
+        return {
+          ...entry,
+          foodId: requestedFood.id,
+          foodName: requestedFood.name,
+          quantityG: request.requestedQuantityG,
+          proteinPer100g: requestedFood.proteinPer100g,
+          carbsPer100g: requestedFood.carbsPer100g,
+          fatPer100g: requestedFood.fatPer100g,
+          sodiumPer100g: requestedFood.sodiumPer100g,
+          waterPer100g: requestedFood.waterPer100g,
+          updatedAt: now
+        };
+      })
+    }))
+  });
+}
+
 function MacroProgress(props: {
   label: string;
   current: number;
@@ -452,10 +493,14 @@ function FoodRestrictionTagPicker(props: {
 }
 
 export function AdminNutritionManagementShell({ user }: AdminNutritionManagementShellProps) {
+  const searchParams = useSearchParams();
+  const initialAthleteParam = normalizeUsername(searchParams.get("athlete") ?? "");
+  const initialRequestParam = (searchParams.get("request") ?? "").trim();
   const [athletes, setAthletes] = useState<Athlete[]>([]);
   const [foods, setFoods] = useState<NutritionFood[]>([]);
   const [plans, setPlans] = useState<NutritionPlanSummary[]>([]);
   const [athleteRestrictions, setAthleteRestrictions] = useState<NutritionAthleteRestriction[]>([]);
+  const [changeRequests, setChangeRequests] = useState<NutritionChangeRequest[]>([]);
   const [selectedAthlete, setSelectedAthlete] = useState("");
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [plan, setPlan] = useState<NutritionPlanFull | null>(null);
@@ -482,6 +527,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const [cloningMenus, setCloningMenus] = useState(false);
   const [restrictionSubmitting, setRestrictionSubmitting] = useState(false);
   const [integerInputDrafts, setIntegerInputDrafts] = useState<Record<string, string>>({});
+  const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null);
+  const [requestAdminNotes, setRequestAdminNotes] = useState<Record<string, string>>({});
+  const pendingRequestToApplyRef = useRef<string | null>(null);
+  const foodsRef = useRef<NutritionFood[]>([]);
+  const changeRequestsRef = useRef<NutritionChangeRequest[]>([]);
   const [restrictionForm, setRestrictionForm] = useState<RestrictionFormState>({
     type: "intolerance",
     key: "lactose",
@@ -550,6 +600,49 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       });
   }, [plans, plan?.id, selectedAthlete]);
 
+  const pendingChangeRequests = useMemo(
+    () => changeRequests.filter((request) => request.status === "pending"),
+    [changeRequests]
+  );
+
+  const selectedAthleteChangeRequests = useMemo(() => {
+    return pendingChangeRequests.filter((request) => request.athleteUsername === selectedAthlete);
+  }, [pendingChangeRequests, selectedAthlete]);
+
+  const pendingChangeRequestGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { username: string; name: string; count: number; firstRequestId: string; firstPlanId: string }
+    >();
+
+    for (const request of pendingChangeRequests) {
+      const username = request.athleteUsername;
+      const athlete = athletes.find((item) => item.username === username);
+      const current = groups.get(username);
+      if (current) {
+        current.count += 1;
+      } else {
+        groups.set(username, {
+          username,
+          name: athlete?.name || request.athleteName || username,
+          count: 1,
+          firstRequestId: request.id,
+          firstPlanId: request.planId
+        });
+      }
+    }
+
+    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [athletes, pendingChangeRequests]);
+
+  useEffect(() => {
+    foodsRef.current = foods;
+  }, [foods]);
+
+  useEffect(() => {
+    changeRequestsRef.current = changeRequests;
+  }, [changeRequests]);
+
   const upsertPlanSummary = useCallback((nextPlan: NutritionPlanFull) => {
     const summary = toPlanSummary(nextPlan);
     setPlans((current) => {
@@ -580,14 +673,27 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
 
       const nextAthletes = json.athletes ?? [];
       const nextPlans = json.plans ?? [];
+      const nextChangeRequests = json.changeRequests ?? [];
       setAthletes(nextAthletes);
       setFoods(json.foods ?? []);
       setPlans(nextPlans);
       setAthleteRestrictions(json.restrictions ?? []);
+      setChangeRequests(nextChangeRequests);
 
-      const athlete = nextAthletes[0]?.username || "";
+      const requestedChange = initialRequestParam
+        ? nextChangeRequests.find((request) => request.id === initialRequestParam)
+        : null;
+      const requestedAthlete = requestedChange?.athleteUsername
+        || nextAthletes.find((item) => item.username === initialAthleteParam)?.username
+        || "";
+      const athlete = requestedAthlete || nextAthletes[0]?.username || "";
       setSelectedAthlete(athlete);
-      const firstPlan = nextPlans.find((item) => item.athleteUsername === athlete);
+      const firstPlan = requestedChange
+        ? nextPlans.find((item) => item.id === requestedChange.planId)
+        : nextPlans.find((item) => item.athleteUsername === athlete);
+      if (requestedChange?.status === "pending") {
+        pendingRequestToApplyRef.current = requestedChange.id;
+      }
       setSelectedPlanId(firstPlan?.id ?? "");
     } catch (error) {
       console.error(error);
@@ -595,11 +701,53 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [initialAthleteParam, initialRequestParam]);
 
   useEffect(() => {
     void loadInitialData();
   }, [loadInitialData]);
+
+  const refreshPendingChangeRequests = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/nutrition-change-requests", { cache: "no-store" });
+      if (!res.ok) return;
+      const json = (await res.json()) as ChangeRequestsResponse;
+      const requests = json.requests ?? [];
+      setChangeRequests((current) => {
+        const resolvedRequests = current.filter((request) => request.status !== "pending");
+        return [...resolvedRequests, ...requests].sort((a, b) => {
+          const statusOrder = { pending: 0, approved: 1, denied: 2 } satisfies Record<
+            NutritionChangeRequest["status"],
+            number
+          >;
+          const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+          if (statusDiff !== 0) return statusDiff;
+          return b.updatedAt.localeCompare(a.updatedAt);
+        });
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      void refreshPendingChangeRequests();
+    };
+    const intervalId = window.setInterval(refresh, 15000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshPendingChangeRequests]);
 
   useEffect(() => {
     if (cloneablePlans.some((item) => item.id === selectedClonePlanId)) return;
@@ -622,8 +770,23 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
         const json = (await res.json()) as { plan?: NutritionPlanFull; error?: string };
         if (!res.ok) throw new Error(json.error ?? "No se pudo cargar el plan.");
         if (!cancelled) {
-          setPlan(json.plan ? normalizePlanGrams(json.plan) : null);
-          setSaveState("saved");
+          let nextPlan = json.plan ? normalizePlanGrams(json.plan) : null;
+          let nextSaveState: SaveState = "saved";
+          const pendingRequestId = pendingRequestToApplyRef.current;
+          if (nextPlan && pendingRequestId) {
+            const request = changeRequestsRef.current.find((item) => item.id === pendingRequestId);
+            const requestedFood = request
+              ? foodsRef.current.find((food) => food.id === request.requestedFoodId)
+              : null;
+            if (request && requestedFood && request.planId === nextPlan.id) {
+              nextPlan = applyChangeRequestToPlanDraft(nextPlan, request, requestedFood);
+              nextSaveState = "dirty";
+              pendingRequestToApplyRef.current = null;
+              toast.success("Solicitud aplicada al editor. Ajusta el plan y aprueba/publica.");
+            }
+          }
+          setPlan(nextPlan);
+          setSaveState(nextSaveState);
         }
       })
       .catch((error) => {
@@ -829,6 +992,14 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     setSelectedAthlete(username);
     const firstPlan = plans.find((item) => item.athleteUsername === username);
     setSelectedPlanId(firstPlan?.id ?? "");
+    setPlan(null);
+    setIntegerInputDrafts({});
+    setSaveState("idle");
+  }
+
+  function openChangeRequestGroup(input: { username: string; firstPlanId: string }) {
+    setSelectedAthlete(input.username);
+    setSelectedPlanId(input.firstPlanId || plans.find((item) => item.athleteUsername === input.username)?.id || "");
     setPlan(null);
     setIntegerInputDrafts({});
     setSaveState("idle");
@@ -1296,6 +1467,99 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     }
   }
 
+  async function applyChangeRequest(request: NutritionChangeRequest) {
+    const requestedFood = foods.find((food) => food.id === request.requestedFoodId);
+    if (!requestedFood) {
+      toast.error("El alimento solicitado ya no existe en el catalogo.");
+      return;
+    }
+
+    pendingRequestToApplyRef.current = request.id;
+    setSelectedAthlete(request.athleteUsername);
+
+    if (plan?.id === request.planId) {
+      setPlan((current) =>
+        current ? applyChangeRequestToPlanDraft(current, request, requestedFood) : current
+      );
+      setSaveState("dirty");
+      pendingRequestToApplyRef.current = null;
+      toast.success("Solicitud aplicada al editor. Ajusta el plan y aprueba/publica.");
+      return;
+    }
+
+    setSelectedPlanId(request.planId);
+  }
+
+  async function resolveChangeRequest(
+    request: NutritionChangeRequest,
+    status: "approved" | "denied"
+  ) {
+    if (status === "approved" && (!plan || plan.id !== request.planId)) {
+      toast.error("Abre y aplica primero la solicitud en el editor.");
+      return;
+    }
+
+    const shouldReloadDeniedPlan =
+      status === "denied" && (plan?.id === request.planId || selectedPlanId === request.planId);
+    if (pendingRequestToApplyRef.current === request.id) {
+      pendingRequestToApplyRef.current = null;
+    }
+
+    setResolvingRequestId(request.id);
+    try {
+      const res = await fetch(`/api/admin/nutrition-change-requests/${request.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status,
+          adminNotes: requestAdminNotes[request.id] ?? "",
+          plan: status === "approved" ? plan : undefined
+        })
+      });
+      const json = (await res.json()) as {
+        request?: NutritionChangeRequest;
+        plan?: NutritionPlanFull;
+        error?: string;
+      };
+      if (!res.ok || !json.request) {
+        throw new Error(json.error ?? "No se pudo resolver la solicitud.");
+      }
+
+      setChangeRequests((current) =>
+        current.map((item) => (item.id === json.request?.id ? json.request : item))
+      );
+      if (json.plan) {
+        setPlan(normalizePlanGrams(json.plan));
+        upsertPlanSummary(json.plan);
+        setIntegerInputDrafts({});
+        setSaveState("saved");
+      } else if (shouldReloadDeniedPlan) {
+        const planRes = await fetch(`/api/admin/nutrition-management/plans/${request.planId}`, {
+          cache: "no-store"
+        });
+        const planJson = (await planRes.json()) as { plan?: NutritionPlanFull; error?: string };
+        if (!planRes.ok || !planJson.plan) {
+          throw new Error(planJson.error ?? "No se pudo recuperar el ultimo planning.");
+        }
+        setPlan(normalizePlanGrams(planJson.plan));
+        upsertPlanSummary(planJson.plan);
+        setIntegerInputDrafts({});
+        setSaveState("saved");
+      }
+      setRequestAdminNotes((current) => {
+        const next = { ...current };
+        delete next[request.id];
+        return next;
+      });
+      toast.success(status === "approved" ? "Solicitud aprobada y PDF publicado." : "Solicitud denegada.");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Error resolviendo solicitud.");
+    } finally {
+      setResolvingRequestId(null);
+    }
+  }
+
   function startQuickFood(mealId: string) {
     const search = foodSearches[mealId] ?? "";
     setQuickFoodMealId(mealId);
@@ -1370,6 +1634,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
               >
                 <FileText className="h-4 w-4" />
                 Planes
+                {pendingChangeRequests.length ? (
+                  <span className="ml-1 rounded-full bg-brand-accent px-2 py-0.5 text-[11px] font-semibold text-black">
+                    {pendingChangeRequests.length}
+                  </span>
+                ) : null}
               </button>
               <button
                 type="button"
@@ -1476,9 +1745,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                           >
                             {formatFoodTagSummary(food.restrictionTags)}
                           </td>
-                          <td className="px-2 py-2 text-center">
+                          <td className="px-2 py-2">
                             <span
-                              className={`inline-flex max-w-full items-center rounded-lg border px-2 py-1 text-[11px] ${
+                              className={`mx-auto inline-flex min-h-7 w-full max-w-[64px] items-center justify-center rounded-full border px-1 text-center text-[10px] font-semibold ${
                                 food.active
                                   ? "border-emerald-300/35 bg-emerald-500/10 text-emerald-100"
                                   : "border-white/15 bg-white/5 text-brand-muted"
@@ -1628,6 +1897,128 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                   {!filteredAthletes.length ? (
                     <p className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
                       No hay atletas.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-brand-accent/20 bg-brand-surface/70 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-brand-text">Solicitudes de cambios</h2>
+                    <p className="mt-1 text-xs text-brand-muted">
+                      Pendientes de este atleta: {selectedAthleteChangeRequests.length}
+                    </p>
+                  </div>
+                  {pendingChangeRequests.length ? (
+                    <span className="rounded-full bg-brand-accent px-2 py-1 text-xs font-semibold text-black">
+                      {pendingChangeRequests.length}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-3 space-y-3">
+                  {pendingChangeRequestGroups.length ? (
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">
+                        Atletas con solicitudes
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {pendingChangeRequestGroups.map((group) => (
+                          <button
+                            key={group.username}
+                            type="button"
+                            onClick={() => openChangeRequestGroup(group)}
+                            className={`rounded-lg border px-3 py-1.5 text-xs transition ${
+                              selectedAthlete === group.username
+                                ? "border-brand-accent/60 bg-brand-accent/15 text-brand-text"
+                                : "border-white/15 bg-black/20 text-brand-muted hover:bg-white/10"
+                            }`}
+                          >
+                            {group.name} ({group.count})
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {selectedAthleteChangeRequests.map((request) => {
+                    const isActiveRequest = plan?.id === request.planId;
+                    const resolving = resolvingRequestId === request.id;
+                    return (
+                      <article key={request.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-brand-text">
+                              {request.mealName}
+                            </p>
+                            <p className="mt-1 text-xs text-brand-muted">
+                              {request.originalFoodName} ({request.originalQuantityG} g)
+                            </p>
+                            <p className="mt-1 text-xs text-brand-text">
+                              Cambio: {request.requestedFoodName} ({request.requestedQuantityG} g)
+                            </p>
+                          </div>
+                          <span className="rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-2 py-1 text-[11px] text-brand-text">
+                            Pendiente
+                          </span>
+                        </div>
+                        {request.athleteNotes ? (
+                          <p className="mt-2 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-xs text-brand-muted">
+                            {request.athleteNotes}
+                          </p>
+                        ) : null}
+                        <textarea
+                          value={requestAdminNotes[request.id] ?? ""}
+                          onChange={(event) =>
+                            setRequestAdminNotes((current) => ({
+                              ...current,
+                              [request.id]: event.target.value
+                            }))
+                          }
+                          rows={2}
+                          placeholder="Nota para el atleta"
+                          className="mt-2 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-xs text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void applyChangeRequest(request)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/40 bg-brand-accent/10 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/20"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            {isActiveRequest ? "Aplicar" : "Abrir y aplicar"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void resolveChangeRequest(request, "approved")}
+                            disabled={resolving || !isActiveRequest}
+                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                            title={
+                              isActiveRequest
+                                ? "Guardar, publicar PDF y aprobar"
+                                : "Primero abre/aplica esta solicitud"
+                            }
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                            Aprobar y publicar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void resolveChangeRequest(request, "denied")}
+                            disabled={resolving}
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-400/35 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                            Denegar
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {!selectedAthleteChangeRequests.length ? (
+                    <p className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                      Sin solicitudes pendientes para este atleta.
                     </p>
                   ) : null}
                 </div>

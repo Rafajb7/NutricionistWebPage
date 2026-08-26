@@ -23,6 +23,7 @@ import {
   Scale,
   Trash2,
   Trophy,
+  Utensils,
   type LucideIcon
 } from "lucide-react";
 import { toast } from "sonner";
@@ -844,6 +845,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
 
   useEffect(() => {
     router.prefetch("/dashboard");
+    router.prefetch("/nutrition");
     router.prefetch("/nutrition-plans");
     router.prefetch("/revision/new");
   }, [router]);
@@ -1699,6 +1701,12 @@ export function ToolsShell({ user }: ToolsShellProps) {
               <Link href="/nutrition-plans">
                 <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
                   Planes nutricionales
+                </BrandButton>
+              </Link>
+              <Link href="/nutrition">
+                <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  <Utensils className="mr-2 h-4 w-4" />
+                  Dieta interactiva
                 </BrandButton>
               </Link>
               <div className="px-2 text-left sm:text-right">

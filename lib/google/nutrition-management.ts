@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
+import { isGoogleAlreadyExistsError, withGoogleApiRetry } from "@/lib/google/retry";
 import { DEFAULT_NUTRITION_FOODS } from "@/lib/nutrition/default-foods";
 import {
   ALLERGY_RESTRICTION_OPTIONS,
@@ -12,10 +13,14 @@ import {
   serializeRestrictionTags
 } from "@/lib/nutrition/restrictions";
 import type {
+  AthletePrivateNote,
   NutritionAthleteRestriction,
   NutritionAthleteRestrictionKey,
   NutritionAthleteRestrictionType,
+  NutritionChangeRequest,
+  NutritionChangeRequestStatus,
   NutritionFood,
+  NutritionMealCompletion,
   NutritionPlanFoodAlternative,
   NutritionPlanFoodEntry,
   NutritionPlanFull,
@@ -33,6 +38,9 @@ type NutritionSheetsInfo = {
   planFoodsWorksheet: string;
   versionsWorksheet: string;
   athleteRestrictionsWorksheet: string;
+  athletePrivateNotesWorksheet: string;
+  mealCompletionsWorksheet: string;
+  changeRequestsWorksheet: string;
 };
 
 type StoredNutritionPlanVersion = NutritionPlanVersion & {
@@ -54,7 +62,10 @@ const WORKSHEETS = {
   meals: "Meals",
   planFoods: "PlanFoods",
   versions: "PlanVersions",
-  athleteRestrictions: "AthleteRestrictions"
+  athleteRestrictions: "AthleteRestrictions",
+  athletePrivateNotes: "AthletePrivateNotes",
+  mealCompletions: "MealCompletions",
+  changeRequests: "ChangeRequests"
 } as const;
 
 const FOOD_HEADERS = [
@@ -143,7 +154,44 @@ const ATHLETE_RESTRICTION_HEADERS = [
   "Actualizado"
 ];
 
+const ATHLETE_PRIVATE_NOTE_HEADERS = ["Usuario atleta", "Notas privadas", "Actualizado"];
+
+const MEAL_COMPLETION_HEADERS = [
+  "Id",
+  "Usuario atleta",
+  "Fecha",
+  "Plan id",
+  "Meal id",
+  "Completada",
+  "Actualizado"
+];
+
+const CHANGE_REQUEST_HEADERS = [
+  "Id",
+  "Usuario atleta",
+  "Nombre atleta",
+  "Plan id",
+  "Nombre plan",
+  "Meal id",
+  "Nombre comida",
+  "Entry id",
+  "Food id original",
+  "Alimento original",
+  "Cantidad original g",
+  "Food id solicitado",
+  "Alimento solicitado",
+  "Cantidad solicitada g",
+  "Estado",
+  "Notas atleta",
+  "Notas admin",
+  "Creado",
+  "Actualizado",
+  "Resuelto",
+  "Resuelto por"
+];
+
 let nutritionSheetsPromise: Promise<NutritionSheetsInfo> | null = null;
+const worksheetNamesCache = new Map<string, Set<string>>();
 
 function normalizeUsername(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
@@ -196,11 +244,26 @@ function parseBoolean(value: unknown, fallback = true): boolean {
   return fallback;
 }
 
+function isIsoDateOnly(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 function parseStatus(value: unknown): NutritionPlanStatus {
   const normalized = normalizeTextKey(String(value ?? ""));
   if (normalized === "published" || normalized === "publicado") return "published";
   if (normalized === "review" || normalized === "en revision") return "review";
   return "draft";
+}
+
+function parseChangeRequestStatus(value: unknown): NutritionChangeRequestStatus {
+  const normalized = normalizeTextKey(String(value ?? ""));
+  if (normalized === "approved" || normalized === "aprobada" || normalized === "aprobado") {
+    return "approved";
+  }
+  if (normalized === "denied" || normalized === "rechazada" || normalized === "rechazado") {
+    return "denied";
+  }
+  return "pending";
 }
 
 function toSheetBoolean(value: boolean): string {
@@ -295,14 +358,16 @@ async function findSpreadsheetInFolder(name: string, folderId: string): Promise<
     "trashed=false"
   ].join(" and ");
 
-  const response = await drive.files.list({
-    q: query,
-    fields: "files(id,name,modifiedTime)",
-    orderBy: "modifiedTime desc",
-    pageSize: 10,
-    includeItemsFromAllDrives: true,
-    supportsAllDrives: true
-  });
+  const response = await withGoogleApiRetry(() =>
+    drive.files.list({
+      q: query,
+      fields: "files(id,name,modifiedTime)",
+      orderBy: "modifiedTime desc",
+      pageSize: 10,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true
+    })
+  );
 
   return response.data.files?.[0]?.id ?? null;
 }
@@ -313,47 +378,60 @@ async function createSpreadsheetInFolder(input: {
   initialWorksheetTitle: string;
 }): Promise<string> {
   const sheets = await getSheetsClient();
-  const created = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: input.name },
-      sheets: [{ properties: { title: input.initialWorksheetTitle } }]
-    },
-    fields: "spreadsheetId"
-  });
+  const created = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.create({
+      requestBody: {
+        properties: { title: input.name },
+        sheets: [{ properties: { title: input.initialWorksheetTitle } }]
+      },
+      fields: "spreadsheetId"
+    })
+  );
 
   const spreadsheetId = created.data.spreadsheetId;
   if (!spreadsheetId) throw new Error(`Could not create spreadsheet "${input.name}".`);
 
   const drive = await getDriveClient();
-  const current = await drive.files.get({
-    fileId: spreadsheetId,
-    fields: "parents",
-    supportsAllDrives: true
-  });
+  const current = await withGoogleApiRetry(() =>
+    drive.files.get({
+      fileId: spreadsheetId,
+      fields: "parents",
+      supportsAllDrives: true
+    })
+  );
   const currentParents = (current.data.parents ?? []).join(",");
-  await drive.files.update({
-    fileId: spreadsheetId,
-    addParents: input.folderId,
-    removeParents: currentParents || undefined,
-    fields: "id,parents",
-    supportsAllDrives: true
-  });
+  await withGoogleApiRetry(() =>
+    drive.files.update({
+      fileId: spreadsheetId,
+      addParents: input.folderId,
+      removeParents: currentParents || undefined,
+      fields: "id,parents",
+      supportsAllDrives: true
+    })
+  );
 
   return spreadsheetId;
 }
 
 async function getWorksheetTitles(spreadsheetId: string): Promise<Set<string>> {
-  const sheets = await getSheetsClient();
-  const response = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: "sheets.properties.title"
-  });
+  const cached = worksheetNamesCache.get(spreadsheetId);
+  if (cached) return cached;
 
-  return new Set(
+  const sheets = await getSheetsClient();
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties.title"
+    })
+  );
+
+  const titles = new Set(
     (response.data.sheets ?? [])
       .map((sheet) => sheet.properties?.title?.trim() ?? "")
       .filter(Boolean)
   );
+  worksheetNamesCache.set(spreadsheetId, titles);
+  return titles;
 }
 
 async function getWorksheetMetadataByTitle(input: {
@@ -361,10 +439,12 @@ async function getWorksheetMetadataByTitle(input: {
   worksheetName: string;
 }): Promise<{ sheetId: number; title: string }> {
   const sheets = await getSheetsClient();
-  const response = await sheets.spreadsheets.get({
-    spreadsheetId: input.spreadsheetId,
-    fields: "sheets.properties.sheetId,sheets.properties.title"
-  });
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId: input.spreadsheetId,
+      fields: "sheets.properties.sheetId,sheets.properties.title"
+    })
+  );
 
   for (const sheet of response.data.sheets ?? []) {
     const title = sheet.properties?.title?.trim();
@@ -381,39 +461,71 @@ async function ensureWorksheet(spreadsheetId: string, title: string): Promise<vo
   if (titles.has(title)) return;
 
   const sheets = await getSheetsClient();
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [{ addSheet: { properties: { title } } }]
-    }
-  });
+  try {
+    await withGoogleApiRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{ addSheet: { properties: { title } } }]
+        }
+      })
+    );
+  } catch (error) {
+    if (!isGoogleAlreadyExistsError(error)) throw error;
+  }
+
+  const refreshed = new Set(titles);
+  refreshed.add(title);
+  worksheetNamesCache.set(spreadsheetId, refreshed);
 }
 
-async function ensureHeaderRow(input: {
+async function ensureHeaderRows(input: {
   spreadsheetId: string;
-  worksheetName: string;
-  headers: string[];
+  worksheets: Array<{ worksheetName: string; headers: string[] }>;
 }): Promise<void> {
-  const sheets = await getSheetsClient();
-  const endCol = indexToA1Column(input.headers.length - 1);
-  const range = `'${input.worksheetName}'!A1:${endCol}1`;
-  const existing = await sheets.spreadsheets.values.get({
-    spreadsheetId: input.spreadsheetId,
-    range
-  });
-  const firstRow = (existing.data.values?.[0] as string[] | undefined) ?? [];
-  const hasHeader = firstRow.some((cell) => String(cell ?? "").trim());
-  const hasCurrentHeaders =
-    hasHeader &&
-    input.headers.every((header, index) => String(firstRow[index] ?? "").trim() === header);
-  if (hasCurrentHeaders) return;
+  if (!input.worksheets.length) return;
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: input.spreadsheetId,
-    range,
-    valueInputOption: "RAW",
-    requestBody: { values: [input.headers] }
+  const sheets = await getSheetsClient();
+  const ranges = input.worksheets.map(({ worksheetName, headers }) => {
+    const endCol = indexToA1Column(headers.length - 1);
+    return `'${worksheetName}'!A1:${endCol}1`;
   });
+
+  const existing = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: input.spreadsheetId,
+      ranges
+    })
+  );
+
+  const valueRanges = existing.data.valueRanges ?? [];
+  const updates = input.worksheets.flatMap((worksheet, index) => {
+    const firstRow = (valueRanges[index]?.values?.[0] as string[] | undefined) ?? [];
+    const hasCurrentHeaders = worksheet.headers.every(
+      (header, headerIndex) => String(firstRow[headerIndex] ?? "").trim() === header
+    );
+    if (hasCurrentHeaders) return [];
+
+    const endCol = indexToA1Column(worksheet.headers.length - 1);
+    return [
+      {
+        range: `'${worksheet.worksheetName}'!A1:${endCol}1`,
+        values: [worksheet.headers]
+      }
+    ];
+  });
+
+  if (!updates.length) return;
+
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: {
+        valueInputOption: "RAW",
+        data: updates
+      }
+    })
+  );
 }
 
 async function resolveNutritionSpreadsheetId(): Promise<string> {
@@ -445,27 +557,24 @@ async function ensureNutritionSheetsReady(): Promise<NutritionSheetsInfo> {
     await ensureWorksheet(spreadsheetId, WORKSHEETS.planFoods);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.versions);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.athleteRestrictions);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.athletePrivateNotes);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.mealCompletions);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.changeRequests);
 
-    await Promise.all([
-      ensureHeaderRow({ spreadsheetId, worksheetName: WORKSHEETS.foods, headers: FOOD_HEADERS }),
-      ensureHeaderRow({ spreadsheetId, worksheetName: WORKSHEETS.plans, headers: PLAN_HEADERS }),
-      ensureHeaderRow({ spreadsheetId, worksheetName: WORKSHEETS.meals, headers: MEAL_HEADERS }),
-      ensureHeaderRow({
-        spreadsheetId,
-        worksheetName: WORKSHEETS.planFoods,
-        headers: PLAN_FOOD_HEADERS
-      }),
-      ensureHeaderRow({
-        spreadsheetId,
-        worksheetName: WORKSHEETS.versions,
-        headers: VERSION_HEADERS
-      }),
-      ensureHeaderRow({
-        spreadsheetId,
-        worksheetName: WORKSHEETS.athleteRestrictions,
-        headers: ATHLETE_RESTRICTION_HEADERS
-      })
-    ]);
+    await ensureHeaderRows({
+      spreadsheetId,
+      worksheets: [
+        { worksheetName: WORKSHEETS.foods, headers: FOOD_HEADERS },
+        { worksheetName: WORKSHEETS.plans, headers: PLAN_HEADERS },
+        { worksheetName: WORKSHEETS.meals, headers: MEAL_HEADERS },
+        { worksheetName: WORKSHEETS.planFoods, headers: PLAN_FOOD_HEADERS },
+        { worksheetName: WORKSHEETS.versions, headers: VERSION_HEADERS },
+        { worksheetName: WORKSHEETS.athleteRestrictions, headers: ATHLETE_RESTRICTION_HEADERS },
+        { worksheetName: WORKSHEETS.athletePrivateNotes, headers: ATHLETE_PRIVATE_NOTE_HEADERS },
+        { worksheetName: WORKSHEETS.mealCompletions, headers: MEAL_COMPLETION_HEADERS },
+        { worksheetName: WORKSHEETS.changeRequests, headers: CHANGE_REQUEST_HEADERS }
+      ]
+    });
 
     return {
       spreadsheetId,
@@ -474,7 +583,10 @@ async function ensureNutritionSheetsReady(): Promise<NutritionSheetsInfo> {
       mealsWorksheet: WORKSHEETS.meals,
       planFoodsWorksheet: WORKSHEETS.planFoods,
       versionsWorksheet: WORKSHEETS.versions,
-      athleteRestrictionsWorksheet: WORKSHEETS.athleteRestrictions
+      athleteRestrictionsWorksheet: WORKSHEETS.athleteRestrictions,
+      athletePrivateNotesWorksheet: WORKSHEETS.athletePrivateNotes,
+      mealCompletionsWorksheet: WORKSHEETS.mealCompletions,
+      changeRequestsWorksheet: WORKSHEETS.changeRequests
     };
   })();
 
@@ -490,13 +602,39 @@ async function readWorksheetRows(worksheetName: string, headers: string[]): Prom
   const info = await ensureNutritionSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A2:${endCol}`,
-    valueRenderOption: "FORMATTED_VALUE",
-    dateTimeRenderOption: "FORMATTED_STRING"
-  });
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId: info.spreadsheetId,
+      range: `'${worksheetName}'!A2:${endCol}`,
+      valueRenderOption: "FORMATTED_VALUE",
+      dateTimeRenderOption: "FORMATTED_STRING"
+    })
+  );
   return (response.data.values as string[][] | undefined) ?? [];
+}
+
+async function readWorksheetRowsBatch(
+  worksheets: Array<{ worksheetName: string; headers: string[] }>
+): Promise<string[][][]> {
+  if (!worksheets.length) return [];
+
+  const info = await ensureNutritionSheetsReady();
+  const sheets = await getSheetsClient();
+  const ranges = worksheets.map(({ worksheetName, headers }) => {
+    const endCol = indexToA1Column(headers.length - 1);
+    return `'${worksheetName}'!A2:${endCol}`;
+  });
+
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: info.spreadsheetId,
+      ranges,
+      valueRenderOption: "FORMATTED_VALUE",
+      dateTimeRenderOption: "FORMATTED_STRING"
+    })
+  );
+  const valueRanges = response.data.valueRanges ?? [];
+  return worksheets.map((_, index) => (valueRanges[index]?.values as string[][] | undefined) ?? []);
 }
 
 async function readWorksheetRowsWithNumbers(
@@ -516,13 +654,15 @@ async function appendWorksheetRows(
   const info = await ensureNutritionSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A:${endCol}`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: rows }
-  });
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.append({
+      spreadsheetId: info.spreadsheetId,
+      range: `'${worksheetName}'!A:${endCol}`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: rows }
+    })
+  );
 }
 
 async function updateWorksheetRowById(
@@ -538,12 +678,14 @@ async function updateWorksheetRowById(
   const info = await ensureNutritionSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A${target.rowNumber}:${endCol}${target.rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [rowValues] }
-  });
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: info.spreadsheetId,
+      range: `'${worksheetName}'!A${target.rowNumber}:${endCol}${target.rowNumber}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [rowValues] }
+    })
+  );
   return true;
 }
 
@@ -563,21 +705,23 @@ async function deleteWorksheetRowsWhere(
   });
   const sheets = await getSheetsClient();
   const sortedRows = rowsToDelete.sort((a, b) => b.rowNumber - a.rowNumber);
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: info.spreadsheetId,
-    requestBody: {
-      requests: sortedRows.map((item) => ({
-        deleteDimension: {
-          range: {
-            sheetId: worksheetMeta.sheetId,
-            dimension: "ROWS",
-            startIndex: item.rowNumber - 1,
-            endIndex: item.rowNumber
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.batchUpdate({
+      spreadsheetId: info.spreadsheetId,
+      requestBody: {
+        requests: sortedRows.map((item) => ({
+          deleteDimension: {
+            range: {
+              sheetId: worksheetMeta.sheetId,
+              dimension: "ROWS",
+              startIndex: item.rowNumber - 1,
+              endIndex: item.rowNumber
+            }
           }
-        }
-      }))
-    }
-  });
+        }))
+      }
+    })
+  );
 
   return rowsToDelete.length;
 }
@@ -759,6 +903,73 @@ function parseAthleteRestriction(row: string[]): NutritionAthleteRestriction | n
   };
 }
 
+function parseAthletePrivateNote(row: string[]): AthletePrivateNote | null {
+  const athleteUsername = normalizeUsername(String(row[0] ?? ""));
+  if (!athleteUsername) return null;
+
+  return {
+    athleteUsername,
+    notes: String(row[1] ?? "").trim(),
+    updatedAt: String(row[2] ?? "").trim()
+  };
+}
+
+function parseMealCompletion(row: string[]): NutritionMealCompletion | null {
+  const id = String(row[0] ?? "").trim();
+  const athleteUsername = normalizeUsername(String(row[1] ?? ""));
+  const date = String(row[2] ?? "").trim();
+  const planId = String(row[3] ?? "").trim();
+  const mealId = String(row[4] ?? "").trim();
+  if (!id || !athleteUsername || !isIsoDateOnly(date) || !planId || !mealId) return null;
+
+  return {
+    id,
+    athleteUsername,
+    date,
+    planId,
+    mealId,
+    completed: parseBoolean(row[5], false),
+    updatedAt: String(row[6] ?? "").trim()
+  };
+}
+
+function parseChangeRequest(row: string[]): NutritionChangeRequest | null {
+  const id = String(row[0] ?? "").trim();
+  const athleteUsername = normalizeUsername(String(row[1] ?? ""));
+  const planId = String(row[3] ?? "").trim();
+  const mealId = String(row[5] ?? "").trim();
+  const entryId = String(row[7] ?? "").trim();
+  const requestedFoodId = String(row[11] ?? "").trim();
+  const requestedFoodName = String(row[12] ?? "").trim();
+  if (!id || !athleteUsername || !planId || !mealId || !entryId || !requestedFoodId || !requestedFoodName) {
+    return null;
+  }
+
+  return {
+    id,
+    athleteUsername,
+    athleteName: String(row[2] ?? "").trim(),
+    planId,
+    planName: String(row[4] ?? "").trim(),
+    mealId,
+    mealName: String(row[6] ?? "").trim(),
+    entryId,
+    originalFoodId: String(row[8] ?? "").trim(),
+    originalFoodName: String(row[9] ?? "").trim(),
+    originalQuantityG: clampQuantityG(parseNumber(row[10])),
+    requestedFoodId,
+    requestedFoodName,
+    requestedQuantityG: clampQuantityG(parseNumber(row[13])),
+    status: parseChangeRequestStatus(row[14]),
+    athleteNotes: String(row[15] ?? "").trim(),
+    adminNotes: String(row[16] ?? "").trim(),
+    createdAt: String(row[17] ?? "").trim(),
+    updatedAt: String(row[18] ?? "").trim(),
+    resolvedAt: String(row[19] ?? "").trim(),
+    resolvedBy: String(row[20] ?? "").trim()
+  };
+}
+
 function serializeFood(food: NutritionFood): Array<string | number> {
   return [
     food.id,
@@ -910,15 +1121,72 @@ function serializeAthleteRestriction(restriction: NutritionAthleteRestriction): 
   ];
 }
 
+function serializeAthletePrivateNote(note: AthletePrivateNote): Array<string | number> {
+  return [normalizeUsername(note.athleteUsername), note.notes, note.updatedAt];
+}
+
+function buildMealCompletionId(input: {
+  athleteUsername: string;
+  date: string;
+  planId: string;
+  mealId: string;
+}): string {
+  return [
+    normalizeUsername(input.athleteUsername),
+    input.date.trim(),
+    input.planId.trim(),
+    input.mealId.trim()
+  ].join("__");
+}
+
+function serializeMealCompletion(completion: NutritionMealCompletion): Array<string | number> {
+  return [
+    completion.id,
+    normalizeUsername(completion.athleteUsername),
+    completion.date,
+    completion.planId,
+    completion.mealId,
+    toSheetBoolean(completion.completed),
+    completion.updatedAt
+  ];
+}
+
+function serializeChangeRequest(request: NutritionChangeRequest): Array<string | number> {
+  return [
+    request.id,
+    normalizeUsername(request.athleteUsername),
+    request.athleteName,
+    request.planId,
+    request.planName,
+    request.mealId,
+    request.mealName,
+    request.entryId,
+    request.originalFoodId,
+    request.originalFoodName,
+    clampQuantityG(request.originalQuantityG),
+    request.requestedFoodId,
+    request.requestedFoodName,
+    clampQuantityG(request.requestedQuantityG),
+    request.status,
+    request.athleteNotes,
+    request.adminNotes,
+    request.createdAt,
+    request.updatedAt,
+    request.resolvedAt,
+    request.resolvedBy
+  ];
+}
+
 async function readNutritionDataset(): Promise<NutritionDataset> {
-  const [foodsRows, planRows, mealRows, entryRows, versionRows, restrictionRows] = await Promise.all([
-    readWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS),
-    readWorksheetRows(WORKSHEETS.plans, PLAN_HEADERS),
-    readWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS),
-    readWorksheetRows(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS),
-    readWorksheetRows(WORKSHEETS.versions, VERSION_HEADERS),
-    readWorksheetRows(WORKSHEETS.athleteRestrictions, ATHLETE_RESTRICTION_HEADERS)
-  ]);
+  const [foodsRows, planRows, mealRows, entryRows, versionRows, restrictionRows] =
+    await readWorksheetRowsBatch([
+      { worksheetName: WORKSHEETS.foods, headers: FOOD_HEADERS },
+      { worksheetName: WORKSHEETS.plans, headers: PLAN_HEADERS },
+      { worksheetName: WORKSHEETS.meals, headers: MEAL_HEADERS },
+      { worksheetName: WORKSHEETS.planFoods, headers: PLAN_FOOD_HEADERS },
+      { worksheetName: WORKSHEETS.versions, headers: VERSION_HEADERS },
+      { worksheetName: WORKSHEETS.athleteRestrictions, headers: ATHLETE_RESTRICTION_HEADERS }
+    ]);
 
   return {
     foods: foodsRows.map(parseFood).filter((item): item is NutritionFood => Boolean(item)),
@@ -1002,6 +1270,268 @@ export async function listNutritionPlansForAthlete(
       return b.updatedAt.localeCompare(a.updatedAt);
     })
     .map((plan) => buildFullPlan(dataset, plan));
+}
+
+export async function listInteractiveNutritionDataForAthlete(
+  athleteUsername: string,
+  options?: { date?: string }
+): Promise<{
+  plans: NutritionPlanFull[];
+  foods: NutritionFood[];
+  restrictions: NutritionAthleteRestriction[];
+  completions: NutritionMealCompletion[];
+  changeRequests: NutritionChangeRequest[];
+}> {
+  const username = normalizeUsername(athleteUsername);
+  const dataset = await ensureDefaultFoods(await readNutritionDataset());
+  const [completionsResult, changeRequestsResult] = await Promise.allSettled([
+    listNutritionMealCompletionsForAthlete(username, { date: options?.date }),
+    listNutritionChangeRequests({ athleteUsername: username })
+  ]);
+
+  const statusOrder = { published: 0, review: 1, draft: 2 } satisfies Record<NutritionPlanStatus, number>;
+  const plans = dataset.plans
+    .filter((plan) => normalizeUsername(plan.athleteUsername) === username)
+    .sort((a, b) => {
+      const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+      if (statusDiff !== 0) return statusDiff;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    })
+    .map((plan) => buildFullPlan(dataset, plan));
+
+  return {
+    plans,
+    foods: [...dataset.foods].sort((a, b) => {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return a.name.localeCompare(b.name, "es");
+    }),
+    restrictions: [...dataset.restrictions]
+      .filter((restriction) => restriction.athleteUsername === username)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    completions: completionsResult.status === "fulfilled" ? completionsResult.value : [],
+    changeRequests: changeRequestsResult.status === "fulfilled" ? changeRequestsResult.value : []
+  };
+}
+
+export async function getAthletePrivateNotes(athleteUsername: string): Promise<AthletePrivateNote> {
+  const username = normalizeUsername(athleteUsername);
+  const rows = await readWorksheetRows(WORKSHEETS.athletePrivateNotes, ATHLETE_PRIVATE_NOTE_HEADERS);
+  const note = rows
+    .map(parseAthletePrivateNote)
+    .find((item): item is AthletePrivateNote => Boolean(item && item.athleteUsername === username));
+
+  return note ?? { athleteUsername: username, notes: "", updatedAt: "" };
+}
+
+export async function updateAthletePrivateNotes(input: {
+  athleteUsername: string;
+  notes: string;
+}): Promise<AthletePrivateNote> {
+  const athleteUsername = normalizeUsername(input.athleteUsername);
+  if (!athleteUsername) throw new Error("Athlete username is required.");
+
+  const note: AthletePrivateNote = {
+    athleteUsername,
+    notes: input.notes.trim().slice(0, 6000),
+    updatedAt: new Date().toISOString()
+  };
+
+  const updated = await updateWorksheetRowById(
+    WORKSHEETS.athletePrivateNotes,
+    ATHLETE_PRIVATE_NOTE_HEADERS,
+    athleteUsername,
+    serializeAthletePrivateNote(note)
+  );
+  if (!updated) {
+    await appendWorksheetRows(WORKSHEETS.athletePrivateNotes, ATHLETE_PRIVATE_NOTE_HEADERS, [
+      serializeAthletePrivateNote(note)
+    ]);
+  }
+
+  return note;
+}
+
+export async function listNutritionMealCompletionsForAthlete(
+  athleteUsername: string,
+  options?: { date?: string }
+): Promise<NutritionMealCompletion[]> {
+  const username = normalizeUsername(athleteUsername);
+  if (!username) return [];
+
+  const rows = await readWorksheetRows(WORKSHEETS.mealCompletions, MEAL_COMPLETION_HEADERS);
+  return rows
+    .map(parseMealCompletion)
+    .filter((item): item is NutritionMealCompletion => {
+      if (!item || item.athleteUsername !== username) return false;
+      if (options?.date && item.date !== options.date) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const byDate = b.date.localeCompare(a.date);
+      if (byDate !== 0) return byDate;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    });
+}
+
+export async function upsertNutritionMealCompletion(input: {
+  athleteUsername: string;
+  date: string;
+  planId: string;
+  mealId: string;
+  completed: boolean;
+}): Promise<NutritionMealCompletion> {
+  const athleteUsername = normalizeUsername(input.athleteUsername);
+  const date = input.date.trim();
+  const planId = input.planId.trim();
+  const mealId = input.mealId.trim();
+
+  if (!athleteUsername) throw new Error("Athlete username is required.");
+  if (!isIsoDateOnly(date)) throw new Error("Completion date is invalid.");
+  if (!planId || !mealId) throw new Error("Plan and meal are required.");
+
+  const completion: NutritionMealCompletion = {
+    id: buildMealCompletionId({ athleteUsername, date, planId, mealId }),
+    athleteUsername,
+    date,
+    planId,
+    mealId,
+    completed: input.completed,
+    updatedAt: new Date().toISOString()
+  };
+
+  const updated = await updateWorksheetRowById(
+    WORKSHEETS.mealCompletions,
+    MEAL_COMPLETION_HEADERS,
+    completion.id,
+    serializeMealCompletion(completion)
+  );
+  if (!updated) {
+    await appendWorksheetRows(WORKSHEETS.mealCompletions, MEAL_COMPLETION_HEADERS, [
+      serializeMealCompletion(completion)
+    ]);
+  }
+
+  return completion;
+}
+
+export async function listNutritionChangeRequests(options?: {
+  athleteUsername?: string;
+  status?: NutritionChangeRequestStatus;
+}): Promise<NutritionChangeRequest[]> {
+  const athleteUsername = options?.athleteUsername
+    ? normalizeUsername(options.athleteUsername)
+    : "";
+  const rows = await readWorksheetRows(WORKSHEETS.changeRequests, CHANGE_REQUEST_HEADERS);
+  return rows
+    .map(parseChangeRequest)
+    .filter((item): item is NutritionChangeRequest => {
+      if (!item) return false;
+      if (athleteUsername && item.athleteUsername !== athleteUsername) return false;
+      if (options?.status && item.status !== options.status) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const statusOrder = { pending: 0, approved: 1, denied: 2 } satisfies Record<
+        NutritionChangeRequestStatus,
+        number
+      >;
+      const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+      if (statusDiff !== 0) return statusDiff;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    });
+}
+
+export async function createNutritionChangeRequest(input: {
+  athleteUsername: string;
+  athleteName: string;
+  planId: string;
+  planName: string;
+  mealId: string;
+  mealName: string;
+  entryId: string;
+  originalFoodId: string;
+  originalFoodName: string;
+  originalQuantityG: number;
+  requestedFoodId: string;
+  requestedFoodName: string;
+  requestedQuantityG: number;
+  athleteNotes?: string;
+}): Promise<NutritionChangeRequest> {
+  const athleteUsername = normalizeUsername(input.athleteUsername);
+  if (!athleteUsername) throw new Error("Athlete username is required.");
+
+  const pendingRequests = await listNutritionChangeRequests({
+    athleteUsername,
+    status: "pending"
+  });
+  const duplicate = pendingRequests.some(
+    (request) =>
+      request.planId === input.planId &&
+      request.mealId === input.mealId &&
+      request.entryId === input.entryId &&
+      request.requestedFoodId === input.requestedFoodId
+  );
+  if (duplicate) throw new Error("Change request already exists.");
+
+  const now = new Date().toISOString();
+  const request: NutritionChangeRequest = {
+    id: randomUUID(),
+    athleteUsername,
+    athleteName: input.athleteName.trim().slice(0, 120),
+    planId: input.planId.trim(),
+    planName: input.planName.trim().slice(0, 120),
+    mealId: input.mealId.trim(),
+    mealName: input.mealName.trim().slice(0, 120),
+    entryId: input.entryId.trim(),
+    originalFoodId: input.originalFoodId.trim(),
+    originalFoodName: input.originalFoodName.trim().slice(0, 160),
+    originalQuantityG: clampQuantityG(input.originalQuantityG),
+    requestedFoodId: input.requestedFoodId.trim(),
+    requestedFoodName: input.requestedFoodName.trim().slice(0, 160),
+    requestedQuantityG: clampQuantityG(input.requestedQuantityG),
+    status: "pending",
+    athleteNotes: input.athleteNotes?.trim().slice(0, 1000) ?? "",
+    adminNotes: "",
+    createdAt: now,
+    updatedAt: now,
+    resolvedAt: "",
+    resolvedBy: ""
+  };
+
+  await appendWorksheetRows(WORKSHEETS.changeRequests, CHANGE_REQUEST_HEADERS, [
+    serializeChangeRequest(request)
+  ]);
+  return request;
+}
+
+export async function resolveNutritionChangeRequest(input: {
+  requestId: string;
+  status: Extract<NutritionChangeRequestStatus, "approved" | "denied">;
+  adminNotes?: string;
+  resolvedBy: string;
+}): Promise<NutritionChangeRequest | null> {
+  const requests = await listNutritionChangeRequests();
+  const current = requests.find((request) => request.id === input.requestId);
+  if (!current) return null;
+
+  const now = new Date().toISOString();
+  const updated: NutritionChangeRequest = {
+    ...current,
+    status: input.status,
+    adminNotes: input.adminNotes?.trim().slice(0, 1000) ?? current.adminNotes,
+    updatedAt: now,
+    resolvedAt: now,
+    resolvedBy: normalizeUsername(input.resolvedBy)
+  };
+
+  const persisted = await updateWorksheetRowById(
+    WORKSHEETS.changeRequests,
+    CHANGE_REQUEST_HEADERS,
+    updated.id,
+    serializeChangeRequest(updated)
+  );
+  if (!persisted) return null;
+  return updated;
 }
 
 export async function createNutritionFood(input: {

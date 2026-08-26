@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
-import { listNutritionManagementData } from "@/lib/google/nutrition-management";
+import {
+  listNutritionChangeRequests,
+  listNutritionManagementData
+} from "@/lib/google/nutrition-management";
 import { readUsersFromSheet } from "@/lib/google/sheets";
 import { logError } from "@/lib/logger";
 
@@ -13,10 +16,35 @@ export async function GET() {
   if (!auth.session) return auth.response;
 
   try {
-    const [users, nutrition] = await Promise.all([
+    const [usersResult, nutritionResult, changeRequestsResult] = await Promise.allSettled([
       readUsersFromSheet(),
-      listNutritionManagementData()
+      listNutritionManagementData(),
+      listNutritionChangeRequests()
     ]);
+
+    if (nutritionResult.status === "rejected") {
+      throw nutritionResult.reason;
+    }
+
+    if (usersResult.status === "rejected") {
+      logError("Failed to load users for nutrition management", {
+        username: auth.session.username,
+        error: usersResult.reason
+      });
+    }
+
+    if (changeRequestsResult.status === "rejected") {
+      logError("Failed to load nutrition change requests inside management payload", {
+        username: auth.session.username,
+        error: changeRequestsResult.reason
+      });
+    }
+
+    const users = usersResult.status === "fulfilled" ? usersResult.value : [];
+    const nutrition = nutritionResult.value;
+    const changeRequests =
+      changeRequestsResult.status === "fulfilled" ? changeRequestsResult.value : [];
+
     const athletes = users
       .filter((user) => user.permission === "user")
       .map((user) => ({
@@ -31,7 +59,8 @@ export async function GET() {
       athletes,
       foods: nutrition.foods,
       plans: nutrition.plans,
-      restrictions: nutrition.restrictions
+      restrictions: nutrition.restrictions,
+      changeRequests
     });
   } catch (error) {
     logError("Failed to load nutrition management data", {

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth/jwt";
 
-const protectedPrefixes = ["/dashboard", "/revision", "/tools", "/community", "/password/change"];
+const protectedPrefixes = ["/dashboard", "/revision", "/tools", "/password/change"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -16,7 +16,7 @@ export async function middleware(req: NextRequest) {
 
   if (session?.mustChangePassword) {
     const isChangePasswordPath = pathname.startsWith("/password/change");
-    const isProtectedAppPath = ["/dashboard", "/revision", "/tools", "/community"].some((prefix) =>
+    const isProtectedAppPath = ["/dashboard", "/revision", "/tools"].some((prefix) =>
       pathname.startsWith(prefix)
     );
 
@@ -39,7 +39,6 @@ export const config = {
     "/dashboard/:path*",
     "/revision/:path*",
     "/tools/:path*",
-    "/community/:path*",
     "/password/change"
   ]
 };

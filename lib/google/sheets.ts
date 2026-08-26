@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
+import { isGoogleAlreadyExistsError, withGoogleApiRetry } from "@/lib/google/retry";
 import type { RevisionRow } from "@/lib/google/types";
 import { logError } from "@/lib/logger";
 import { DEFAULT_EXERCISE_CATALOG } from "@/lib/routines/default-exercises";
@@ -324,14 +325,16 @@ async function resolveSpreadsheetIdByName(
 
   const drive = await getDriveClient();
   const query = `name='${escapeQueryValue(name)}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`;
-  const res = await drive.files.list({
-    q: query,
-    fields: "files(id,name,modifiedTime)",
-    orderBy: "modifiedTime desc",
-    pageSize: 10,
-    includeItemsFromAllDrives: true,
-    supportsAllDrives: true
-  });
+  const res = await withGoogleApiRetry(() =>
+    drive.files.list({
+      q: query,
+      fields: "files(id,name,modifiedTime)",
+      orderBy: "modifiedTime desc",
+      pageSize: 10,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true
+    })
+  );
   const match = res.data.files?.[0];
   if (match?.id) {
     spreadsheetIdCache.set(name, match.id);
@@ -344,13 +347,15 @@ async function resolveSpreadsheetIdByName(
 
   const sheets = await getSheetsClient();
   const initialTitle = options.initialWorksheetTitle?.trim() || "Sheet1";
-  const create = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: name },
-      sheets: [{ properties: { title: initialTitle } }]
-    },
-    fields: "spreadsheetId,sheets.properties.title"
-  });
+  const create = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.create({
+      requestBody: {
+        properties: { title: name },
+        sheets: [{ properties: { title: initialTitle } }]
+      },
+      fields: "spreadsheetId,sheets.properties.title"
+    })
+  );
   const createdId = create.data.spreadsheetId;
   if (!createdId) {
     throw new Error(`Failed to create spreadsheet "${name}".`);
@@ -371,24 +376,28 @@ async function resolveSpreadsheetIdByNameInFolder(
     `name='${escapeQueryValue(name)}' and ` +
     `mimeType='application/vnd.google-apps.spreadsheet' and ` +
     `'${escapeQueryValue(folderId)}' in parents and trashed=false`;
-  const res = await drive.files.list({
-    q: query,
-    fields: "files(id,name,modifiedTime)",
-    orderBy: "modifiedTime desc",
-    pageSize: 10,
-    includeItemsFromAllDrives: true,
-    supportsAllDrives: true
-  });
+  const res = await withGoogleApiRetry(() =>
+    drive.files.list({
+      q: query,
+      fields: "files(id,name,modifiedTime)",
+      orderBy: "modifiedTime desc",
+      pageSize: 10,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true
+    })
+  );
   return res.data.files?.[0]?.id ?? null;
 }
 
 async function getFileParentFolderId(fileId: string): Promise<string | null> {
   const drive = await getDriveClient();
-  const res = await drive.files.get({
-    fileId,
-    fields: "parents",
-    supportsAllDrives: true
-  });
+  const res = await withGoogleApiRetry(() =>
+    drive.files.get({
+      fileId,
+      fields: "parents",
+      supportsAllDrives: true
+    })
+  );
   return res.data.parents?.[0] ?? null;
 }
 
@@ -399,13 +408,15 @@ async function createSpreadsheetInFolder(input: {
 }): Promise<string> {
   const sheets = await getSheetsClient();
   const initialTitle = input.initialWorksheetTitle?.trim() || "Sheet1";
-  const created = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: input.name },
-      sheets: [{ properties: { title: initialTitle } }]
-    },
-    fields: "spreadsheetId,sheets.properties.title"
-  });
+  const created = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.create({
+      requestBody: {
+        properties: { title: input.name },
+        sheets: [{ properties: { title: initialTitle } }]
+      },
+      fields: "spreadsheetId,sheets.properties.title"
+    })
+  );
 
   const spreadsheetId = created.data.spreadsheetId;
   if (!spreadsheetId) {
@@ -413,20 +424,24 @@ async function createSpreadsheetInFolder(input: {
   }
 
   const drive = await getDriveClient();
-  const currentMeta = await drive.files.get({
-    fileId: spreadsheetId,
-    fields: "parents",
-    supportsAllDrives: true
-  });
+  const currentMeta = await withGoogleApiRetry(() =>
+    drive.files.get({
+      fileId: spreadsheetId,
+      fields: "parents",
+      supportsAllDrives: true
+    })
+  );
   const currentParents = (currentMeta.data.parents ?? []).join(",");
 
-  await drive.files.update({
-    fileId: spreadsheetId,
-    addParents: input.folderId,
-    removeParents: currentParents || undefined,
-    fields: "id,parents",
-    supportsAllDrives: true
-  });
+  await withGoogleApiRetry(() =>
+    drive.files.update({
+      fileId: spreadsheetId,
+      addParents: input.folderId,
+      removeParents: currentParents || undefined,
+      fields: "id,parents",
+      supportsAllDrives: true
+    })
+  );
 
   spreadsheetIdCache.set(input.name, spreadsheetId);
   worksheetTitleCache.set(spreadsheetId, initialTitle);
@@ -440,10 +455,12 @@ async function getWorksheetTitles(spreadsheetId: string): Promise<Set<string>> {
   if (cached) return cached;
 
   const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: "sheets.properties.title"
-  });
+  const res = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties.title"
+    })
+  );
   const titles = new Set<string>();
   for (const sheet of res.data.sheets ?? []) {
     const title = sheet.properties?.title?.trim();
@@ -478,20 +495,26 @@ async function ensureWorksheetExists(spreadsheetId: string, worksheetTitle: stri
   if (titles.has(normalizedTitle)) return;
 
   const sheets = await getSheetsClient();
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [
-        {
-          addSheet: {
-            properties: {
-              title: normalizedTitle
+  try {
+    await withGoogleApiRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: normalizedTitle
+                }
+              }
             }
-          }
+          ]
         }
-      ]
-    }
-  });
+      })
+    );
+  } catch (error) {
+    if (!isGoogleAlreadyExistsError(error)) throw error;
+  }
 
   const refreshed = new Set(titles);
   refreshed.add(normalizedTitle);
@@ -528,10 +551,12 @@ async function getWorksheetMetadataByTitle(input: {
   worksheetName: string;
 }): Promise<{ sheetId: number; title: string }> {
   const sheets = await getSheetsClient();
-  const response = await sheets.spreadsheets.get({
-    spreadsheetId: input.spreadsheetId,
-    fields: "sheets.properties.sheetId,sheets.properties.title"
-  });
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId: input.spreadsheetId,
+      fields: "sheets.properties.sheetId,sheets.properties.title"
+    })
+  );
 
   for (const sheet of response.data.sheets ?? []) {
     const title = sheet.properties?.title?.trim();
@@ -556,22 +581,26 @@ async function ensureHeaderRow(input: {
   const endCol = indexToA1Column(input.headers.length - 1);
   const range = `'${input.worksheetName}'!A1:${endCol}1`;
 
-  const existing = await sheets.spreadsheets.values.get({
-    spreadsheetId: input.spreadsheetId,
-    range
-  });
+  const existing = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId: input.spreadsheetId,
+      range
+    })
+  );
   const firstRow = (existing.data.values?.[0] as string[] | undefined) ?? [];
   const hasData = firstRow.some((value) => String(value).trim().length > 0);
   if (hasData) return;
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: input.spreadsheetId,
-    range,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [input.headers]
-    }
-  });
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: input.spreadsheetId,
+      range,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [input.headers]
+      }
+    })
+  );
 }
 
 async function ensureRevisionErrorLogSheetReady(): Promise<RevisionErrorLogSheetInfo> {
@@ -836,12 +865,14 @@ async function getValuesBySheetName(
   const spreadsheetId = await resolveSpreadsheetIdByName(spreadsheetName);
   const tab = worksheetName ?? (await getFirstWorksheetTitle(spreadsheetId));
   const range = `'${tab}'!${rangeA1}`;
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range,
-    valueRenderOption: options?.valueRenderOption,
-    dateTimeRenderOption: options?.dateTimeRenderOption
-  });
+  const res = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+      valueRenderOption: options?.valueRenderOption,
+      dateTimeRenderOption: options?.dateTimeRenderOption
+    })
+  );
   return (res.data.values as string[][] | undefined) ?? [];
 }
 
@@ -999,6 +1030,90 @@ export async function deleteUserFromSheetByUsername(username: string): Promise<b
   });
 
   return true;
+}
+
+async function updateUserSheetCell(input: {
+  spreadsheetId: string;
+  worksheetName: string;
+  rowNumber: number;
+  columnIndex: number;
+  value: string;
+}): Promise<void> {
+  if (input.columnIndex < 0) return;
+  const sheets = await getSheetsClient();
+  const col = indexToA1Column(input.columnIndex);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: input.spreadsheetId,
+    range: `'${input.worksheetName}'!${col}${input.rowNumber}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[input.value]]
+    }
+  });
+}
+
+export async function updateUserInSheet(input: {
+  username: string;
+  name?: string;
+  email?: string;
+  permission?: "user" | "admin";
+}): Promise<AppUser | null> {
+  const cleanUsername = normalizeUsername(input.username).toLowerCase();
+  if (!cleanUsername) return null;
+
+  const users = await readUsersFromSheet();
+  const targetUser = users.find(
+    (user) => normalizeUsername(user.username).toLowerCase() === cleanUsername
+  );
+  if (!targetUser) return null;
+
+  const context = await getUsersSheetContext();
+  const updates: Promise<void>[] = [];
+  const nextName = input.name?.trim();
+  const nextEmail = input.email?.trim();
+
+  if (nextName !== undefined) {
+    updates.push(
+      updateUserSheetCell({
+        spreadsheetId: context.spreadsheetId,
+        worksheetName: context.worksheetName,
+        rowNumber: targetUser.rowNumber,
+        columnIndex: context.columns.nameCol,
+        value: nextName
+      })
+    );
+  }
+  if (nextEmail !== undefined && context.columns.emailCol >= 0) {
+    updates.push(
+      updateUserSheetCell({
+        spreadsheetId: context.spreadsheetId,
+        worksheetName: context.worksheetName,
+        rowNumber: targetUser.rowNumber,
+        columnIndex: context.columns.emailCol,
+        value: nextEmail
+      })
+    );
+  }
+  if (input.permission !== undefined && context.columns.permissionCol >= 0) {
+    updates.push(
+      updateUserSheetCell({
+        spreadsheetId: context.spreadsheetId,
+        worksheetName: context.worksheetName,
+        rowNumber: targetUser.rowNumber,
+        columnIndex: context.columns.permissionCol,
+        value: input.permission
+      })
+    );
+  }
+
+  await Promise.all(updates);
+
+  return {
+    ...targetUser,
+    name: nextName ?? targetUser.name,
+    email: nextEmail ?? targetUser.email,
+    permission: input.permission ?? targetUser.permission
+  };
 }
 
 export async function readQuestionsFromSheet(): Promise<string[]> {
@@ -1424,6 +1539,41 @@ type PeakModeDailySheetRow = PeakModeDailyLogRow & {
   rowNumber: number;
 };
 
+const PEAK_MODE_ROWS_CACHE_TTL_MS = 60_000;
+const peakModeRowsCache = new Map<string, { expiresAt: number; rows: string[][] }>();
+
+function getPeakModeRowsCacheKey(input: PeakModeSheetInfo): string {
+  return `${input.spreadsheetId}::${input.worksheetName}`;
+}
+
+async function readPeakModeDailyRows(input: PeakModeSheetInfo, options?: { force?: boolean }) {
+  const cacheKey = getPeakModeRowsCacheKey(input);
+  const cached = peakModeRowsCache.get(cacheKey);
+  if (!options?.force && cached && cached.expiresAt > Date.now()) {
+    return cached.rows;
+  }
+
+  const sheets = await getSheetsClient();
+  const values = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId: input.spreadsheetId,
+      range: `'${input.worksheetName}'!A2:T`,
+      valueRenderOption: "FORMATTED_VALUE",
+      dateTimeRenderOption: "FORMATTED_STRING"
+    })
+  );
+  const rows = (values.data.values as string[][] | undefined) ?? [];
+  peakModeRowsCache.set(cacheKey, {
+    expiresAt: Date.now() + PEAK_MODE_ROWS_CACHE_TTL_MS,
+    rows
+  });
+  return rows;
+}
+
+function invalidatePeakModeDailyRows(input: PeakModeSheetInfo) {
+  peakModeRowsCache.delete(getPeakModeRowsCacheKey(input));
+}
+
 function toPeakModeLogValues(row: PeakModeDailyLogRow): Array<string | number> {
   return [
     row.timestamp,
@@ -1451,16 +1601,8 @@ function toPeakModeLogValues(row: PeakModeDailyLogRow): Array<string | number> {
 
 async function listPeakModeDailySheetRowsForUser(username: string): Promise<PeakModeDailySheetRow[]> {
   const peakSheet = await ensurePeakModeSheetReady();
-  const sheets = await getSheetsClient();
   const usernameVariants = getUsernameVariants(username);
-
-  const values = await sheets.spreadsheets.values.get({
-    spreadsheetId: peakSheet.spreadsheetId,
-    range: `'${peakSheet.worksheetName}'!A2:T`,
-    valueRenderOption: "FORMATTED_VALUE",
-    dateTimeRenderOption: "FORMATTED_STRING"
-  });
-  const rows = (values.data.values as string[][] | undefined) ?? [];
+  const rows = await readPeakModeDailyRows(peakSheet);
 
   const parsed: PeakModeDailySheetRow[] = [];
   rows.forEach((row, index) => {
@@ -1549,6 +1691,7 @@ export async function upsertPeakModeDailyLogForUser(input: {
   const peakSheet = await ensurePeakModeSheetReady();
   const sheets = await getSheetsClient();
 
+  await readPeakModeDailyRows(peakSheet, { force: true });
   const existingRows = await listPeakModeDailySheetRowsForUser(input.username);
   const normalizedDate = normalizeComparableValue(input.row.fecha);
   const target = existingRows
@@ -1556,26 +1699,32 @@ export async function upsertPeakModeDailyLogForUser(input: {
     .sort((a, b) => b.rowNumber - a.rowNumber)[0];
 
   if (target) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: peakSheet.spreadsheetId,
-      range: `'${peakSheet.worksheetName}'!A${target.rowNumber}:T${target.rowNumber}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [toPeakModeLogValues(input.row)]
-      }
-    });
+    await withGoogleApiRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: peakSheet.spreadsheetId,
+        range: `'${peakSheet.worksheetName}'!A${target.rowNumber}:T${target.rowNumber}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [toPeakModeLogValues(input.row)]
+        }
+      })
+    );
+    invalidatePeakModeDailyRows(peakSheet);
     return;
   }
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: peakSheet.spreadsheetId,
-    range: `'${peakSheet.worksheetName}'!A:T`,
-    valueInputOption: "USER_ENTERED",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [toPeakModeLogValues(input.row)]
-    }
-  });
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.append({
+      spreadsheetId: peakSheet.spreadsheetId,
+      range: `'${peakSheet.worksheetName}'!A:T`,
+      valueInputOption: "USER_ENTERED",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [toPeakModeLogValues(input.row)]
+      }
+    })
+  );
+  invalidatePeakModeDailyRows(peakSheet);
 }
 
 export async function updateUserPasswordCell(
