@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -128,6 +128,53 @@ function createClientId(): string {
 function normalizeNumberInput(value: string): number {
   const parsed = Number(value.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function sanitizeIntegerInput(value: string): string {
+  const integerPart = value.trim().split(/[.,]/)[0] ?? "";
+  const digits = integerPart.replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.replace(/^0+(?=\d)/, "") || "0";
+}
+
+function parseIntegerInput(value: string): number | null {
+  const sanitized = sanitizeIntegerInput(value);
+  if (!sanitized) return null;
+  const parsed = Number(sanitized);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function formatIntegerValue(value: number, min = 0, max = 10000): string {
+  return String(clampInteger(value, min, max));
+}
+
+function normalizeQuantityG(value: number): number {
+  return clampInteger(value, 1, 10000);
+}
+
+function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
+  return {
+    ...plan,
+    targetProteinG: clampInteger(plan.targetProteinG, 0, 2000),
+    targetCarbsG: clampInteger(plan.targetCarbsG, 0, 3000),
+    targetFatG: clampInteger(plan.targetFatG, 0, 1000),
+    meals: plan.meals.map((meal) => ({
+      ...meal,
+      entries: meal.entries.map((entry) => ({
+        ...entry,
+        quantityG: normalizeQuantityG(entry.quantityG),
+        alternatives: (entry.alternatives ?? []).map((alternative) => ({
+          ...alternative,
+          quantityG: normalizeQuantityG(alternative.quantityG)
+        }))
+      }))
+    }))
+  };
 }
 
 function formatNumber(value: number, decimals = 1): string {
@@ -282,8 +329,8 @@ function buildAlternativeFromFood(
   const foodCaloriesPer100g = calculateFoodCaloriesPer100g(food);
   const quantityG =
     targetCalories > 0 && foodCaloriesPer100g > 0
-      ? Math.max(0.1, roundNutritionValue((targetCalories / foodCaloriesPer100g) * 100, 0))
-      : entry.quantityG;
+      ? normalizeQuantityG((targetCalories / foodCaloriesPer100g) * 100)
+      : normalizeQuantityG(entry.quantityG);
 
   return {
     id: createClientId(),
@@ -434,13 +481,13 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const [selectedClonePlanId, setSelectedClonePlanId] = useState("");
   const [cloningMenus, setCloningMenus] = useState(false);
   const [restrictionSubmitting, setRestrictionSubmitting] = useState(false);
+  const [integerInputDrafts, setIntegerInputDrafts] = useState<Record<string, string>>({});
   const [restrictionForm, setRestrictionForm] = useState<RestrictionFormState>({
     type: "intolerance",
     key: "lactose",
     foodId: "",
     notes: ""
   });
-  const autosaveTimer = useRef<number | null>(null);
 
   const selectedAthleteInfo = useMemo(
     () => athletes.find((athlete) => athlete.username === selectedAthlete) ?? null,
@@ -563,17 +610,19 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     if (!selectedPlanId) {
       setPlan(null);
       setSaveState("idle");
+      setIntegerInputDrafts({});
       return;
     }
 
     let cancelled = false;
     setPlanLoading(true);
+    setIntegerInputDrafts({});
     fetch(`/api/admin/nutrition-management/plans/${selectedPlanId}`, { cache: "no-store" })
       .then(async (res) => {
         const json = (await res.json()) as { plan?: NutritionPlanFull; error?: string };
         if (!res.ok) throw new Error(json.error ?? "No se pudo cargar el plan.");
         if (!cancelled) {
-          setPlan(json.plan ?? null);
+          setPlan(json.plan ? normalizePlanGrams(json.plan) : null);
           setSaveState("saved");
         }
       })
@@ -607,14 +656,50 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const updatePlanDraft = useCallback((updater: (current: NutritionPlanFull) => NutritionPlanFull) => {
     setPlan((current) => {
       if (!current) return current;
-      return updater(current);
+      return normalizePlanGrams(updater(current));
     });
     setSaveState("dirty");
   }, []);
 
+  const getIntegerInputValue = useCallback(
+    (key: string, value: number, min = 0, max = 10000) => {
+      if (Object.prototype.hasOwnProperty.call(integerInputDrafts, key)) {
+        return integerInputDrafts[key] ?? "";
+      }
+      return formatIntegerValue(value, min, max);
+    },
+    [integerInputDrafts]
+  );
+
+  const clearIntegerInputDraft = useCallback((key: string) => {
+    setIntegerInputDrafts((current) => {
+      if (!Object.prototype.hasOwnProperty.call(current, key)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const handleIntegerInputChange = useCallback(
+    (
+      key: string,
+      rawValue: string,
+      min: number,
+      max: number,
+      onValidValue: (value: number) => void
+    ) => {
+      const sanitized = sanitizeIntegerInput(rawValue);
+      setIntegerInputDrafts((current) => ({ ...current, [key]: sanitized }));
+      const parsed = parseIntegerInput(sanitized);
+      if (parsed === null || parsed < min) return;
+      onValidValue(clampInteger(parsed, min, max));
+    },
+    []
+  );
+
   const saveCurrentPlan = useCallback(
     async (planToSave?: NutritionPlanFull | null) => {
-      const target = planToSave ?? plan;
+      const target = planToSave ? normalizePlanGrams(planToSave) : plan ? normalizePlanGrams(plan) : null;
       if (!target) return null;
 
       setSaveState("saving");
@@ -629,10 +714,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
           throw new Error(json.error ?? "No se pudo guardar.");
         }
 
-        setPlan(json.plan);
+        setPlan(normalizePlanGrams(json.plan));
+        setIntegerInputDrafts({});
         upsertPlanSummary(json.plan);
         setSaveState("saved");
-        return json.plan;
+        return normalizePlanGrams(json.plan);
       } catch (error) {
         console.error(error);
         toast.error("No se pudo guardar el borrador.");
@@ -642,18 +728,6 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     },
     [plan, upsertPlanSummary]
   );
-
-  useEffect(() => {
-    if (saveState !== "dirty" || !plan) return;
-    if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
-    autosaveTimer.current = window.setTimeout(() => {
-      void saveCurrentPlan(plan);
-    }, 1800);
-
-    return () => {
-      if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
-    };
-  }, [plan, saveCurrentPlan, saveState]);
 
   useEffect(() => {
     return () => {
@@ -696,7 +770,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       setPlanNameDraft("Dia de entrenamiento");
       upsertPlanSummary(json.plan);
       setSelectedPlanId(json.plan.id);
-      setPlan(json.plan);
+      setPlan(normalizePlanGrams(json.plan));
+      setIntegerInputDrafts({});
       setSaveState("saved");
       toast.success("Plan creado.");
     } catch (error) {
@@ -716,7 +791,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       if (!res.ok || !json.plan) throw new Error(json.error ?? "No se pudo duplicar.");
       upsertPlanSummary(json.plan);
       setSelectedPlanId(json.plan.id);
-      setPlan(json.plan);
+      setPlan(normalizePlanGrams(json.plan));
+      setIntegerInputDrafts({});
       setSaveState("saved");
       toast.success("Plan duplicado.");
     } catch (error) {
@@ -754,6 +830,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     const firstPlan = plans.find((item) => item.athleteUsername === username);
     setSelectedPlanId(firstPlan?.id ?? "");
     setPlan(null);
+    setIntegerInputDrafts({});
     setSaveState("idle");
   }
 
@@ -835,10 +912,10 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     }));
   }
 
-  function updateTarget(key: "targetProteinG" | "targetCarbsG" | "targetFatG", value: string) {
+  function updateTarget(key: "targetProteinG" | "targetCarbsG" | "targetFatG", value: number) {
     updatePlanDraft((current) => ({
       ...current,
-      [key]: Math.max(0, normalizeNumberInput(value))
+      [key]: clampInteger(value, 0, key === "targetCarbsG" ? 3000 : key === "targetProteinG" ? 2000 : 1000)
     }));
   }
 
@@ -936,7 +1013,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       const json = (await res.json()) as { plan?: NutritionPlanFull; error?: string };
       if (!res.ok || !json.plan) throw new Error(json.error ?? "No se pudo cargar el plan origen.");
 
-      const sourceMeals = [...json.plan.meals].sort((a, b) => a.position - b.position);
+      const sourceMeals = [...normalizePlanGrams(json.plan).meals].sort((a, b) => a.position - b.position);
       if (!sourceMeals.length) {
         toast.error("El plan origen no tiene menus.");
         return;
@@ -1011,7 +1088,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
 
   function addFoodToMeal(mealId: string, food: NutritionFood) {
     if (!plan) return;
-    const quantity = Math.max(0.1, normalizeNumberInput(foodQuantities[mealId] || "100"));
+    const quantity = clampInteger(parseIntegerInput(foodQuantities[mealId] || "100") ?? 100, 1, 10000);
     updateMeal(mealId, (meal) => ({
       ...meal,
       entries: [
@@ -1206,7 +1283,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       };
       if (!res.ok || !json.plan) throw new Error(json.error ?? "No se pudo publicar.");
 
-      setPlan(json.plan);
+      setPlan(normalizePlanGrams(json.plan));
+      setIntegerInputDrafts({});
       upsertPlanSummary(json.plan);
       setSaveState("saved");
       toast.success("Plan publicado.");
@@ -1775,30 +1853,60 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                       <label className="block text-sm text-brand-muted">
                         Proteinas
                         <input
-                          type="number"
-                          min="0"
-                          value={plan.targetProteinG}
-                          onChange={(event) => updateTarget("targetProteinG", event.target.value)}
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={getIntegerInputValue(`${plan.id}:targetProteinG`, plan.targetProteinG, 0, 2000)}
+                          onChange={(event) =>
+                            handleIntegerInputChange(
+                              `${plan.id}:targetProteinG`,
+                              event.target.value,
+                              0,
+                              2000,
+                              (value) => updateTarget("targetProteinG", value)
+                            )
+                          }
+                          onBlur={() => clearIntegerInputDraft(`${plan.id}:targetProteinG`)}
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
                         Carbohidratos
                         <input
-                          type="number"
-                          min="0"
-                          value={plan.targetCarbsG}
-                          onChange={(event) => updateTarget("targetCarbsG", event.target.value)}
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={getIntegerInputValue(`${plan.id}:targetCarbsG`, plan.targetCarbsG, 0, 3000)}
+                          onChange={(event) =>
+                            handleIntegerInputChange(
+                              `${plan.id}:targetCarbsG`,
+                              event.target.value,
+                              0,
+                              3000,
+                              (value) => updateTarget("targetCarbsG", value)
+                            )
+                          }
+                          onBlur={() => clearIntegerInputDraft(`${plan.id}:targetCarbsG`)}
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
                         Grasas
                         <input
-                          type="number"
-                          min="0"
-                          value={plan.targetFatG}
-                          onChange={(event) => updateTarget("targetFatG", event.target.value)}
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={getIntegerInputValue(`${plan.id}:targetFatG`, plan.targetFatG, 0, 1000)}
+                          onChange={(event) =>
+                            handleIntegerInputChange(
+                              `${plan.id}:targetFatG`,
+                              event.target.value,
+                              0,
+                              1000,
+                              (value) => updateTarget("targetFatG", value)
+                            )
+                          }
+                          onBlur={() => clearIntegerInputDraft(`${plan.id}:targetFatG`)}
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
@@ -2072,15 +2180,21 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                               ) : null}
                             </div>
                             <input
-                              type="number"
-                              min="0.1"
-                              step="1"
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
                               aria-label="Cantidad en gramos"
                               value={foodQuantities[meal.id] ?? "100"}
                               onChange={(event) =>
                                 setFoodQuantities((current) => ({
                                   ...current,
-                                  [meal.id]: event.target.value
+                                  [meal.id]: sanitizeIntegerInput(event.target.value)
+                                }))
+                              }
+                              onBlur={() =>
+                                setFoodQuantities((current) => ({
+                                  ...current,
+                                  [meal.id]: current[meal.id]?.trim() ? current[meal.id] : "100"
                                 }))
                               }
                               className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
@@ -2177,16 +2291,29 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                         </td>
                                         <td className="px-3 py-2 text-right">
                                           <input
-                                            type="number"
-                                            min="0.1"
-                                            step="1"
-                                            value={entry.quantityG}
+                                            type="text"
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            value={getIntegerInputValue(
+                                              `${entry.id}:quantityG`,
+                                              entry.quantityG,
+                                              1,
+                                              10000
+                                            )}
                                             onChange={(event) =>
-                                              updateEntry(meal.id, entry.id, (current) => ({
-                                                ...current,
-                                                quantityG: Math.max(0.1, normalizeNumberInput(event.target.value))
-                                              }))
+                                              handleIntegerInputChange(
+                                                `${entry.id}:quantityG`,
+                                                event.target.value,
+                                                1,
+                                                10000,
+                                                (value) =>
+                                                  updateEntry(meal.id, entry.id, (current) => ({
+                                                    ...current,
+                                                    quantityG: value
+                                                  }))
+                                              )
                                             }
+                                            onBlur={() => clearIntegerInputDraft(`${entry.id}:quantityG`)}
                                             className="ml-auto w-24 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                                           />
                                         </td>
@@ -2284,23 +2411,35 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                     <label className="w-full text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted lg:w-28">
                                                       Cantidad(g)
                                                       <input
-                                                        type="number"
-                                                        min="0.1"
-                                                        step="1"
-                                                        value={alternative.quantityG}
+                                                        type="text"
+                                                        inputMode="numeric"
+                                                        pattern="[0-9]*"
+                                                        value={getIntegerInputValue(
+                                                          `${alternative.id}:quantityG`,
+                                                          alternative.quantityG,
+                                                          1,
+                                                          10000
+                                                        )}
                                                         onChange={(event) =>
-                                                          updateAlternative(
-                                                            meal.id,
-                                                            entry.id,
-                                                            alternative.id,
-                                                            (current) => ({
-                                                              ...current,
-                                                              quantityG: Math.max(
-                                                                0.1,
-                                                                normalizeNumberInput(event.target.value)
+                                                          handleIntegerInputChange(
+                                                            `${alternative.id}:quantityG`,
+                                                            event.target.value,
+                                                            1,
+                                                            10000,
+                                                            (value) =>
+                                                              updateAlternative(
+                                                                meal.id,
+                                                                entry.id,
+                                                                alternative.id,
+                                                                (current) => ({
+                                                                  ...current,
+                                                                  quantityG: value
+                                                                })
                                                               )
-                                                            })
                                                           )
+                                                        }
+                                                        onBlur={() =>
+                                                          clearIntegerInputDraft(`${alternative.id}:quantityG`)
                                                         }
                                                         className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                                                       />
@@ -2375,14 +2514,10 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                         );
                                                         const suggestedQuantity =
                                                           entryTotals.caloriesKcal > 0 && foodCaloriesPer100g > 0
-                                                            ? Math.max(
-                                                                0.1,
-                                                                roundNutritionValue(
-                                                                  (entryTotals.caloriesKcal / foodCaloriesPer100g) * 100,
-                                                                  0
-                                                                )
+                                                            ? normalizeQuantityG(
+                                                                (entryTotals.caloriesKcal / foodCaloriesPer100g) * 100
                                                               )
-                                                            : entry.quantityG;
+                                                            : normalizeQuantityG(entry.quantityG);
 
                                                         return (
                                                           <button

@@ -212,6 +212,15 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function clampQuantityG(value: number): number {
+  return clampInteger(value, 1, 10000);
+}
+
 function sanitizeName(value: string, fallback: string): string {
   const clean = value.trim();
   return clean || fallback;
@@ -236,7 +245,7 @@ function sanitizeAlternative(
     entryId,
     foodId: alternative.foodId,
     foodName: sanitizeName(alternative.foodName, "Alternativa").slice(0, 160),
-    quantityG: clampNumber(alternative.quantityG, 0.1, 10000),
+    quantityG: clampQuantityG(alternative.quantityG),
     proteinPer100g: clampNumber(alternative.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(alternative.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(alternative.fatPer100g, 0, 200),
@@ -345,6 +354,26 @@ async function getWorksheetTitles(spreadsheetId: string): Promise<Set<string>> {
       .map((sheet) => sheet.properties?.title?.trim() ?? "")
       .filter(Boolean)
   );
+}
+
+async function getWorksheetMetadataByTitle(input: {
+  spreadsheetId: string;
+  worksheetName: string;
+}): Promise<{ sheetId: number; title: string }> {
+  const sheets = await getSheetsClient();
+  const response = await sheets.spreadsheets.get({
+    spreadsheetId: input.spreadsheetId,
+    fields: "sheets.properties.sheetId,sheets.properties.title"
+  });
+
+  for (const sheet of response.data.sheets ?? []) {
+    const title = sheet.properties?.title?.trim();
+    const sheetId = sheet.properties?.sheetId;
+    if (!title || sheetId === undefined || sheetId === null) continue;
+    if (title === input.worksheetName.trim()) return { sheetId, title };
+  }
+
+  throw new Error(`Worksheet "${input.worksheetName}" not found.`);
 }
 
 async function ensureWorksheet(spreadsheetId: string, title: string): Promise<void> {
@@ -470,27 +499,87 @@ async function readWorksheetRows(worksheetName: string, headers: string[]): Prom
   return (response.data.values as string[][] | undefined) ?? [];
 }
 
-async function replaceWorksheetRows(
+async function readWorksheetRowsWithNumbers(
+  worksheetName: string,
+  headers: string[]
+): Promise<Array<{ rowNumber: number; row: string[] }>> {
+  const rows = await readWorksheetRows(worksheetName, headers);
+  return rows.map((row, index) => ({ rowNumber: index + 2, row }));
+}
+
+async function appendWorksheetRows(
   worksheetName: string,
   headers: string[],
   rows: Array<Array<string | number>>
 ): Promise<void> {
+  if (!rows.length) return;
   const info = await ensureNutritionSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  await sheets.spreadsheets.values.clear({
+  await sheets.spreadsheets.values.append({
     spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A2:${endCol}`
-  });
-
-  if (!rows.length) return;
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A2:${endCol}`,
+    range: `'${worksheetName}'!A:${endCol}`,
     valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
     requestBody: { values: rows }
   });
+}
+
+async function updateWorksheetRowById(
+  worksheetName: string,
+  headers: string[],
+  id: string,
+  rowValues: Array<string | number>
+): Promise<boolean> {
+  const rows = await readWorksheetRowsWithNumbers(worksheetName, headers);
+  const target = rows.find((item) => String(item.row[0] ?? "").trim() === id);
+  if (!target) return false;
+
+  const info = await ensureNutritionSheetsReady();
+  const sheets = await getSheetsClient();
+  const endCol = indexToA1Column(headers.length - 1);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: info.spreadsheetId,
+    range: `'${worksheetName}'!A${target.rowNumber}:${endCol}${target.rowNumber}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [rowValues] }
+  });
+  return true;
+}
+
+async function deleteWorksheetRowsWhere(
+  worksheetName: string,
+  headers: string[],
+  predicate: (row: string[]) => boolean
+): Promise<number> {
+  const rows = await readWorksheetRowsWithNumbers(worksheetName, headers);
+  const rowsToDelete = rows.filter((item) => predicate(item.row));
+  if (!rowsToDelete.length) return 0;
+
+  const info = await ensureNutritionSheetsReady();
+  const worksheetMeta = await getWorksheetMetadataByTitle({
+    spreadsheetId: info.spreadsheetId,
+    worksheetName
+  });
+  const sheets = await getSheetsClient();
+  const sortedRows = rowsToDelete.sort((a, b) => b.rowNumber - a.rowNumber);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: info.spreadsheetId,
+    requestBody: {
+      requests: sortedRows.map((item) => ({
+        deleteDimension: {
+          range: {
+            sheetId: worksheetMeta.sheetId,
+            dimension: "ROWS",
+            startIndex: item.rowNumber - 1,
+            endIndex: item.rowNumber
+          }
+        }
+      }))
+    }
+  });
+
+  return rowsToDelete.length;
 }
 
 function parseFood(row: string[]): NutritionFood | null {
@@ -584,7 +673,7 @@ function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanF
           entryId,
           foodId: String(record.foodId ?? "").trim(),
           foodName: foodName.slice(0, 160),
-          quantityG: clampNumber(parseNumber(record.quantityG), 0.1, 10000),
+          quantityG: clampQuantityG(parseNumber(record.quantityG)),
           proteinPer100g: clampNumber(parseNumber(record.proteinPer100g), 0, 200),
           carbsPer100g: clampNumber(parseNumber(record.carbsPer100g), 0, 200),
           fatPer100g: clampNumber(parseNumber(record.fatPer100g), 0, 200),
@@ -616,7 +705,7 @@ function parseEntry(row: string[]): NutritionPlanFoodEntry | null {
     mealId,
     foodId: String(row[3] ?? "").trim(),
     foodName,
-    quantityG: parseNumber(row[5]),
+    quantityG: clampQuantityG(parseNumber(row[5])),
     proteinPer100g: parseNumber(row[6]),
     carbsPer100g: parseNumber(row[7]),
     fatPer100g: parseNumber(row[8]),
@@ -710,7 +799,7 @@ async function ensureDefaultFoods(dataset: NutritionDataset): Promise<NutritionD
   if (!missingFoods.length) return dataset;
 
   const foods = [...dataset.foods, ...missingFoods];
-  await replaceWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS, foods.map(serializeFood));
+  await appendWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS, missingFoods.map(serializeFood));
   return { ...dataset, foods };
 }
 
@@ -755,7 +844,7 @@ function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]
         entryId: alternative.entryId,
         foodId: alternative.foodId,
         foodName: alternative.foodName,
-        quantityG: alternative.quantityG,
+        quantityG: clampQuantityG(alternative.quantityG),
         proteinPer100g: alternative.proteinPer100g,
         carbsPer100g: alternative.carbsPer100g,
         fatPer100g: alternative.fatPer100g,
@@ -777,7 +866,7 @@ function serializeEntry(entry: NutritionPlanFoodEntry): Array<string | number> {
     entry.mealId,
     entry.foodId,
     entry.foodName,
-    entry.quantityG,
+    clampQuantityG(entry.quantityG),
     entry.proteinPer100g,
     entry.carbsPer100g,
     entry.fatPer100g,
@@ -953,7 +1042,7 @@ export async function createNutritionFood(input: {
     updatedAt: now
   };
 
-  await replaceWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS, [...dataset.foods, food].map(serializeFood));
+  await appendWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS, [serializeFood(food)]);
   return food;
 }
 
@@ -986,9 +1075,13 @@ export async function updateNutritionFood(input: Partial<NutritionFood> & { id: 
   );
   if (conflict) throw new Error("Food already exists.");
 
-  const foods = [...dataset.foods];
-  foods[index] = updated;
-  await replaceWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS, foods.map(serializeFood));
+  const persisted = await updateWorksheetRowById(
+    WORKSHEETS.foods,
+    FOOD_HEADERS,
+    updated.id,
+    serializeFood(updated)
+  );
+  if (!persisted) return null;
   return updated;
 }
 
@@ -1045,10 +1138,10 @@ export async function createNutritionAthleteRestriction(input: {
     updatedAt: now
   };
 
-  await replaceWorksheetRows(
+  await appendWorksheetRows(
     WORKSHEETS.athleteRestrictions,
     ATHLETE_RESTRICTION_HEADERS,
-    [...dataset.restrictions, restriction].map(serializeAthleteRestriction)
+    [serializeAthleteRestriction(restriction)]
   );
   return restriction;
 }
@@ -1058,12 +1151,10 @@ export async function deleteNutritionAthleteRestriction(id: string): Promise<Nut
   const restriction = dataset.restrictions.find((item) => item.id === id);
   if (!restriction) return null;
 
-  await replaceWorksheetRows(
+  await deleteWorksheetRowsWhere(
     WORKSHEETS.athleteRestrictions,
     ATHLETE_RESTRICTION_HEADERS,
-    dataset.restrictions
-      .filter((item) => item.id !== id)
-      .map(serializeAthleteRestriction)
+    (row) => String(row[0] ?? "").trim() === id
   );
   return restriction;
 }
@@ -1103,8 +1194,8 @@ export async function createNutritionPlanForAthlete(input: {
   };
 
   await Promise.all([
-    replaceWorksheetRows(WORKSHEETS.plans, PLAN_HEADERS, [...dataset.plans, plan].map(serializePlan)),
-    replaceWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, [...dataset.meals, meal].map(serializeMeal))
+    appendWorksheetRows(WORKSHEETS.plans, PLAN_HEADERS, [serializePlan(plan)]),
+    appendWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, [serializeMeal(meal)])
   ]);
 
   return { ...plan, meals: [{ ...meal, entries: [] }], versions: [] };
@@ -1156,7 +1247,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
           mealId: savedMealId,
           foodId: entry.foodId,
           foodName: sanitizeName(entry.foodName, "Alimento").slice(0, 160),
-          quantityG: clampNumber(entry.quantityG, 0.1, 10000),
+          quantityG: clampQuantityG(entry.quantityG),
           proteinPer100g: clampNumber(entry.proteinPer100g, 0, 200),
           carbsPer100g: clampNumber(entry.carbsPer100g, 0, 200),
           fatPer100g: clampNumber(entry.fatPer100g, 0, 200),
@@ -1177,11 +1268,43 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
   plans[planIndex] = plan;
   const otherMeals = dataset.meals.filter((meal) => meal.planId !== plan.id);
   const otherEntries = dataset.entries.filter((entry) => entry.planId !== plan.id);
+  const existingMealIds = new Set(
+    dataset.meals.filter((meal) => meal.planId === plan.id).map((meal) => meal.id)
+  );
+  const existingEntryIds = new Set(
+    dataset.entries.filter((entry) => entry.planId === plan.id).map((entry) => entry.id)
+  );
+  const nextMealIds = new Set(meals.map((meal) => meal.id));
+  const nextEntryIds = new Set(entries.map((entry) => entry.id));
+
+  const mealsToAppend = meals.filter((meal) => !existingMealIds.has(meal.id));
+  const mealsToUpdate = meals.filter((meal) => existingMealIds.has(meal.id));
+  const entriesToAppend = entries.filter((entry) => !existingEntryIds.has(entry.id));
+  const entriesToUpdate = entries.filter((entry) => existingEntryIds.has(entry.id));
 
   await Promise.all([
-    replaceWorksheetRows(WORKSHEETS.plans, PLAN_HEADERS, plans.map(serializePlan)),
-    replaceWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, [...otherMeals, ...meals].map(serializeMeal)),
-    replaceWorksheetRows(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, [...otherEntries, ...entries].map(serializeEntry))
+    updateWorksheetRowById(WORKSHEETS.plans, PLAN_HEADERS, plan.id, serializePlan(plan)),
+    appendWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, mealsToAppend.map(serializeMeal)),
+    appendWorksheetRows(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, entriesToAppend.map(serializeEntry)),
+    ...mealsToUpdate.map((meal) =>
+      updateWorksheetRowById(WORKSHEETS.meals, MEAL_HEADERS, meal.id, serializeMeal(meal))
+    ),
+    ...entriesToUpdate.map((entry) =>
+      updateWorksheetRowById(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, entry.id, serializeEntry(entry))
+    )
+  ]);
+
+  await Promise.all([
+    deleteWorksheetRowsWhere(
+      WORKSHEETS.meals,
+      MEAL_HEADERS,
+      (row) => String(row[1] ?? "").trim() === plan.id && !nextMealIds.has(String(row[0] ?? "").trim())
+    ),
+    deleteWorksheetRowsWhere(
+      WORKSHEETS.planFoods,
+      PLAN_FOOD_HEADERS,
+      (row) => String(row[1] ?? "").trim() === plan.id && !nextEntryIds.has(String(row[0] ?? "").trim())
+    )
   ]);
 
   return buildFullPlan(
@@ -1251,21 +1374,9 @@ export async function duplicateNutritionPlan(planId: string): Promise<NutritionP
   );
 
   await Promise.all([
-    replaceWorksheetRows(
-      WORKSHEETS.plans,
-      PLAN_HEADERS,
-      [...dataset.plans, nextPlan].map(serializePlan)
-    ),
-    replaceWorksheetRows(
-      WORKSHEETS.meals,
-      MEAL_HEADERS,
-      [...dataset.meals, ...nextMeals].map(serializeMeal)
-    ),
-    replaceWorksheetRows(
-      WORKSHEETS.planFoods,
-      PLAN_FOOD_HEADERS,
-      [...dataset.entries, ...nextEntries].map(serializeEntry)
-    )
+    appendWorksheetRows(WORKSHEETS.plans, PLAN_HEADERS, [serializePlan(nextPlan)]),
+    appendWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, nextMeals.map(serializeMeal)),
+    appendWorksheetRows(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, nextEntries.map(serializeEntry))
   ]);
 
   return {
@@ -1294,27 +1405,25 @@ export async function deleteNutritionPlanById(planId: string): Promise<{
     .forEach((version) => fileIds.add(version.driveFileId));
 
   await Promise.all([
-    replaceWorksheetRows(
+    deleteWorksheetRowsWhere(
       WORKSHEETS.plans,
       PLAN_HEADERS,
-      dataset.plans.filter((item) => item.id !== planId).map(serializePlan)
+      (row) => String(row[0] ?? "").trim() === planId
     ),
-    replaceWorksheetRows(
+    deleteWorksheetRowsWhere(
       WORKSHEETS.meals,
       MEAL_HEADERS,
-      dataset.meals.filter((item) => item.planId !== planId).map(serializeMeal)
+      (row) => String(row[1] ?? "").trim() === planId
     ),
-    replaceWorksheetRows(
+    deleteWorksheetRowsWhere(
       WORKSHEETS.planFoods,
       PLAN_FOOD_HEADERS,
-      dataset.entries.filter((item) => item.planId !== planId).map(serializeEntry)
+      (row) => String(row[1] ?? "").trim() === planId
     ),
-    replaceWorksheetRows(
+    deleteWorksheetRowsWhere(
       WORKSHEETS.versions,
       VERSION_HEADERS,
-      dataset.versions
-        .filter((item) => item.planId !== planId)
-        .map((version) => serializeVersion(version))
+      (row) => String(row[1] ?? "").trim() === planId
     )
   ]);
 
@@ -1327,7 +1436,7 @@ export async function deleteNutritionPlanById(planId: string): Promise<{
 
 export function buildNutritionPlanPdfFileName(plan: NutritionPlanFull): string {
   const date = new Date().toISOString().slice(0, 10);
-  const base = sanitizeFileName(`${date} ${plan.athleteName || plan.athleteUsername} ${plan.name}`);
+  const base = sanitizeFileName(`${date} ${plan.athleteName || plan.athleteUsername} Plan nutricional`);
   return `${base || "plan nutricional"}.pdf`;
 }
 
@@ -1362,13 +1471,9 @@ export async function markNutritionPlanPublished(input: {
     fileName: input.fileName
   };
 
-  const plans = [...dataset.plans];
-  plans[planIndex] = updatedPlan;
-
   await Promise.all([
-    replaceWorksheetRows(WORKSHEETS.plans, PLAN_HEADERS, plans.map(serializePlan)),
-    replaceWorksheetRows(WORKSHEETS.versions, VERSION_HEADERS, [
-      ...dataset.versions.map((item) => serializeVersion(item)),
+    updateWorksheetRowById(WORKSHEETS.plans, PLAN_HEADERS, updatedPlan.id, serializePlan(updatedPlan)),
+    appendWorksheetRows(WORKSHEETS.versions, VERSION_HEADERS, [
       serializeVersion(version, JSON.stringify(input.snapshot))
     ])
   ]);

@@ -2,6 +2,11 @@ import { z } from "zod";
 
 const isoDateSchema = z.string().max(80).optional().default("");
 
+const nutritionQuantityGramsSchema = z.preprocess((value) => {
+  const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : value;
+}, z.number().int().min(1).max(10000));
+
 const nutritionFoodRestrictionTagSchema = z.enum([
   "gluten",
   "lactose",
@@ -117,7 +122,7 @@ const nutritionPlanAlternativeSchema = z.object({
   entryId: z.string().max(120).optional().default(""),
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
-  quantityG: z.coerce.number().min(0.1).max(10000),
+  quantityG: nutritionQuantityGramsSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
@@ -135,7 +140,7 @@ const nutritionPlanEntrySchema = z.object({
   mealId: z.string().max(120).optional().default(""),
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
-  quantityG: z.coerce.number().min(0.1).max(10000),
+  quantityG: nutritionQuantityGramsSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),

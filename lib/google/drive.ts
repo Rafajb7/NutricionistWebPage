@@ -17,6 +17,10 @@ type UploadNutritionPlanInput = {
   buffer: Buffer;
 };
 
+type UpsertNutritionPlanInput = UploadNutritionPlanInput & {
+  existingFileId?: string | null;
+};
+
 export type NutritionPlanFile = {
   id: string;
   name: string;
@@ -173,6 +177,95 @@ function sanitizeDriveFileName(value: string): string {
   return value.replace(/[^\w.\- ]+/g, "_").trim() || "plan.pdf";
 }
 
+function toNutritionPlanFile(
+  file: {
+    id?: string | null;
+    name?: string | null;
+    mimeType?: string | null;
+    createdTime?: string | null;
+    modifiedTime?: string | null;
+    size?: string | number | null;
+  },
+  fallbackName: string
+): NutritionPlanFile {
+  return {
+    id: String(file.id ?? ""),
+    name: String(file.name ?? fallbackName),
+    mimeType: String(file.mimeType ?? "application/pdf"),
+    createdTime: file.createdTime ?? null,
+    modifiedTime: file.modifiedTime ?? null,
+    sizeBytes: file.size ? Number(file.size) : null
+  };
+}
+
+async function listNutritionPlanPdfFilesByName(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  userFolderId: string,
+  fileName: string
+): Promise<NutritionPlanFile[]> {
+  const list = await drive.files.list({
+    q: [
+      `'${userFolderId}' in parents`,
+      `name='${escapeDriveQuery(fileName)}'`,
+      "trashed=false"
+    ].join(" and "),
+    fields: "files(id,name,mimeType,createdTime,modifiedTime,size)",
+    orderBy: "modifiedTime desc",
+    pageSize: 20,
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true
+  });
+
+  return (list.data.files ?? [])
+    .filter((file) => file.id)
+    .map((file) => toNutritionPlanFile(file, fileName));
+}
+
+async function updateNutritionPlanPdfFile(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  fileId: string,
+  driveFileName: string,
+  input: UploadNutritionPlanInput
+): Promise<NutritionPlanFile | null> {
+  try {
+    const updated = await drive.files.update({
+      fileId,
+      requestBody: {
+        name: driveFileName
+      },
+      media: {
+        mimeType: input.mimeType || "application/pdf",
+        body: Readable.from(input.buffer)
+      },
+      fields: "id,name,mimeType,createdTime,modifiedTime,size",
+      supportsAllDrives: true
+    });
+
+    if (!updated.data.id) return null;
+    return toNutritionPlanFile(updated.data, driveFileName);
+  } catch {
+    return null;
+  }
+}
+
+async function cleanupDuplicateNutritionPlanPdfsByName(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  userFolderId: string,
+  fileName: string,
+  keepFileId: string
+): Promise<void> {
+  const matches = await listNutritionPlanPdfFilesByName(drive, userFolderId, fileName);
+  const duplicates = matches.filter((file) => file.id && file.id !== keepFileId);
+  await Promise.allSettled(
+    duplicates.map((file) =>
+      drive.files.delete({
+        fileId: file.id,
+        supportsAllDrives: true
+      })
+    )
+  );
+}
+
 export async function deleteDriveFileById(fileId: string): Promise<void> {
   const drive = await getDriveClient();
   await drive.files.delete({ fileId, supportsAllDrives: true });
@@ -272,6 +365,57 @@ export async function uploadNutritionPlanPdfForUser(
     modifiedTime: created.data.modifiedTime ?? null,
     sizeBytes: created.data.size ? Number(created.data.size) : null
   };
+}
+
+export async function upsertNutritionPlanPdfForUser(
+  input: UpsertNutritionPlanInput
+): Promise<NutritionPlanFile> {
+  const env = getEnv();
+  const drive = await getDriveClient();
+  const userFolderId = await ensureUserFolderInRoot(
+    drive,
+    env.GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID,
+    input.username
+  );
+
+  const safeOriginal = sanitizeDriveFileName(input.originalFileName);
+  const hasPdfExtension = /\.pdf$/i.test(safeOriginal);
+  const driveFileName = hasPdfExtension ? safeOriginal : `${safeOriginal}.pdf`;
+
+  const sameDayFiles = await listNutritionPlanPdfFilesByName(drive, userFolderId, driveFileName);
+  const orderedSameDayFiles = [
+    ...sameDayFiles.filter((file) => input.existingFileId && file.id === input.existingFileId),
+    ...sameDayFiles.filter((file) => !input.existingFileId || file.id !== input.existingFileId)
+  ];
+
+  for (const file of orderedSameDayFiles) {
+    const updatedFile = await updateNutritionPlanPdfFile(drive, file.id, driveFileName, input);
+    if (updatedFile?.id) {
+      await cleanupDuplicateNutritionPlanPdfsByName(drive, userFolderId, driveFileName, updatedFile.id);
+      return updatedFile;
+    }
+  }
+
+  const created = await drive.files.create({
+    requestBody: {
+      name: driveFileName,
+      parents: [userFolderId]
+    },
+    media: {
+      mimeType: input.mimeType || "application/pdf",
+      body: Readable.from(input.buffer)
+    },
+    fields: "id,name,mimeType,createdTime,modifiedTime,size",
+    supportsAllDrives: true
+  });
+
+  if (!created.data.id) {
+    throw new Error("Nutrition plan upload failed: missing file id.");
+  }
+
+  const file = toNutritionPlanFile(created.data, driveFileName);
+  await cleanupDuplicateNutritionPlanPdfsByName(drive, userFolderId, driveFileName, file.id);
+  return file;
 }
 
 export async function downloadDriveFile(fileId: string): Promise<{

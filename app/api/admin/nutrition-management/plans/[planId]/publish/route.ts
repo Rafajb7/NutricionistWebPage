@@ -7,7 +7,7 @@ import {
   listNutritionPlansForAthlete,
   markNutritionPlanPublished
 } from "@/lib/google/nutrition-management";
-import { uploadNutritionPlanPdfForUser } from "@/lib/google/drive";
+import { upsertNutritionPlanPdfForUser } from "@/lib/google/drive";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -37,11 +37,12 @@ export async function POST(_req: Request, context: RouteContext) {
     const comparisonPlans = await listNutritionPlansForAthlete(plan.athleteUsername);
     const pdf = await renderNutritionPlanPdf(plan, { comparisonPlans });
     const fileName = buildNutritionPlanPdfFileName(plan);
-    const uploaded = await uploadNutritionPlanPdfForUser({
+    const uploaded = await upsertNutritionPlanPdfForUser({
       username: plan.athleteUsername,
       originalFileName: fileName,
       mimeType: "application/pdf",
-      buffer: pdf
+      buffer: pdf,
+      existingFileId: plan.publishedFileId || null
     });
     const published = await markNutritionPlanPublished({
       planId,
@@ -49,6 +50,9 @@ export async function POST(_req: Request, context: RouteContext) {
       fileName: uploaded.name,
       snapshot: plan
     });
+    if (!published) {
+      throw new Error("Published nutrition plan was not found after uploading PDF.");
+    }
 
     deleteMemoryCache(`nutrition-plans:${plan.athleteUsername.toLowerCase()}`);
     logInfo("Nutrition plan published", {
@@ -69,6 +73,6 @@ export async function POST(_req: Request, context: RouteContext) {
       planId,
       error
     });
-    return NextResponse.json({ error: "Could not publish nutrition plan." }, { status: 500 });
+    return NextResponse.json({ error: "No se pudo publicar el PDF nutricional." }, { status: 500 });
   }
 }

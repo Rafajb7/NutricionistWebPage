@@ -47,8 +47,12 @@ const MACRO_CHART_ITEMS: Array<{
 ];
 
 function getLogoPath(): string | null {
-  const logoPath = path.join(process.cwd(), "public", "logoV1.png");
-  return fs.existsSync(logoPath) ? logoPath : null;
+  const pdfLogoPath = path.join(process.cwd(), "public", "logo-pdf.png");
+  if (fs.existsSync(pdfLogoPath)) return pdfLogoPath;
+  const transparentLogoPath = path.join(process.cwd(), "public", "logo-bueno.png");
+  if (fs.existsSync(transparentLogoPath)) return transparentLogoPath;
+  const fallbackLogoPath = path.join(process.cwd(), "public", "logoV1.png");
+  return fs.existsSync(fallbackLogoPath) ? fallbackLogoPath : null;
 }
 
 function formatNumber(value: number, decimals = 1): string {
@@ -86,6 +90,31 @@ function getPlanLabel(plan: NutritionPlanFull): string {
 
 function getVisibleMeals(plan: NutritionPlanFull): NutritionPlanFull["meals"] {
   return [...plan.meals].sort((a, b) => a.position - b.position);
+}
+
+function normalizePdfQuantityG(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(10000, Math.max(1, Math.round(value)));
+}
+
+function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull {
+  return {
+    ...plan,
+    targetProteinG: Number.isFinite(plan.targetProteinG) ? Math.max(0, Math.round(plan.targetProteinG)) : 0,
+    targetCarbsG: Number.isFinite(plan.targetCarbsG) ? Math.max(0, Math.round(plan.targetCarbsG)) : 0,
+    targetFatG: Number.isFinite(plan.targetFatG) ? Math.max(0, Math.round(plan.targetFatG)) : 0,
+    meals: plan.meals.map((meal) => ({
+      ...meal,
+      entries: meal.entries.map((entry) => ({
+        ...entry,
+        quantityG: normalizePdfQuantityG(entry.quantityG),
+        alternatives: (entry.alternatives ?? []).map((alternative) => ({
+          ...alternative,
+          quantityG: normalizePdfQuantityG(alternative.quantityG)
+        }))
+      }))
+    }))
+  };
 }
 
 function getNiceAxisMax(value: number): number {
@@ -194,12 +223,15 @@ function drawPageBackground(doc: PDFKit.PDFDocument) {
 function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number, size: number) {
   const logoPath = getLogoPath();
   doc.save();
-  doc.roundedRect(x, y, size, size, 3).strokeColor(COLORS.yellow).lineWidth(1.3).stroke();
   if (logoPath) {
     try {
-      doc.image(logoPath, x + 3, y + 3, { width: size - 6, height: size - 6 });
+      doc.image(logoPath, x, y, {
+        fit: [size, size],
+        align: "center",
+        valign: "center"
+      });
     } catch {
-      doc.rect(x + 5, y + 5, size - 10, size - 10).fill(COLORS.yellow);
+      doc.circle(x + size / 2, y + size / 2, size / 2 - 4).strokeColor(COLORS.yellow).lineWidth(1.3).stroke();
     }
   }
   doc.restore();
@@ -209,7 +241,7 @@ function drawHeader(doc: PDFKit.PDFDocument, plan: NutritionPlanFull) {
   const left = doc.page.margins.left;
   const right = doc.page.width - doc.page.margins.right;
   const top = 22;
-  const title = uppercase(plan.name);
+  const title = "PLAN NUTRICIONAL";
   const titleWidth = right - left - 88;
   const titleSize = fitFontSize(doc, title, "Helvetica-Bold", titleWidth, 22, 13, 0.6);
 
@@ -217,7 +249,7 @@ function drawHeader(doc: PDFKit.PDFDocument, plan: NutritionPlanFull) {
     .fillColor(COLORS.yellow)
     .font("Helvetica-Bold")
     .fontSize(8)
-    .text("MANOLO HMB NUTRICION - PLAN NUTRICIONAL", left, top, {
+    .text("MANOLO HMB NUTRICION", left, top, {
       characterSpacing: 1.8
     });
   doc
@@ -261,7 +293,7 @@ function drawFooter(
     .font("Helvetica-Bold")
     .fontSize(7)
     .text(
-      `${uppercase(plan.athleteName || plan.athleteUsername)} - ${uppercase(plan.name)} - ${formatDate(plan.updatedAt)}`,
+      `${uppercase(plan.athleteName || plan.athleteUsername)} - PLAN NUTRICIONAL - ${formatDate(plan.updatedAt)}`,
       left,
       y,
       { width: 420, characterSpacing: 1.1, lineBreak: false }
@@ -378,15 +410,15 @@ function drawCover(doc: PDFKit.PDFDocument, plan: NutritionPlanFull, generatedAt
   const pageWidth = doc.page.width;
   const contentLeft = 74;
   const contentWidth = pageWidth - contentLeft * 2;
-  const logoSize = 146;
+  const logoSize = 176;
   const logoX = (pageWidth - logoSize) / 2;
 
-  drawLogo(doc, logoX, 52, logoSize);
+  drawLogo(doc, logoX, 42, logoSize);
   doc
     .fillColor(COLORS.yellow)
     .font("Helvetica-Bold")
     .fontSize(9)
-    .text("MANOLO HMB NUTRICION", contentLeft, 226, {
+    .text("MANOLO HMB NUTRICION", contentLeft, 236, {
       width: contentWidth,
       align: "center",
       characterSpacing: 2.6
@@ -396,13 +428,13 @@ function drawCover(doc: PDFKit.PDFDocument, plan: NutritionPlanFull, generatedAt
     .fillColor(COLORS.white)
     .font("Helvetica-Bold")
     .fontSize(58)
-    .text("PLAN NUTRICIONAL", contentLeft, 252, {
+    .text("PLAN NUTRICIONAL", contentLeft, 262, {
       width: contentWidth,
       align: "center",
       lineBreak: false
     });
 
-  const detailY = 360;
+  const detailY = 372;
   const detailGap = 14;
   const detailWidth = (contentWidth - detailGap) / 2;
   drawCoverDetail(
@@ -421,6 +453,64 @@ function drawCover(doc: PDFKit.PDFDocument, plan: NutritionPlanFull, generatedAt
     detailY,
     detailWidth
   );
+}
+
+function drawPlanSectionCover(
+  doc: PDFKit.PDFDocument,
+  plan: NutritionPlanFull,
+  generatedAt: string,
+  index: number,
+  count: number
+) {
+  const left = doc.page.margins.left;
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const title = uppercase(getPlanLabel(plan));
+  const titleSize = fitFontSize(doc, title, "Helvetica-Bold", pageWidth, 48, 22, 0.4);
+  const totals = calculatePlanTotals(plan);
+  const visibleMeals = getVisibleMeals(plan);
+  const tagWidth = 164;
+
+  doc.y = 132;
+  drawYellowTag(doc, `Plan ${index + 1} de ${count}`, left, doc.y, tagWidth);
+  doc
+    .fillColor(COLORS.white)
+    .font("Helvetica-Bold")
+    .fontSize(titleSize)
+    .text(title, left, doc.y + 42, {
+      width: pageWidth,
+      characterSpacing: 0.4
+    });
+
+  const detailY = doc.y + 34;
+  const gap = 12;
+  const detailWidth = (pageWidth - gap * 3) / 4;
+  drawMetricCard(doc, "Kcal", formatNumber(totals.caloriesKcal, 0), "Energia total", left, detailY, detailWidth);
+  drawMetricCard(doc, "Menus", String(visibleMeals.length), "Comidas definidas", left + detailWidth + gap, detailY, detailWidth);
+  drawMetricCard(doc, "Atleta", uppercase(plan.athleteName || plan.athleteUsername), "Nombre del atleta", left + (detailWidth + gap) * 2, detailY, detailWidth);
+  drawMetricCard(doc, "Fecha", formatDate(generatedAt), "Fecha del PDF", left + (detailWidth + gap) * 3, detailY, detailWidth);
+
+  if (plan.notes.trim()) {
+    const notesY = detailY + 98;
+    doc.rect(left, notesY, pageWidth, 116).fill(COLORS.panel);
+    doc.rect(left, notesY, 5, 116).fill(COLORS.yellow);
+    doc
+      .fillColor(COLORS.yellow)
+      .font("Helvetica-Bold")
+      .fontSize(8)
+      .text("OBSERVACIONES DEL PLAN", left + 20, notesY + 16, {
+        width: pageWidth - 40,
+        characterSpacing: 1.4
+      });
+    doc
+      .fillColor(COLORS.white)
+      .font("Helvetica")
+      .fontSize(10)
+      .text(plan.notes, left + 20, notesY + 38, {
+        width: pageWidth - 40,
+        height: 58,
+        lineGap: 3
+      });
+  }
 }
 
 function drawOverviewMealTable(
@@ -604,6 +694,14 @@ function drawMealMacroBarChart(doc: PDFKit.PDFDocument, plan: NutritionPlanFull)
     .font("Helvetica-Bold")
     .fontSize(34)
     .text("EVOLUCION DE MACROS", left, doc.y + 11, { width: pageWidth });
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text(uppercase(shortLabel(getPlanLabel(plan), 64)), left, doc.y + 3, {
+      width: pageWidth,
+      characterSpacing: 1.2
+    });
 
   if (!mealData.length) {
     drawEmptyChartPanel(doc, "No hay comidas definidas para representar.", panelX, panelY, panelWidth, panelHeight);
@@ -1165,12 +1263,60 @@ function drawMeal(doc: PDFKit.PDFDocument, meal: NutritionPlanFull["meals"][numb
   doc.y += 16;
 }
 
-function drawObservationsPage(doc: PDFKit.PDFDocument, plan: NutritionPlanFull) {
+function drawPlanMenusPage(
+  doc: PDFKit.PDFDocument,
+  plan: NutritionPlanFull,
+  index: number
+) {
+  const left = doc.page.margins.left;
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const title = `MENUS - PLAN ${index + 1}`;
+  const subtitle = uppercase(shortLabel(getPlanLabel(plan), 64));
+  const titleSize = fitFontSize(doc, title, "Helvetica-Bold", pageWidth, 34, 20, 0.3);
+  const subtitleSize = fitFontSize(doc, subtitle, "Helvetica-Bold", pageWidth, 13, 8, 0.6);
+  const visibleMeals = getVisibleMeals(plan);
+
+  doc.y = 96;
+  doc
+    .fillColor(COLORS.yellow)
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text("MENUS PAUTADOS", left, doc.y, {
+      width: pageWidth,
+      characterSpacing: 2.2
+    });
+  doc
+    .fillColor(COLORS.white)
+    .font("Helvetica-Bold")
+    .fontSize(titleSize)
+    .text(title, left, doc.y + 11, {
+      width: pageWidth,
+      characterSpacing: 0.3
+    });
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica-Bold")
+    .fontSize(subtitleSize)
+    .text(subtitle, left, doc.y + 2, {
+      width: pageWidth,
+      characterSpacing: 0.6
+    });
+  doc.y += 20;
+
+  for (const meal of visibleMeals) {
+    drawMeal(doc, meal);
+  }
+}
+
+function drawObservationsPage(doc: PDFKit.PDFDocument, plans: NutritionPlanFull[]) {
   doc.addPage();
   const left = doc.page.margins.left;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const y = 120;
-  const notes = plan.notes.trim() || "Sin observaciones adicionales.";
+  const observationItems = plans.map((plan) => ({
+    title: getPlanLabel(plan),
+    notes: plan.notes.trim() || "Sin observaciones adicionales."
+  }));
 
   doc.y = y;
   doc
@@ -1187,18 +1333,37 @@ function drawObservationsPage(doc: PDFKit.PDFDocument, plan: NutritionPlanFull) 
     .fontSize(44)
     .text("OBSERVACIONES", left, doc.y + 12, { width: pageWidth });
 
-  const panelY = doc.y + 28;
-  doc.rect(left, panelY, pageWidth, 230).fill(COLORS.panel);
-  doc.rect(left, panelY, 5, 230).fill(COLORS.yellow);
-  doc
-    .fillColor(COLORS.white)
-    .font("Helvetica")
-    .fontSize(13)
-    .text(notes, left + 22, panelY + 24, {
+  doc.y += 28;
+  observationItems.forEach((item, index) => {
+    const textHeight = doc.heightOfString(item.notes, {
       width: pageWidth - 44,
-      height: 180,
-      lineGap: 4
+      lineGap: 3
     });
+    const panelHeight = Math.max(76, Math.min(138, textHeight + 48));
+    ensureSpace(doc, panelHeight + 12);
+    const panelY = doc.y;
+
+    doc.rect(left, panelY, pageWidth, panelHeight).fill(index % 2 === 1 ? COLORS.panelAlt : COLORS.panel);
+    doc.rect(left, panelY, 5, panelHeight).fill(COLORS.yellow);
+    doc
+      .fillColor(COLORS.yellow)
+      .font("Helvetica-Bold")
+      .fontSize(8)
+      .text(uppercase(shortLabel(item.title, 62)), left + 22, panelY + 14, {
+        width: pageWidth - 44,
+        characterSpacing: 1.2
+      });
+    doc
+      .fillColor(COLORS.white)
+      .font("Helvetica")
+      .fontSize(10)
+      .text(item.notes, left + 22, panelY + 34, {
+        width: pageWidth - 44,
+        height: panelHeight - 44,
+        lineGap: 3
+      });
+    doc.y = panelY + panelHeight + 12;
+  });
 
   doc
     .fillColor(COLORS.yellow)
@@ -1215,6 +1380,9 @@ export async function renderNutritionPlanPdf(
   plan: NutritionPlanFull,
   options: NutritionPlanPdfOptions = {}
 ): Promise<Buffer> {
+  const primaryPlan = normalizePdfPlanQuantities(plan);
+  const normalizedComparisonPlans = (options.comparisonPlans ?? []).map(normalizePdfPlanQuantities);
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: "A4",
@@ -1222,7 +1390,7 @@ export async function renderNutritionPlanPdf(
       margins: { top: 96, left: 44, right: 44, bottom: 48 },
       bufferPages: true,
       info: {
-        Title: `${plan.name} - ${plan.athleteName || plan.athleteUsername}`,
+        Title: `${primaryPlan.athleteName || primaryPlan.athleteUsername} - Plan nutricional`,
         Author: "Manolo HMB Nutricion"
       }
     });
@@ -1233,56 +1401,43 @@ export async function renderNutritionPlanPdf(
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("pageAdded", () => {
       drawPageBackground(doc);
-      drawHeader(doc, plan);
+      drawHeader(doc, primaryPlan);
       doc.y = 96;
     });
 
     const generatedAt = new Date().toISOString();
-    const totals = calculatePlanTotals(plan);
-    drawCover(doc, plan, generatedAt);
+    const documentPlans = getComparisonPlans(primaryPlan, normalizedComparisonPlans);
+    drawCover(doc, primaryPlan, generatedAt);
+
+    documentPlans.forEach((documentPlan) => {
+      doc.addPage();
+      doc.y = 96;
+      drawOverviewPage(doc, documentPlan, calculatePlanTotals(documentPlan), generatedAt);
+    });
+
+    documentPlans.forEach((documentPlan, index) => {
+      doc.addPage();
+      drawPlanSectionCover(doc, documentPlan, generatedAt, index, documentPlans.length);
+
+      doc.addPage();
+      doc.y = 96;
+      drawMealMacroChartsPage(doc, documentPlan);
+
+      doc.addPage();
+      drawPlanMenusPage(doc, documentPlan, index);
+    });
+
+    drawObservationsPage(doc, documentPlans);
 
     doc.addPage();
     doc.y = 96;
-    drawOverviewPage(doc, plan, totals, generatedAt);
-
-    doc.addPage();
-    doc.y = 96;
-    drawMealMacroChartsPage(doc, plan);
-
-    doc.addPage();
-    doc.y = 96;
-    drawPlanComparisonChartsPage(doc, plan, options.comparisonPlans ?? []);
-
-    const visibleMeals = [...plan.meals].sort((a, b) => a.position - b.position);
-    doc.addPage();
-    doc.y = 96;
-    doc
-      .fillColor(COLORS.yellow)
-      .font("Helvetica-Bold")
-      .fontSize(9)
-      .text("MENUS PAUTADOS", doc.page.margins.left, doc.y, {
-        width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
-        characterSpacing: 2.2
-      });
-    doc
-      .fillColor(COLORS.white)
-      .font("Helvetica-Bold")
-      .fontSize(34)
-      .text("MENUS DEL PLAN", doc.page.margins.left, doc.y + 11, {
-        width: doc.page.width - doc.page.margins.left - doc.page.margins.right
-      });
-    doc.y += 20;
-    for (const meal of visibleMeals) {
-      drawMeal(doc, meal);
-    }
-
-    drawObservationsPage(doc, plan);
+    drawPlanComparisonChartsPage(doc, primaryPlan, documentPlans);
 
     const range = doc.bufferedPageRange();
     for (let index = range.start; index < range.start + range.count; index += 1) {
       doc.switchToPage(index);
       if (index > range.start) {
-        drawFooter(doc, index + 1, range.count, plan);
+        drawFooter(doc, index + 1, range.count, primaryPlan);
       }
     }
 
