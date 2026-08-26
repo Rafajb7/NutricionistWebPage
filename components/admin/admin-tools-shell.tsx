@@ -538,7 +538,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
 
         {activeTool === "users" ? (
           <section className="space-y-4">
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(300px,2fr)]">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <h2 className="text-lg font-semibold text-brand-text">Usuarios</h2>
@@ -562,8 +562,16 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 ) : filteredUsers.length === 0 ? (
                   <p className="mt-4 text-sm text-brand-muted">No hay usuarios para este filtro.</p>
                 ) : (
-                  <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
-                    <table className="min-w-[820px] w-full text-sm">
+                  <div className="mt-4 rounded-xl border border-white/10">
+                    <table className="w-full table-fixed text-sm">
+                      <colgroup>
+                        <col className="w-[20%]" />
+                        <col className="w-[16%]" />
+                        <col className="w-[26%]" />
+                        <col className="w-[11%]" />
+                        <col className="w-[12%]" />
+                        <col className="w-[15%]" />
+                      </colgroup>
                       <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
                         <tr>
                           <th className="px-3 py-2 text-left">Nombre</th>
@@ -577,9 +585,15 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                       <tbody>
                         {filteredUsers.map((item) => (
                           <tr key={item.username} className="border-t border-white/10">
-                            <td className="px-3 py-2 text-brand-text">{item.name}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.username}</td>
-                            <td className="px-3 py-2 text-brand-muted">{item.email || "-"}</td>
+                            <td className="truncate px-3 py-2 text-brand-text" title={item.name}>
+                              {item.name}
+                            </td>
+                            <td className="truncate px-3 py-2 text-brand-text" title={item.username}>
+                              {item.username}
+                            </td>
+                            <td className="truncate px-3 py-2 text-brand-muted" title={item.email || "-"}>
+                              {item.email || "-"}
+                            </td>
                             <td className="px-3 py-2 text-brand-text">{item.permission}</td>
                             <td className="px-3 py-2">
                               <Link
@@ -598,7 +612,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                                 disabled={
                                   deletingUsername === item.username || item.username === user.username
                                 }
-                                className="inline-flex items-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                className="inline-flex w-full max-w-[110px] items-center justify-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-2 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                                 {deletingUsername === item.username ? "Eliminando..." : "Eliminar"}
