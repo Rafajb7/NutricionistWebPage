@@ -105,7 +105,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
 
-    const currentRequest = (await listNutritionChangeRequests()).find(
+    const currentRequest = (await listNutritionChangeRequests({ force: true })).find(
       (item) => item.id === requestId
     );
     if (!currentRequest) {

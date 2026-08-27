@@ -8,7 +8,8 @@ import { createFinanceContractWithPayments, listFinanceRecords } from "@/lib/goo
 import {
   createUserInSheet,
   deleteUserFromSheetByUsername,
-  readUsersFromSheet
+  readUsersFromSheet,
+  readUsersFromSheetCached
 } from "@/lib/google/sheets";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -34,7 +35,7 @@ export async function GET() {
   if (!auth.session) return auth.response;
 
   try {
-    const users = await readUsersFromSheet();
+    const users = await readUsersFromSheetCached();
     const items = users
       .map((user) => ({
         username: normalizeUsername(user.username),

@@ -126,6 +126,9 @@ const EMPTY_FOOD_FORM: FoodFormState = {
   restrictionTags: []
 };
 
+const CHANGE_REQUEST_POLL_INTERVAL_MS = 2 * 60_000;
+const CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS = 60_000;
+
 function createClientId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -532,6 +535,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const pendingRequestToApplyRef = useRef<string | null>(null);
   const foodsRef = useRef<NutritionFood[]>([]);
   const changeRequestsRef = useRef<NutritionChangeRequest[]>([]);
+  const lastChangeRequestRefreshAtRef = useRef(0);
   const [restrictionForm, setRestrictionForm] = useState<RestrictionFormState>({
     type: "intolerance",
     key: "lactose",
@@ -674,6 +678,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       const nextAthletes = json.athletes ?? [];
       const nextPlans = json.plans ?? [];
       const nextChangeRequests = json.changeRequests ?? [];
+      lastChangeRequestRefreshAtRef.current = Date.now();
       setAthletes(nextAthletes);
       setFoods(json.foods ?? []);
       setPlans(nextPlans);
@@ -708,6 +713,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   }, [loadInitialData]);
 
   const refreshPendingChangeRequests = useCallback(async () => {
+    lastChangeRequestRefreshAtRef.current = Date.now();
     try {
       const res = await fetch("/api/admin/nutrition-change-requests", { cache: "no-store" });
       if (!res.ok) return;
@@ -732,9 +738,13 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
 
   useEffect(() => {
     const refresh = () => {
+      const now = Date.now();
+      if (now - lastChangeRequestRefreshAtRef.current < CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS) {
+        return;
+      }
       void refreshPendingChangeRequests();
     };
-    const intervalId = window.setInterval(refresh, 15000);
+    const intervalId = window.setInterval(refresh, CHANGE_REQUEST_POLL_INTERVAL_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
     };

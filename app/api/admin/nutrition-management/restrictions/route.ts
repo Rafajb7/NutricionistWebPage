@@ -4,7 +4,7 @@ import {
   createNutritionAthleteRestriction,
   deleteNutritionAthleteRestriction
 } from "@/lib/google/nutrition-management";
-import { readUsersFromSheet } from "@/lib/google/sheets";
+import { readUsersFromSheetCached } from "@/lib/google/sheets";
 import { logError, logInfo } from "@/lib/logger";
 import {
   nutritionAthleteRestrictionCreateSchema,
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     }
 
     const targetUsername = normalizeUsername(parsed.data.athleteUsername);
-    const users = await readUsersFromSheet();
+    const users = await readUsersFromSheetCached();
     const athlete = users.find((user) => normalizeUsername(user.username) === targetUsername);
     if (!athlete || athlete.permission !== "user") {
       return NextResponse.json({ error: "Athlete not found." }, { status: 404 });

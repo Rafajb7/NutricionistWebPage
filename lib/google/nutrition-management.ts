@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
-import { isGoogleAlreadyExistsError, withGoogleApiRetry } from "@/lib/google/retry";
+import {
+  isGoogleAlreadyExistsError,
+  isGoogleRateLimitError,
+  withGoogleApiRetry
+} from "@/lib/google/retry";
 import { DEFAULT_NUTRITION_FOODS } from "@/lib/nutrition/default-foods";
 import {
   ALLERGY_RESTRICTION_OPTIONS,
@@ -56,6 +60,16 @@ type NutritionDataset = {
   restrictions: NutritionAthleteRestriction[];
 };
 
+const NUTRITION_DATASET_CACHE_TTL_MS = 2 * 60_000;
+const CHANGE_REQUEST_CACHE_TTL_MS = 2 * 60_000;
+
+let nutritionDatasetCache: { expiresAt: number; value: NutritionDataset } | null = null;
+let nutritionDatasetReadPromise: Promise<NutritionDataset> | null = null;
+let nutritionDatasetCacheVersion = 0;
+let changeRequestsCache: { expiresAt: number; value: NutritionChangeRequest[] } | null = null;
+let changeRequestsReadPromise: Promise<NutritionChangeRequest[]> | null = null;
+let changeRequestsCacheVersion = 0;
+
 const WORKSHEETS = {
   foods: "Foods",
   plans: "Plans",
@@ -67,6 +81,50 @@ const WORKSHEETS = {
   mealCompletions: "MealCompletions",
   changeRequests: "ChangeRequests"
 } as const;
+
+const NUTRITION_DATASET_WORKSHEETS = new Set<string>([
+  WORKSHEETS.foods,
+  WORKSHEETS.plans,
+  WORKSHEETS.meals,
+  WORKSHEETS.planFoods,
+  WORKSHEETS.versions,
+  WORKSHEETS.athleteRestrictions
+]);
+
+function cacheNutritionDataset(dataset: NutritionDataset): void {
+  nutritionDatasetCache = {
+    expiresAt: Date.now() + NUTRITION_DATASET_CACHE_TTL_MS,
+    value: dataset
+  };
+}
+
+function invalidateNutritionDatasetCache(): void {
+  nutritionDatasetCache = null;
+  nutritionDatasetReadPromise = null;
+  nutritionDatasetCacheVersion += 1;
+}
+
+function cacheChangeRequests(requests: NutritionChangeRequest[]): void {
+  changeRequestsCache = {
+    expiresAt: Date.now() + CHANGE_REQUEST_CACHE_TTL_MS,
+    value: requests
+  };
+}
+
+function invalidateChangeRequestsCache(): void {
+  changeRequestsCache = null;
+  changeRequestsReadPromise = null;
+  changeRequestsCacheVersion += 1;
+}
+
+function invalidateWorksheetCaches(worksheetName: string): void {
+  if (NUTRITION_DATASET_WORKSHEETS.has(worksheetName)) {
+    invalidateNutritionDatasetCache();
+  }
+  if (worksheetName === WORKSHEETS.changeRequests) {
+    invalidateChangeRequestsCache();
+  }
+}
 
 const FOOD_HEADERS = [
   "Id",
@@ -663,6 +721,7 @@ async function appendWorksheetRows(
       requestBody: { values: rows }
     })
   );
+  invalidateWorksheetCaches(worksheetName);
 }
 
 async function updateWorksheetRowById(
@@ -686,6 +745,7 @@ async function updateWorksheetRowById(
       requestBody: { values: [rowValues] }
     })
   );
+  invalidateWorksheetCaches(worksheetName);
   return true;
 }
 
@@ -723,6 +783,7 @@ async function deleteWorksheetRowsWhere(
     })
   );
 
+  invalidateWorksheetCaches(worksheetName);
   return rowsToDelete.length;
 }
 
@@ -1011,7 +1072,9 @@ async function ensureDefaultFoods(dataset: NutritionDataset): Promise<NutritionD
 
   const foods = [...dataset.foods, ...missingFoods];
   await appendWorksheetRows(WORKSHEETS.foods, FOOD_HEADERS, missingFoods.map(serializeFood));
-  return { ...dataset, foods };
+  const nextDataset = { ...dataset, foods };
+  cacheNutritionDataset(nextDataset);
+  return nextDataset;
 }
 
 function serializePlan(plan: NutritionPlanSummary): Array<string | number> {
@@ -1177,7 +1240,7 @@ function serializeChangeRequest(request: NutritionChangeRequest): Array<string |
   ];
 }
 
-async function readNutritionDataset(): Promise<NutritionDataset> {
+async function readNutritionDatasetFresh(): Promise<NutritionDataset> {
   const [foodsRows, planRows, mealRows, entryRows, versionRows, restrictionRows] =
     await readWorksheetRowsBatch([
       { worksheetName: WORKSHEETS.foods, headers: FOOD_HEADERS },
@@ -1202,6 +1265,44 @@ async function readNutritionDataset(): Promise<NutritionDataset> {
       .map(parseAthleteRestriction)
       .filter((item): item is NutritionAthleteRestriction => Boolean(item))
   };
+}
+
+async function readNutritionDataset(options?: { force?: boolean }): Promise<NutritionDataset> {
+  const now = Date.now();
+  if (!options?.force && nutritionDatasetCache && nutritionDatasetCache.expiresAt > now) {
+    return nutritionDatasetCache.value;
+  }
+
+  if (!options?.force && nutritionDatasetReadPromise) {
+    return nutritionDatasetReadPromise;
+  }
+
+  const stale = nutritionDatasetCache?.value ?? null;
+  const cacheVersion = nutritionDatasetCacheVersion;
+  const nextRead = readNutritionDatasetFresh()
+    .then((dataset) => {
+      if (nutritionDatasetCacheVersion === cacheVersion) {
+        cacheNutritionDataset(dataset);
+      }
+      return dataset;
+    })
+    .catch((error) => {
+      if (!options?.force && stale && isGoogleRateLimitError(error)) {
+        if (nutritionDatasetCacheVersion === cacheVersion) {
+          cacheNutritionDataset(stale);
+        }
+        return stale;
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (nutritionDatasetReadPromise === nextRead) {
+        nutritionDatasetReadPromise = null;
+      }
+    });
+
+  nutritionDatasetReadPromise = nextRead;
+  return nextRead;
 }
 
 function buildFullPlan(dataset: NutritionDataset, plan: NutritionPlanSummary): NutritionPlanFull {
@@ -1414,16 +1515,59 @@ export async function upsertNutritionMealCompletion(input: {
   return completion;
 }
 
+async function readNutritionChangeRequests(options?: { force?: boolean }): Promise<NutritionChangeRequest[]> {
+  const now = Date.now();
+  if (!options?.force && changeRequestsCache && changeRequestsCache.expiresAt > now) {
+    return changeRequestsCache.value;
+  }
+
+  if (!options?.force && changeRequestsReadPromise) {
+    return changeRequestsReadPromise;
+  }
+
+  const stale = changeRequestsCache?.value ?? null;
+  const cacheVersion = changeRequestsCacheVersion;
+  const nextRead = readWorksheetRows(WORKSHEETS.changeRequests, CHANGE_REQUEST_HEADERS)
+    .then((rows) =>
+      rows
+        .map(parseChangeRequest)
+        .filter((item): item is NutritionChangeRequest => Boolean(item))
+    )
+    .then((requests) => {
+      if (changeRequestsCacheVersion === cacheVersion) {
+        cacheChangeRequests(requests);
+      }
+      return requests;
+    })
+    .catch((error) => {
+      if (!options?.force && stale && isGoogleRateLimitError(error)) {
+        if (changeRequestsCacheVersion === cacheVersion) {
+          cacheChangeRequests(stale);
+        }
+        return stale;
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (changeRequestsReadPromise === nextRead) {
+        changeRequestsReadPromise = null;
+      }
+    });
+
+  changeRequestsReadPromise = nextRead;
+  return nextRead;
+}
+
 export async function listNutritionChangeRequests(options?: {
   athleteUsername?: string;
   status?: NutritionChangeRequestStatus;
+  force?: boolean;
 }): Promise<NutritionChangeRequest[]> {
   const athleteUsername = options?.athleteUsername
     ? normalizeUsername(options.athleteUsername)
     : "";
-  const rows = await readWorksheetRows(WORKSHEETS.changeRequests, CHANGE_REQUEST_HEADERS);
-  return rows
-    .map(parseChangeRequest)
+  const requests = await readNutritionChangeRequests({ force: options?.force });
+  return requests
     .filter((item): item is NutritionChangeRequest => {
       if (!item) return false;
       if (athleteUsername && item.athleteUsername !== athleteUsername) return false;
@@ -1462,7 +1606,8 @@ export async function createNutritionChangeRequest(input: {
 
   const pendingRequests = await listNutritionChangeRequests({
     athleteUsername,
-    status: "pending"
+    status: "pending",
+    force: true
   });
   const duplicate = pendingRequests.some(
     (request) =>
@@ -1510,7 +1655,7 @@ export async function resolveNutritionChangeRequest(input: {
   adminNotes?: string;
   resolvedBy: string;
 }): Promise<NutritionChangeRequest | null> {
-  const requests = await listNutritionChangeRequests();
+  const requests = await listNutritionChangeRequests({ force: true });
   const current = requests.find((request) => request.id === input.requestId);
   if (!current) return null;
 
@@ -1544,7 +1689,7 @@ export async function createNutritionFood(input: {
   waterPer100g: number;
   restrictionTags?: NutritionFood["restrictionTags"];
 }): Promise<NutritionFood> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const name = sanitizeName(input.name, "");
   if (!name) throw new Error("Food name is required.");
 
@@ -1577,7 +1722,7 @@ export async function createNutritionFood(input: {
 }
 
 export async function updateNutritionFood(input: Partial<NutritionFood> & { id: string }): Promise<NutritionFood | null> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const index = dataset.foods.findIndex((food) => food.id === input.id);
   if (index < 0) return null;
 
@@ -1626,7 +1771,7 @@ export async function createNutritionAthleteRestriction(input: {
   foodId?: string;
   notes?: string;
 }): Promise<NutritionAthleteRestriction> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const athleteUsername = normalizeUsername(input.athleteUsername);
   if (!athleteUsername) throw new Error("Athlete username is required.");
 
@@ -1677,7 +1822,7 @@ export async function createNutritionAthleteRestriction(input: {
 }
 
 export async function deleteNutritionAthleteRestriction(id: string): Promise<NutritionAthleteRestriction | null> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const restriction = dataset.restrictions.find((item) => item.id === id);
   if (!restriction) return null;
 
@@ -1694,7 +1839,6 @@ export async function createNutritionPlanForAthlete(input: {
   athleteName: string;
   name: string;
 }): Promise<NutritionPlanFull> {
-  const dataset = await readNutritionDataset();
   const now = new Date().toISOString();
   const plan: NutritionPlanSummary = {
     id: randomUUID(),
@@ -1732,7 +1876,7 @@ export async function createNutritionPlanForAthlete(input: {
 }
 
 export async function saveNutritionPlan(input: NutritionPlanFull): Promise<NutritionPlanFull | null> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const planIndex = dataset.plans.findIndex((plan) => plan.id === input.id);
   if (planIndex < 0) return null;
 
@@ -1849,7 +1993,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
 }
 
 export async function duplicateNutritionPlan(planId: string): Promise<NutritionPlanFull | null> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const source = dataset.plans.find((plan) => plan.id === planId);
   if (!source) return null;
 
@@ -1924,7 +2068,7 @@ export async function deleteNutritionPlanById(planId: string): Promise<{
   athleteUsername: string;
   fileIds: string[];
 }> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const plan = dataset.plans.find((item) => item.id === planId);
   if (!plan) return { deleted: false, athleteUsername: "", fileIds: [] };
 
@@ -1976,7 +2120,7 @@ export async function markNutritionPlanPublished(input: {
   fileName: string;
   snapshot: NutritionPlanFull;
 }): Promise<NutritionPlanFull | null> {
-  const dataset = await readNutritionDataset();
+  const dataset = await readNutritionDataset({ force: true });
   const planIndex = dataset.plans.findIndex((plan) => plan.id === input.planId);
   if (planIndex < 0) return null;
 

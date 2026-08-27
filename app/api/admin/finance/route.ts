@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import { buildFinanceDashboard } from "@/lib/finance/calculations";
 import { listFinanceRecords } from "@/lib/google/finance";
-import { readUsersFromSheet } from "@/lib/google/sheets";
+import { readUsersFromSheetCached } from "@/lib/google/sheets";
 import { logError } from "@/lib/logger";
 
 function normalizeUsername(value: string): string {
@@ -14,7 +14,7 @@ export async function GET() {
   if (!auth.session) return auth.response;
 
   try {
-    const [users, finance] = await Promise.all([readUsersFromSheet(), listFinanceRecords()]);
+    const [users, finance] = await Promise.all([readUsersFromSheetCached(), listFinanceRecords()]);
     const athletes = users
       .filter((user) => user.permission === "user")
       .map((user) => ({

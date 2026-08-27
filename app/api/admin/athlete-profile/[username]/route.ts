@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
+import { deleteMemoryCache, getOrSetMemoryCache } from "@/lib/cache/memory-cache";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import { getComputedPaymentStatus, todayIsoDate } from "@/lib/finance/calculations";
 import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
@@ -18,7 +19,7 @@ import {
   listPeakModeDailyLogsForUser,
   listRevisionRowsForUser,
   listRoutineLogsForUser,
-  readUsersFromSheet,
+  readUsersFromSheetCached,
   updateUserInSheet
 } from "@/lib/google/sheets";
 import { logError, logInfo } from "@/lib/logger";
@@ -61,11 +62,15 @@ function isValidUsername(value: string): boolean {
   return value.length >= 2 && value.length <= 120 && !/[\u0000-\u001F\u007F/\\]/.test(value);
 }
 
+function getAthleteProfileCacheKey(username: string): string {
+  return `admin:athlete-profile:${normalizeUsername(username)}`;
+}
+
 async function resolveTargetUser(username: string) {
   const targetUsername = normalizeUsername(username);
   if (!isValidUsername(targetUsername)) return null;
 
-  const users = await readUsersFromSheet();
+  const users = await readUsersFromSheetCached();
   const targetUser = users.find(
     (user) => normalizeUsername(user.username) === targetUsername
   );
@@ -246,7 +251,9 @@ export async function GET(_req: Request, context: RouteContext) {
 
   const { username } = await context.params;
   try {
-    const profile = await loadAthleteProfile(username, auth.session.username);
+    const profile = await getOrSetMemoryCache(getAthleteProfileCacheKey(username), 60_000, () =>
+      loadAthleteProfile(username, auth.session.username)
+    );
     if (!profile) return NextResponse.json({ error: "User not found." }, { status: 404 });
     return NextResponse.json({ profile });
   } catch (error) {
@@ -302,6 +309,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       });
     }
 
+    deleteMemoryCache(getAthleteProfileCacheKey(targetUsername));
     const profile = await loadAthleteProfile(targetUsername, auth.session.username);
     logInfo("Athlete profile updated", {
       username: auth.session.username,

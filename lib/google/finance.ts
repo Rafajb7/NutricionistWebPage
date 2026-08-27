@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
+import { isGoogleRateLimitError, withGoogleApiRetry } from "@/lib/google/retry";
 import {
   buildFinancePaymentsForContract,
   getContractDates,
@@ -32,11 +33,30 @@ type FinanceDataset = {
   planOptions: FinancePlanOption[];
 };
 
+const FINANCE_DATASET_CACHE_TTL_MS = 3 * 60_000;
+
+let financeDatasetCache: { expiresAt: number; value: FinanceDataset } | null = null;
+let financeDatasetReadPromise: Promise<FinanceDataset> | null = null;
+let financeDatasetCacheVersion = 0;
+
 const WORKSHEETS = {
   contracts: "FinanceContracts",
   payments: "FinancePayments",
   planOptions: "FinancePlanOptions"
 } as const;
+
+function cacheFinanceDataset(dataset: FinanceDataset): void {
+  financeDatasetCache = {
+    expiresAt: Date.now() + FINANCE_DATASET_CACHE_TTL_MS,
+    value: dataset
+  };
+}
+
+function invalidateFinanceDatasetCache(): void {
+  financeDatasetCache = null;
+  financeDatasetReadPromise = null;
+  financeDatasetCacheVersion += 1;
+}
 
 const CONTRACT_HEADERS = [
   "Id",
@@ -336,13 +356,39 @@ async function readWorksheetRows(worksheetName: string, headers: string[]): Prom
   const info = await ensureFinanceSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A2:${endCol}`,
-    valueRenderOption: "FORMATTED_VALUE",
-    dateTimeRenderOption: "FORMATTED_STRING"
-  });
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId: info.spreadsheetId,
+      range: `'${worksheetName}'!A2:${endCol}`,
+      valueRenderOption: "FORMATTED_VALUE",
+      dateTimeRenderOption: "FORMATTED_STRING"
+    })
+  );
   return (response.data.values as string[][] | undefined) ?? [];
+}
+
+async function readWorksheetRowsBatch(
+  worksheets: Array<{ worksheetName: string; headers: string[] }>
+): Promise<string[][][]> {
+  if (!worksheets.length) return [];
+
+  const info = await ensureFinanceSheetsReady();
+  const sheets = await getSheetsClient();
+  const ranges = worksheets.map(({ worksheetName, headers }) => {
+    const endCol = indexToA1Column(headers.length - 1);
+    return `'${worksheetName}'!A2:${endCol}`;
+  });
+
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: info.spreadsheetId,
+      ranges,
+      valueRenderOption: "FORMATTED_VALUE",
+      dateTimeRenderOption: "FORMATTED_STRING"
+    })
+  );
+  const valueRanges = response.data.valueRanges ?? [];
+  return worksheets.map((_, index) => (valueRanges[index]?.values as string[][] | undefined) ?? []);
 }
 
 async function readWorksheetRowsWithNumbers(
@@ -362,13 +408,16 @@ async function appendWorksheetRows(
   const info = await ensureFinanceSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A:${endCol}`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: rows }
-  });
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.append({
+      spreadsheetId: info.spreadsheetId,
+      range: `'${worksheetName}'!A:${endCol}`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: rows }
+    })
+  );
+  invalidateFinanceDatasetCache();
 }
 
 async function updateWorksheetRowById(
@@ -384,12 +433,15 @@ async function updateWorksheetRowById(
   const info = await ensureFinanceSheetsReady();
   const sheets = await getSheetsClient();
   const endCol = indexToA1Column(headers.length - 1);
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: info.spreadsheetId,
-    range: `'${worksheetName}'!A${target.rowNumber}:${endCol}${target.rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [rowValues] }
-  });
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: info.spreadsheetId,
+      range: `'${worksheetName}'!A${target.rowNumber}:${endCol}${target.rowNumber}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [rowValues] }
+    })
+  );
+  invalidateFinanceDatasetCache();
   return true;
 }
 
@@ -525,17 +577,19 @@ async function ensureDefaultPlanOptions(dataset: FinanceDataset): Promise<Financ
     PLAN_OPTION_HEADERS,
     DEFAULT_FINANCE_PLAN_OPTIONS.map(serializePlanOption)
   );
-  return {
+  const nextDataset = {
     ...dataset,
     planOptions: DEFAULT_FINANCE_PLAN_OPTIONS
   };
+  cacheFinanceDataset(nextDataset);
+  return nextDataset;
 }
 
-async function readFinanceDataset(): Promise<FinanceDataset> {
-  const [contractRows, paymentRows, optionRows] = await Promise.all([
-    readWorksheetRows(WORKSHEETS.contracts, CONTRACT_HEADERS),
-    readWorksheetRows(WORKSHEETS.payments, PAYMENT_HEADERS),
-    readWorksheetRows(WORKSHEETS.planOptions, PLAN_OPTION_HEADERS)
+async function readFinanceDatasetFresh(): Promise<FinanceDataset> {
+  const [contractRows, paymentRows, optionRows] = await readWorksheetRowsBatch([
+    { worksheetName: WORKSHEETS.contracts, headers: CONTRACT_HEADERS },
+    { worksheetName: WORKSHEETS.payments, headers: PAYMENT_HEADERS },
+    { worksheetName: WORKSHEETS.planOptions, headers: PLAN_OPTION_HEADERS }
   ]);
 
   return ensureDefaultPlanOptions({
@@ -550,6 +604,44 @@ async function readFinanceDataset(): Promise<FinanceDataset> {
       .filter((option): option is FinancePlanOption => Boolean(option))
       .sort((a, b) => a.sortOrder - b.sortOrder)
   });
+}
+
+async function readFinanceDataset(options?: { force?: boolean }): Promise<FinanceDataset> {
+  const now = Date.now();
+  if (!options?.force && financeDatasetCache && financeDatasetCache.expiresAt > now) {
+    return financeDatasetCache.value;
+  }
+
+  if (!options?.force && financeDatasetReadPromise) {
+    return financeDatasetReadPromise;
+  }
+
+  const stale = financeDatasetCache?.value ?? null;
+  const cacheVersion = financeDatasetCacheVersion;
+  const nextRead = readFinanceDatasetFresh()
+    .then((dataset) => {
+      if (financeDatasetCacheVersion === cacheVersion) {
+        cacheFinanceDataset(dataset);
+      }
+      return dataset;
+    })
+    .catch((error) => {
+      if (!options?.force && stale && isGoogleRateLimitError(error)) {
+        if (financeDatasetCacheVersion === cacheVersion) {
+          cacheFinanceDataset(stale);
+        }
+        return stale;
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (financeDatasetReadPromise === nextRead) {
+        financeDatasetReadPromise = null;
+      }
+    });
+
+  financeDatasetReadPromise = nextRead;
+  return nextRead;
 }
 
 export async function listFinanceRecords(): Promise<{
@@ -568,7 +660,7 @@ export async function listFinanceRecords(): Promise<{
 export async function createFinanceContractWithPayments(
   input: CreateFinanceContractInput
 ): Promise<{ contract: FinanceContract; payments: FinancePayment[]; created: boolean }> {
-  const dataset = await readFinanceDataset();
+  const dataset = await readFinanceDataset({ force: true });
   const idempotencyKey = input.idempotencyKey?.trim() ?? "";
   if (idempotencyKey) {
     const existing = dataset.contracts.find(
@@ -628,7 +720,7 @@ export async function createFinanceContractWithPayments(
 export async function updateFinancePayment(
   input: UpdateFinancePaymentInput
 ): Promise<FinancePayment | null> {
-  const dataset = await readFinanceDataset();
+  const dataset = await readFinanceDataset({ force: true });
   const index = dataset.payments.findIndex((payment) => payment.id === input.paymentId);
   if (index < 0) return null;
 
@@ -677,7 +769,7 @@ export async function updateFinanceContract(
   contract: FinanceContract | null;
   cancelledPayments: number;
 }> {
-  const dataset = await readFinanceDataset();
+  const dataset = await readFinanceDataset({ force: true });
   const index = dataset.contracts.findIndex((contract) => contract.id === input.contractId);
   if (index < 0) return { contract: null, cancelledPayments: 0 };
 

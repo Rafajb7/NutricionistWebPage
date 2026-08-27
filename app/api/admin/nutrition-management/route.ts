@@ -4,7 +4,7 @@ import {
   listNutritionChangeRequests,
   listNutritionManagementData
 } from "@/lib/google/nutrition-management";
-import { readUsersFromSheet } from "@/lib/google/sheets";
+import { readUsersFromSheetCached } from "@/lib/google/sheets";
 import { logError } from "@/lib/logger";
 
 function normalizeUsername(value: string): string {
@@ -17,7 +17,7 @@ export async function GET() {
 
   try {
     const [usersResult, nutritionResult, changeRequestsResult] = await Promise.allSettled([
-      readUsersFromSheet(),
+      readUsersFromSheetCached(),
       listNutritionManagementData(),
       listNutritionChangeRequests()
     ]);

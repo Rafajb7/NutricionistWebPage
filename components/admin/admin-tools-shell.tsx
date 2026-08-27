@@ -59,6 +59,9 @@ type ChangeRequestsResponse = {
 
 type ActiveTool = "users" | "calendar";
 
+const CHANGE_REQUEST_POLL_INTERVAL_MS = 2 * 60_000;
+const CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS = 60_000;
+
 function formatEventDate(value: string): string {
   if (!value) return "Sin fecha";
 
@@ -121,6 +124,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   const [pendingNutritionChangeRequests, setPendingNutritionChangeRequests] = useState<NutritionChangeRequest[]>([]);
   const [changeRequestModalOpen, setChangeRequestModalOpen] = useState(false);
   const notifiedNutritionRequestIdsRef = useRef<Set<string>>(new Set());
+  const lastNutritionChangeRequestRefreshAtRef = useRef(0);
 
   const [eventTitle, setEventTitle] = useState("");
   const [eventDate, setEventDate] = useState(toDefaultDate);
@@ -223,6 +227,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   }
 
   const loadNutritionChangeRequests = useCallback(async (options?: { forceModal?: boolean }) => {
+    lastNutritionChangeRequestRefreshAtRef.current = Date.now();
     try {
       const res = await fetch("/api/admin/nutrition-change-requests", { cache: "no-store" });
       if (!res.ok) return;
@@ -244,9 +249,16 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
     void Promise.all([loadUsers(), loadCalendar(), loadNutritionChangeRequests({ forceModal: true })]);
 
     const refreshPendingRequests = () => {
+      const now = Date.now();
+      if (
+        now - lastNutritionChangeRequestRefreshAtRef.current <
+        CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS
+      ) {
+        return;
+      }
       void loadNutritionChangeRequests();
     };
-    const intervalId = window.setInterval(refreshPendingRequests, 15000);
+    const intervalId = window.setInterval(refreshPendingRequests, CHANGE_REQUEST_POLL_INTERVAL_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") refreshPendingRequests();
     };

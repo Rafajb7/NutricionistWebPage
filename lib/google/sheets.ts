@@ -1,7 +1,17 @@
 import { google } from "googleapis";
+import {
+  deleteMemoryCache,
+  getOrSetMemoryCache,
+  readStaleMemoryCache,
+  writeMemoryCache
+} from "@/lib/cache/memory-cache";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
-import { isGoogleAlreadyExistsError, withGoogleApiRetry } from "@/lib/google/retry";
+import {
+  isGoogleAlreadyExistsError,
+  isGoogleRateLimitError,
+  withGoogleApiRetry
+} from "@/lib/google/retry";
 import type { RevisionRow } from "@/lib/google/types";
 import { logError } from "@/lib/logger";
 import { DEFAULT_EXERCISE_CATALOG } from "@/lib/routines/default-exercises";
@@ -116,6 +126,9 @@ type AppEventLogSheetInfo = {
 };
 
 let appEventLogSheetPromise: Promise<AppEventLogSheetInfo> | null = null;
+
+const USERS_SHEET_CACHE_KEY = "google:users-sheet";
+const USERS_SHEET_CACHE_TTL_MS = 5 * 60_000;
 
 const ROUTINE_EXERCISE_HEADERS = ["Grupo muscular", "Ejercicio", "Activo"];
 const ROUTINE_LOG_HEADERS = [
@@ -876,7 +889,7 @@ async function getValuesBySheetName(
   return (res.data.values as string[][] | undefined) ?? [];
 }
 
-export async function readUsersFromSheet(): Promise<AppUser[]> {
+async function readUsersFromSheetUncached(): Promise<AppUser[]> {
   const env = getEnv();
   const values = await getValuesBySheetName(env.GOOGLE_USERS_SHEET_NAME, "A1:Z");
   if (!values.length) return [];
@@ -912,6 +925,40 @@ export async function readUsersFromSheet(): Promise<AppUser[]> {
       passwordColumn: passwordCol
     }))
     .filter((u) => u.username);
+}
+
+function cloneUsers(users: AppUser[]): AppUser[] {
+  return users.map((user) => ({ ...user }));
+}
+
+export async function readUsersFromSheet(): Promise<AppUser[]> {
+  return readUsersFromSheetUncached();
+}
+
+export async function readUsersFromSheetCached(options?: {
+  ttlMs?: number;
+  force?: boolean;
+}): Promise<AppUser[]> {
+  if (options?.force) invalidateUsersSheetCache();
+  try {
+    const users = await getOrSetMemoryCache(
+      USERS_SHEET_CACHE_KEY,
+      options?.ttlMs ?? USERS_SHEET_CACHE_TTL_MS,
+      readUsersFromSheetUncached
+    );
+    return cloneUsers(users);
+  } catch (error) {
+    const stale = readStaleMemoryCache<AppUser[]>(USERS_SHEET_CACHE_KEY);
+    if (!options?.force && stale && isGoogleRateLimitError(error)) {
+      writeMemoryCache(USERS_SHEET_CACHE_KEY, stale, options?.ttlMs ?? USERS_SHEET_CACHE_TTL_MS);
+      return cloneUsers(stale);
+    }
+    throw error;
+  }
+}
+
+export function invalidateUsersSheetCache(): void {
+  deleteMemoryCache(USERS_SHEET_CACHE_KEY);
 }
 
 async function getUsersSheetContext(): Promise<{
@@ -993,6 +1040,7 @@ export async function createUserInSheet(input: {
       values: [row]
     }
   });
+  invalidateUsersSheetCache();
 }
 
 export async function deleteUserFromSheetByUsername(username: string): Promise<boolean> {
@@ -1029,6 +1077,7 @@ export async function deleteUserFromSheetByUsername(username: string): Promise<b
     }
   });
 
+  invalidateUsersSheetCache();
   return true;
 }
 
@@ -1107,6 +1156,7 @@ export async function updateUserInSheet(input: {
   }
 
   await Promise.all(updates);
+  invalidateUsersSheetCache();
 
   return {
     ...targetUser,
@@ -1746,6 +1796,7 @@ export async function updateUserPasswordCell(
       values: [[newPasswordHash]]
     }
   });
+  invalidateUsersSheetCache();
 }
 
 export async function appendRevisionRowsWithClient(input: {

@@ -3,7 +3,7 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import { buildCreateFinanceContractInput } from "@/lib/finance/contract-input";
 import { financeContractRequestSchema } from "@/lib/finance/validation";
 import { createFinanceContractWithPayments, listFinanceRecords } from "@/lib/google/finance";
-import { readUsersFromSheet } from "@/lib/google/sheets";
+import { readUsersFromSheetCached } from "@/lib/google/sheets";
 import { logError, logInfo } from "@/lib/logger";
 
 function normalizeUsername(value: string): string {
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     }
 
     const targetUsername = normalizeUsername(parsed.data.athleteUsername);
-    const [users, finance] = await Promise.all([readUsersFromSheet(), listFinanceRecords()]);
+    const [users, finance] = await Promise.all([readUsersFromSheetCached(), listFinanceRecords()]);
     const athlete = users.find((user) => normalizeUsername(user.username) === targetUsername);
     if (!athlete || athlete.permission !== "user") {
       return NextResponse.json({ error: "Athlete not found." }, { status: 404 });
