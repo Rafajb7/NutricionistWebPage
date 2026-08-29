@@ -62,6 +62,19 @@ type ActiveTool = "users" | "calendar";
 const CHANGE_REQUEST_POLL_INTERVAL_MS = 2 * 60_000;
 const CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS = 60_000;
 
+const CHANGE_REQUEST_TYPE_LABELS = {
+  food_swap: "Sustitucion de alimento",
+  calorie_increase: "Aumentar calorias",
+  calorie_decrease: "Reducir calorias",
+  meal_add: "Anadir comida",
+  meal_remove: "Eliminar comida",
+  meal_redistribution: "Redistribuir comida"
+} satisfies Record<NutritionChangeRequest["requestType"], string>;
+
+function getChangeRequestTypeLabel(request: NutritionChangeRequest): string {
+  return CHANGE_REQUEST_TYPE_LABELS[request.requestType] ?? CHANGE_REQUEST_TYPE_LABELS.food_swap;
+}
+
 function formatEventDate(value: string): string {
   if (!value) return "Sin fecha";
 
@@ -155,22 +168,29 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   const pendingNutritionChangeGroups = useMemo(() => {
     const groups = new Map<
       string,
-      { username: string; name: string; count: number; firstRequestId: string }
+      { username: string; name: string; count: number; firstRequestId: string; typeLabels: Set<string> }
     >();
     for (const request of pendingNutritionChangeRequests) {
       const current = groups.get(request.athleteUsername);
       if (current) {
         current.count += 1;
+        current.typeLabels.add(getChangeRequestTypeLabel(request));
       } else {
         groups.set(request.athleteUsername, {
           username: request.athleteUsername,
           name: request.athleteName || request.athleteUsername,
           count: 1,
-          firstRequestId: request.id
+          firstRequestId: request.id,
+          typeLabels: new Set([getChangeRequestTypeLabel(request)])
         });
       }
     }
-    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        typeSummary: Array.from(group.typeLabels).join(", ")
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [pendingNutritionChangeRequests]);
 
   async function loadUsers() {
@@ -969,7 +989,10 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     href={`/tools/nutrition-management?athlete=${encodeURIComponent(group.username)}&request=${encodeURIComponent(group.firstRequestId)}`}
                     className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/25 px-3 py-3 text-sm transition hover:bg-white/10"
                   >
-                    <span className="font-semibold text-brand-text">{group.name}</span>
+                    <span className="min-w-0">
+                      <span className="block font-semibold text-brand-text">{group.name}</span>
+                      <span className="mt-1 block truncate text-xs text-brand-muted">{group.typeSummary}</span>
+                    </span>
                     <span className="rounded-full bg-brand-accent px-2 py-1 text-xs font-semibold text-black">
                       {group.count}
                     </span>

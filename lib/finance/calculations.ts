@@ -2,6 +2,9 @@ import type {
   CreateFinanceContractInput,
   FinanceContract,
   FinanceDashboard,
+  FinanceExpense,
+  FinanceInvoiceLineItem,
+  FinanceInvoiceTotals,
   FinanceMonthlyPoint,
   FinancePayment,
   FinancePaymentStatus,
@@ -117,6 +120,59 @@ export function formatCents(cents: number, currency = "EUR"): string {
   }).format(safeCents / 100);
 }
 
+export function roundToCents(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value);
+}
+
+export function calculateInvoiceLineBaseCents(
+  line: Pick<FinanceInvoiceLineItem, "quantity" | "unitPriceCents" | "discountPercent">
+): { subtotalCents: number; discountCents: number; taxableBaseCents: number } {
+  const quantity = Number.isFinite(line.quantity) ? Math.max(0, line.quantity) : 0;
+  const unitPriceCents = Number.isFinite(line.unitPriceCents)
+    ? Math.max(0, Math.trunc(line.unitPriceCents))
+    : 0;
+  const discountPercent = Number.isFinite(line.discountPercent)
+    ? Math.min(100, Math.max(0, line.discountPercent))
+    : 0;
+  const subtotalCents = roundToCents(unitPriceCents * quantity);
+  const discountCents = roundToCents(subtotalCents * (discountPercent / 100));
+  return {
+    subtotalCents,
+    discountCents,
+    taxableBaseCents: Math.max(0, subtotalCents - discountCents)
+  };
+}
+
+export function calculateFinanceInvoiceTotals(
+  lineItems: FinanceInvoiceLineItem[],
+  irpfRate: number
+): FinanceInvoiceTotals {
+  const totals = lineItems.reduce(
+    (acc, line) => {
+      const lineBase = calculateInvoiceLineBaseCents(line);
+      const vatRate = Number.isFinite(line.vatRate) ? Math.max(0, line.vatRate) : 0;
+      acc.subtotalCents += lineBase.subtotalCents;
+      acc.discountCents += lineBase.discountCents;
+      acc.taxableBaseCents += lineBase.taxableBaseCents;
+      acc.vatCents += roundToCents(lineBase.taxableBaseCents * (vatRate / 100));
+      return acc;
+    },
+    {
+      subtotalCents: 0,
+      discountCents: 0,
+      taxableBaseCents: 0,
+      vatCents: 0,
+      irpfCents: 0,
+      totalCents: 0
+    }
+  );
+  const safeIrpfRate = Number.isFinite(irpfRate) ? Math.min(100, Math.max(0, irpfRate)) : 0;
+  totals.irpfCents = roundToCents(totals.taxableBaseCents * (safeIrpfRate / 100));
+  totals.totalCents = Math.max(0, totals.taxableBaseCents + totals.vatCents - totals.irpfCents);
+  return totals;
+}
+
 export function splitAmountCents(totalCents: number, paymentCount: number): number[] {
   const count = Math.max(1, Math.trunc(paymentCount));
   const base = Math.floor(totalCents / count);
@@ -217,6 +273,7 @@ function buildRenewalAlerts(
 function buildMonthlySeries(
   contracts: FinanceContract[],
   payments: FinancePayment[],
+  expenses: FinanceExpense[],
   today: string
 ): FinanceMonthlyPoint[] {
   const keys = buildLastMonthKeys(today, 12);
@@ -227,6 +284,8 @@ function buildMonthlySeries(
         month: key,
         expectedCents: 0,
         paidCents: 0,
+        expenseCents: 0,
+        netCents: 0,
         contractedCents: 0
       }
     ])
@@ -252,15 +311,26 @@ function buildMonthlySeries(
     }
   }
 
+  for (const expense of expenses) {
+    const point = points.get(monthKey(expense.date));
+    if (point) point.expenseCents += expense.amountCents;
+  }
+
+  for (const point of points.values()) {
+    point.netCents = point.paidCents - point.expenseCents;
+  }
+
   return keys.map((key) => points.get(key) as FinanceMonthlyPoint);
 }
 
 export function buildFinanceDashboard(input: {
   contracts: FinanceContract[];
   payments: FinancePayment[];
+  expenses?: FinanceExpense[];
   today?: string;
 }): FinanceDashboard {
   const today = input.today ?? todayIsoDate();
+  const expenses = input.expenses ?? [];
   const month = getMonthRange(today);
   const next30 = addDays(today, 30);
 
@@ -273,6 +343,12 @@ export function buildFinanceDashboard(input: {
     .filter((payment) => payment.status !== "cancelled")
     .filter((payment) => isBetween(payment.dueDate, month.start, month.end))
     .reduce((sum, payment) => sum + payment.expectedAmountCents, 0);
+
+  const expensesThisMonthCents = expenses
+    .filter((expense) => isBetween(expense.date, month.start, month.end))
+    .reduce((sum, expense) => sum + expense.amountCents, 0);
+
+  const netThisMonthCents = paidThisMonthCents - expensesThisMonthCents;
 
   const pendingCents = input.payments
     .filter((payment) => payment.status === "pending")
@@ -294,15 +370,17 @@ export function buildFinanceDashboard(input: {
     (sum, contract) => sum + contract.totalAmountCents,
     0
   );
-  const monthlySeries = buildMonthlySeries(input.contracts, input.payments, today);
-  const current = monthlySeries[monthlySeries.length - 1]?.paidCents ?? 0;
-  const previous = monthlySeries[monthlySeries.length - 2]?.paidCents ?? 0;
+  const monthlySeries = buildMonthlySeries(input.contracts, input.payments, expenses, today);
+  const current = monthlySeries[monthlySeries.length - 1]?.netCents ?? 0;
+  const previous = monthlySeries[monthlySeries.length - 2]?.netCents ?? 0;
   const monthlyVariationPercent =
     previous > 0 ? Number((((current - previous) / previous) * 100).toFixed(1)) : null;
 
   return {
     paidThisMonthCents,
     expectedThisMonthCents,
+    expensesThisMonthCents,
+    netThisMonthCents,
     pendingCents,
     next30DaysCents,
     overdueCount,

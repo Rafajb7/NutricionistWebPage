@@ -7,6 +7,13 @@ const nutritionQuantityGramsSchema = z.preprocess((value) => {
   return Number.isFinite(parsed) ? Math.round(parsed) : value;
 }, z.number().int().min(1).max(10000));
 
+const nutritionUnitWeightSchema = z.preprocess((value) => {
+  const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : value;
+}, z.number().int().min(1).max(10000).optional().default(1));
+
+const nutritionQuantityUnitSchema = z.enum(["g", "piece", "serving"]).optional().default("g");
+
 const nutritionFoodRestrictionTagSchema = z.enum([
   "gluten",
   "lactose",
@@ -123,6 +130,8 @@ const nutritionPlanAlternativeSchema = z.object({
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
   quantityG: nutritionQuantityGramsSchema,
+  quantityUnit: nutritionQuantityUnitSchema,
+  unitWeightG: nutritionUnitWeightSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
@@ -141,12 +150,15 @@ const nutritionPlanEntrySchema = z.object({
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
   quantityG: nutritionQuantityGramsSchema,
+  quantityUnit: nutritionQuantityUnitSchema,
+  unitWeightG: nutritionUnitWeightSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
   sodiumPer100g: z.coerce.number().min(0).max(100000),
   waterPer100g: z.coerce.number().min(0).max(100),
   position: z.coerce.number().int().min(0).max(1000).optional().default(0),
+  mealOption: z.coerce.number().int().min(1).max(20).optional().default(1),
   customText: z.string().max(240).optional().default(""),
   alternatives: z.array(nutritionPlanAlternativeSchema).max(20).optional().default([]),
   createdAt: isoDateSchema,
@@ -170,11 +182,13 @@ export const nutritionPlanSaveSchema = z.object({
   athleteUsername: z.string().min(1).max(120),
   athleteName: z.string().max(160),
   name: z.string().min(1).max(120),
-  status: z.enum(["draft", "review", "published"]),
+  status: z.enum(["review", "published"]),
   targetProteinG: z.coerce.number().min(0).max(2000),
   targetCarbsG: z.coerce.number().min(0).max(3000),
   targetFatG: z.coerce.number().min(0).max(1000),
   notes: z.string().max(3000).optional().default(""),
+  supplementation: z.string().max(3000).optional().default(""),
+  recommendations: z.string().max(3000).optional().default(""),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
   publishedAt: z.string().max(80).optional().default(""),
@@ -182,4 +196,21 @@ export const nutritionPlanSaveSchema = z.object({
   versionNumber: z.coerce.number().int().min(0).max(10000).optional().default(0),
   meals: z.array(nutritionPlanMealSchema).min(1).max(40),
   versions: z.array(nutritionPlanVersionSchema).optional().default([])
+});
+
+export const athleteRoadmapStepSchema = z.object({
+  id: z.string().max(120).optional().default(""),
+  athleteUsername: z.string().max(120).optional().default(""),
+  title: z.string().min(1).max(120),
+  description: z.string().max(600).optional().default(""),
+  status: z.enum(["completed", "current", "pending"]).optional().default("pending"),
+  startDate: z.string().max(20).optional().default(""),
+  endDate: z.string().max(20).optional().default(""),
+  position: z.coerce.number().int().min(0).max(1000).optional().default(0),
+  createdAt: isoDateSchema,
+  updatedAt: isoDateSchema
+});
+
+export const athleteRoadmapSaveSchema = z.object({
+  steps: z.array(athleteRoadmapStepSchema).max(30).default([])
 });

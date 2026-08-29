@@ -33,6 +33,7 @@ import {
   calculateEntryTotals,
   calculateMacroPercent,
   calculateMealTotals,
+  calculateMealOptionTotals,
   calculatePlanTotals,
   EMPTY_NUTRITION_TOTALS,
   ATWATER_KCAL_PER_GRAM,
@@ -59,10 +60,19 @@ import type {
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionPlanMeal,
+  NutritionQuantityUnit,
   NutritionPlanStatus,
   NutritionPlanSummary,
-  NutritionTotals
+  NutritionTotals,
+  NutritionChangeRequestType
 } from "@/lib/nutrition/types";
+import {
+  getAllowedQuantityUnitsForFood,
+  getDefaultQuantityUnitForFood,
+  getDefaultUnitWeightGForFood,
+  getEffectiveQuantityG,
+  normalizeQuantityUnitForFood
+} from "@/lib/nutrition/quantity-units";
 
 type SessionUser = {
   username: string;
@@ -90,6 +100,12 @@ type LoadResponse = {
 
 type ChangeRequestsResponse = {
   requests?: NutritionChangeRequest[];
+  error?: string;
+};
+
+type PlanResponse = {
+  plan?: NutritionPlanFull;
+  publishedPlan?: NutritionPlanFull | null;
   error?: string;
 };
 
@@ -128,6 +144,21 @@ const EMPTY_FOOD_FORM: FoodFormState = {
 
 const CHANGE_REQUEST_POLL_INTERVAL_MS = 2 * 60_000;
 const CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS = 60_000;
+
+const QUANTITY_UNIT_OPTIONS: Array<{ value: NutritionQuantityUnit; label: string }> = [
+  { value: "g", label: "g" },
+  { value: "piece", label: "pieza" },
+  { value: "serving", label: "racion" }
+];
+
+const CHANGE_REQUEST_TYPE_LABELS = {
+  food_swap: "Sustitucion de alimento",
+  calorie_increase: "Aumentar ingesta calorica",
+  calorie_decrease: "Reducir ingesta calorica",
+  meal_add: "Anadir comida/menu",
+  meal_remove: "Eliminar comida/menu",
+  meal_redistribution: "Redistribuir comida"
+} satisfies Record<NutritionChangeRequestType, string>;
 
 function createClientId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -168,26 +199,55 @@ function normalizeQuantityG(value: number): number {
   return clampInteger(value, 1, 10000);
 }
 
+function normalizeQuantityUnit(value: unknown): NutritionQuantityUnit {
+  if (value === "piece" || value === "serving") return value;
+  return "g";
+}
+
+function normalizeUnitWeightG(value: unknown, unit: NutritionQuantityUnit): number {
+  if (unit === "g") return 1;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return clampInteger(Number.isFinite(parsed) ? parsed : 150, 1, 10000);
+}
+
+function normalizeMealOption(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return clampInteger(Number.isFinite(parsed) ? parsed : 1, 1, 20);
+}
+
 function normalizeUsername(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
 }
 
 function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
+  const meals = Array.isArray(plan.meals) ? plan.meals : [];
+
   return {
     ...plan,
+    supplementation: plan.supplementation ?? "",
+    recommendations: plan.recommendations ?? "",
     targetProteinG: clampInteger(plan.targetProteinG, 0, 2000),
     targetCarbsG: clampInteger(plan.targetCarbsG, 0, 3000),
     targetFatG: clampInteger(plan.targetFatG, 0, 1000),
-    meals: plan.meals.map((meal) => ({
+    meals: meals.map((meal) => ({
       ...meal,
-      entries: meal.entries.map((entry) => ({
+      entries: (Array.isArray(meal.entries) ? meal.entries : []).map((entry) => ({
         ...entry,
         quantityG: normalizeQuantityG(entry.quantityG),
-        alternatives: (entry.alternatives ?? []).map((alternative) => ({
+        quantityUnit: normalizeQuantityUnit(entry.quantityUnit),
+        unitWeightG: normalizeUnitWeightG(entry.unitWeightG, normalizeQuantityUnit(entry.quantityUnit)),
+        mealOption: normalizeMealOption(entry.mealOption),
+        alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) => ({
           ...alternative,
-          quantityG: normalizeQuantityG(alternative.quantityG)
+          quantityG: normalizeQuantityG(alternative.quantityG),
+          quantityUnit: normalizeQuantityUnit(alternative.quantityUnit),
+          unitWeightG: normalizeUnitWeightG(alternative.unitWeightG, normalizeQuantityUnit(alternative.quantityUnit))
         }))
-      }))
+      })).sort((a, b) => {
+        const optionDiff = normalizeMealOption(a.mealOption) - normalizeMealOption(b.mealOption);
+        if (optionDiff !== 0) return optionDiff;
+        return a.position - b.position;
+      })
     }))
   };
 }
@@ -214,14 +274,12 @@ function formatDate(value: string): string {
 
 function getStatusLabel(status: NutritionPlanStatus): string {
   if (status === "published") return "Publicado";
-  if (status === "review") return "En revision";
-  return "Borrador";
+  return "Revision";
 }
 
 function getStatusClass(status: NutritionPlanStatus): string {
   if (status === "published") return "border-emerald-300/35 bg-emerald-500/10 text-emerald-100";
-  if (status === "review") return "border-sky-300/35 bg-sky-500/10 text-sky-100";
-  return "border-brand-accent/35 bg-brand-accent/10 text-brand-text";
+  return "border-sky-300/35 bg-sky-500/10 text-sky-100";
 }
 
 function foodToForm(food: NutritionFood): FoodFormState {
@@ -255,27 +313,122 @@ function toPlanSummary(plan: NutritionPlanFull): NutritionPlanSummary {
   return summary;
 }
 
+function getFoodLikeForEntry(
+  item: Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, "foodId" | "foodName">,
+  foods: NutritionFood[]
+): Pick<NutritionFood, "id" | "name" | "category"> {
+  return foods.find((food) => food.id === item.foodId) ?? {
+    id: item.foodId,
+    name: item.foodName,
+    category: ""
+  };
+}
+
+function getQuantityUnitOptionsForFood(
+  food: Pick<NutritionFood, "id" | "name" | "category">
+): Array<{ value: NutritionQuantityUnit; label: string }> {
+  const allowed = getAllowedQuantityUnitsForFood(food);
+  return QUANTITY_UNIT_OPTIONS.filter((option) => allowed.includes(option.value));
+}
+
+function getQuantityUnitLabel(unit: NutritionQuantityUnit, quantity: number): string {
+  if (unit === "piece") return quantity === 1 ? "pieza" : "piezas";
+  if (unit === "serving") return quantity === 1 ? "racion" : "raciones";
+  return "g";
+}
+
+function formatDisplayQuantity(item: {
+  quantityG: number;
+  quantityUnit?: NutritionQuantityUnit;
+  unitWeightG?: number;
+}): string {
+  const quantity = normalizeQuantityG(item.quantityG);
+  const unit = normalizeQuantityUnit(item.quantityUnit);
+  return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(unit, quantity)}`;
+}
+
+function getUnitAwareQuantityForFood(
+  food: Pick<NutritionFood, "id" | "name" | "category" | "proteinPer100g" | "carbsPer100g" | "fatPer100g">,
+  requestedQuantity: number
+): { quantityG: number; quantityUnit: NutritionQuantityUnit; unitWeightG: number } {
+  const quantityUnit = getDefaultQuantityUnitForFood(food);
+  const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
+  if (quantityUnit === "g") {
+    return { quantityG: normalizeQuantityG(requestedQuantity), quantityUnit, unitWeightG };
+  }
+
+  const requestedUnits = requestedQuantity <= 20 ? requestedQuantity : requestedQuantity / unitWeightG;
+  return { quantityG: normalizeQuantityG(requestedUnits), quantityUnit, unitWeightG };
+}
+
+function convertQuantityUnitForFood(
+  item: Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, "quantityG" | "quantityUnit" | "unitWeightG">,
+  food: Pick<NutritionFood, "id" | "name" | "category">,
+  requestedUnit: NutritionQuantityUnit
+): { quantityG: number; quantityUnit: NutritionQuantityUnit; unitWeightG: number } {
+  const currentEffectiveG = getEffectiveQuantityG(item);
+  const quantityUnit = normalizeQuantityUnitForFood(food, requestedUnit);
+  const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
+  const quantityG =
+    quantityUnit === "g"
+      ? normalizeQuantityG(currentEffectiveG)
+      : normalizeQuantityG(currentEffectiveG / unitWeightG);
+
+  return { quantityG, quantityUnit, unitWeightG };
+}
+
+function getMealOptionNumber(entry: Pick<NutritionPlanFoodEntry, "mealOption">): number {
+  return normalizeMealOption(entry.mealOption);
+}
+
+function buildMealOptionKey(mealId: string, optionNumber: number): string {
+  return `${mealId}:option:${optionNumber}`;
+}
+
+function getMealOptionGroups(meal: NutritionPlanFull["meals"][number]): Array<{
+  optionNumber: number;
+  entries: NutritionPlanFoodEntry[];
+}> {
+  const entries = Array.isArray(meal.entries) ? meal.entries : [];
+  const optionNumbers = new Set<number>([1]);
+  entries.forEach((entry) => optionNumbers.add(getMealOptionNumber(entry)));
+
+  return Array.from(optionNumbers)
+    .sort((a, b) => a - b)
+    .map((optionNumber) => ({
+      optionNumber,
+      entries: entries
+        .filter((entry) => getMealOptionNumber(entry) === optionNumber)
+        .sort((a, b) => a.position - b.position)
+    }));
+}
+
 function buildEntryFromFood(
   planId: string,
   mealId: string,
   food: NutritionFood,
   quantityG: number,
-  position: number
+  position: number,
+  mealOption: number
 ): NutritionPlanFoodEntry {
   const now = new Date().toISOString();
+  const quantity = getUnitAwareQuantityForFood(food, quantityG);
   return {
     id: createClientId(),
     planId,
     mealId,
     foodId: food.id,
     foodName: food.name,
-    quantityG,
+    quantityG: quantity.quantityG,
+    quantityUnit: quantity.quantityUnit,
+    unitWeightG: quantity.unitWeightG,
     proteinPer100g: food.proteinPer100g,
     carbsPer100g: food.carbsPer100g,
     fatPer100g: food.fatPer100g,
     sodiumPer100g: food.sodiumPer100g,
     waterPer100g: food.waterPer100g,
     position,
+    mealOption,
     customText: "",
     alternatives: [],
     createdAt: now,
@@ -334,6 +487,31 @@ function formatFoodTagSummary(tags: NutritionFoodRestrictionTag[]): string {
   return labels.length ? labels.join(", ") : "-";
 }
 
+function getChangeRequestTypeLabel(request: NutritionChangeRequest): string {
+  return CHANGE_REQUEST_TYPE_LABELS[request.requestType] ?? CHANGE_REQUEST_TYPE_LABELS.food_swap;
+}
+
+function isFoodSwapRequest(request: NutritionChangeRequest): boolean {
+  return request.requestType === "food_swap";
+}
+
+function getChangeRequestMainText(request: NutritionChangeRequest): string {
+  if (isFoodSwapRequest(request)) {
+    return request.mealName || "Sustitucion de alimento";
+  }
+  return request.requestSummary || getChangeRequestTypeLabel(request);
+}
+
+function getChangeRequestDetailText(request: NutritionChangeRequest): string {
+  if (isFoodSwapRequest(request)) {
+    return `${request.originalFoodName} (${formatNumber(request.originalQuantityG, 0)} g) -> ${
+      request.requestedFoodName
+    } (${formatNumber(request.requestedQuantityG, 0)} g)`;
+  }
+  if (request.mealName) return `Menu relacionado: ${request.mealName}`;
+  return "Solicitud general sobre el plan nutricional.";
+}
+
 function buildAlternativeFromFood(
   entry: NutritionPlanFoodEntry,
   food: NutritionFood,
@@ -342,10 +520,17 @@ function buildAlternativeFromFood(
   const now = new Date().toISOString();
   const targetCalories = calculateEntryTotals(entry).caloriesKcal;
   const foodCaloriesPer100g = calculateFoodCaloriesPer100g(food);
+  const quantityUnit = getDefaultQuantityUnitForFood(food);
+  const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
+  const caloriesPerUnit = foodCaloriesPer100g * (unitWeightG / 100);
   const quantityG =
-    targetCalories > 0 && foodCaloriesPer100g > 0
-      ? normalizeQuantityG((targetCalories / foodCaloriesPer100g) * 100)
-      : normalizeQuantityG(entry.quantityG);
+    quantityUnit === "g"
+      ? targetCalories > 0 && foodCaloriesPer100g > 0
+        ? normalizeQuantityG((targetCalories / foodCaloriesPer100g) * 100)
+        : normalizeQuantityG(getEffectiveQuantityG(entry))
+      : targetCalories > 0 && caloriesPerUnit > 0
+        ? normalizeQuantityG(targetCalories / caloriesPerUnit)
+        : 1;
 
   return {
     id: createClientId(),
@@ -353,6 +538,8 @@ function buildAlternativeFromFood(
     foodId: food.id,
     foodName: food.name,
     quantityG,
+    quantityUnit,
+    unitWeightG,
     proteinPer100g: food.proteinPer100g,
     carbsPer100g: food.carbsPer100g,
     fatPer100g: food.fatPer100g,
@@ -373,15 +560,19 @@ function applyChangeRequestToPlanDraft(
   const now = new Date().toISOString();
   return normalizePlanGrams({
     ...currentPlan,
+    status: "review",
     meals: currentPlan.meals.map((meal) => ({
       ...meal,
       entries: meal.entries.map((entry) => {
         if (meal.id !== request.mealId || entry.id !== request.entryId) return entry;
+        const quantity = getUnitAwareQuantityForFood(requestedFood, request.requestedQuantityG);
         return {
           ...entry,
           foodId: requestedFood.id,
           foodName: requestedFood.name,
-          quantityG: request.requestedQuantityG,
+          quantityG: quantity.quantityG,
+          quantityUnit: quantity.quantityUnit,
+          unitWeightG: quantity.unitWeightG,
           proteinPer100g: requestedFood.proteinPer100g,
           carbsPer100g: requestedFood.carbsPer100g,
           fatPer100g: requestedFood.fatPer100g,
@@ -442,11 +633,27 @@ function MacroProgress(props: {
   );
 }
 
-function SmallTotal({ label, value, unit }: { label: string; value: number; unit: string }) {
+function SmallTotal({
+  label,
+  value,
+  unit,
+  alert = false
+}: {
+  label: string;
+  value: number;
+  unit: string;
+  alert?: boolean;
+}) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-black/25 px-2 py-1 text-xs text-brand-muted">
+    <span
+      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
+        alert
+          ? "border-red-400/35 bg-red-500/10 text-red-100"
+          : "border-white/10 bg-black/25 text-brand-muted"
+      }`}
+    >
       <span>{label}</span>
-      <strong className="text-brand-text">{formatNumber(value)}</strong>
+      <strong className={alert ? "text-red-100" : "text-brand-text"}>{formatNumber(value)}</strong>
       <span>{unit}</span>
     </span>
   );
@@ -507,6 +714,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const [selectedAthlete, setSelectedAthlete] = useState("");
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [plan, setPlan] = useState<NutritionPlanFull | null>(null);
+  const [reviewPlan, setReviewPlan] = useState<NutritionPlanFull | null>(null);
+  const [publishedPlan, setPublishedPlan] = useState<NutritionPlanFull | null>(null);
+  const [planMode, setPlanMode] = useState<NutritionPlanStatus>("review");
   const [loading, setLoading] = useState(true);
   const [planLoading, setPlanLoading] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -516,15 +726,18 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const [creatingPlan, setCreatingPlan] = useState(false);
   const [foodSearches, setFoodSearches] = useState<Record<string, string>>({});
   const [foodQuantities, setFoodQuantities] = useState<Record<string, string>>({});
+  const [mealSelectedOptions, setMealSelectedOptions] = useState<Record<string, string>>({});
   const [alternativeSearches, setAlternativeSearches] = useState<Record<string, string>>({});
   const [foodFilter, setFoodFilter] = useState("");
   const [foodForm, setFoodForm] = useState<FoodFormState>(EMPTY_FOOD_FORM);
   const [editingFoodId, setEditingFoodId] = useState<string | null>(null);
   const [foodSubmitting, setFoodSubmitting] = useState(false);
   const [quickFoodMealId, setQuickFoodMealId] = useState<string | null>(null);
+  const [quickFoodOptionNumber, setQuickFoodOptionNumber] = useState(1);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [pdfIncludeMacros, setPdfIncludeMacros] = useState(true);
   const [publishing, setPublishing] = useState(false);
   const [selectedClonePlanId, setSelectedClonePlanId] = useState("");
   const [cloningMenus, setCloningMenus] = useState(false);
@@ -590,6 +803,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   const planTotals = useMemo<NutritionTotals>(() => {
     return plan ? calculatePlanTotals(plan) : EMPTY_NUTRITION_TOTALS;
   }, [plan]);
+
+  const hasPublishedSnapshot = Boolean(publishedPlan || plan?.publishedFileId || reviewPlan?.publishedFileId);
+  const isCurrentPlanPublished = planMode === "published";
 
   const cloneablePlans = useMemo(() => {
     return plans
@@ -767,35 +983,58 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   useEffect(() => {
     if (!selectedPlanId) {
       setPlan(null);
+      setReviewPlan(null);
+      setPublishedPlan(null);
+      setPlanMode("review");
       setSaveState("idle");
       setIntegerInputDrafts({});
+      setMealSelectedOptions({});
       return;
     }
 
     let cancelled = false;
     setPlanLoading(true);
     setIntegerInputDrafts({});
+    setMealSelectedOptions({});
     fetch(`/api/admin/nutrition-management/plans/${selectedPlanId}`, { cache: "no-store" })
       .then(async (res) => {
-        const json = (await res.json()) as { plan?: NutritionPlanFull; error?: string };
+        const json = (await res.json()) as PlanResponse;
         if (!res.ok) throw new Error(json.error ?? "No se pudo cargar el plan.");
         if (!cancelled) {
-          let nextPlan = json.plan ? normalizePlanGrams(json.plan) : null;
+          let nextReviewPlan = json.plan
+            ? normalizePlanGrams({ ...json.plan, status: "review" })
+            : null;
+          const nextPublishedPlan = json.publishedPlan
+            ? normalizePlanGrams({ ...json.publishedPlan, status: "published" })
+            : json.plan?.status === "published"
+              ? normalizePlanGrams({ ...json.plan, status: "published" })
+              : null;
           let nextSaveState: SaveState = "saved";
           const pendingRequestId = pendingRequestToApplyRef.current;
-          if (nextPlan && pendingRequestId) {
+          if (nextReviewPlan && pendingRequestId) {
             const request = changeRequestsRef.current.find((item) => item.id === pendingRequestId);
             const requestedFood = request
               ? foodsRef.current.find((food) => food.id === request.requestedFoodId)
               : null;
-            if (request && requestedFood && request.planId === nextPlan.id) {
-              nextPlan = applyChangeRequestToPlanDraft(nextPlan, request, requestedFood);
+            if (request && request.planId === nextReviewPlan.id && !isFoodSwapRequest(request)) {
+              nextSaveState = "dirty";
+              pendingRequestToApplyRef.current = null;
+              toast.success("Solicitud abierta. Ajusta el plan en revision y publica cuando este listo.");
+            } else if (request && requestedFood && request.planId === nextReviewPlan.id) {
+              nextReviewPlan = applyChangeRequestToPlanDraft(nextReviewPlan, request, requestedFood);
               nextSaveState = "dirty";
               pendingRequestToApplyRef.current = null;
               toast.success("Solicitud aplicada al editor. Ajusta el plan y aprueba/publica.");
+            } else if (request && request.planId === nextReviewPlan.id) {
+              pendingRequestToApplyRef.current = null;
+              toast.error("El alimento solicitado ya no existe en el catalogo.");
             }
           }
-          setPlan(nextPlan);
+          const nextMode = nextPublishedPlan && nextSaveState === "saved" ? "published" : "review";
+          setReviewPlan(nextReviewPlan);
+          setPublishedPlan(nextPublishedPlan);
+          setPlanMode(nextMode);
+          setPlan(nextMode === "published" ? nextPublishedPlan : nextReviewPlan);
           setSaveState(nextSaveState);
         }
       })
@@ -827,12 +1066,18 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   }, [saveState]);
 
   const updatePlanDraft = useCallback((updater: (current: NutritionPlanFull) => NutritionPlanFull) => {
+    if (planMode === "published") return;
     setPlan((current) => {
       if (!current) return current;
-      return normalizePlanGrams(updater(current));
+      const next = normalizePlanGrams({
+        ...updater({ ...current, status: "review" }),
+        status: "review"
+      });
+      setReviewPlan(next);
+      return next;
     });
     setSaveState("dirty");
-  }, []);
+  }, [planMode]);
 
   const getIntegerInputValue = useCallback(
     (key: string, value: number, min = 0, max = 10000) => {
@@ -872,7 +1117,10 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
 
   const saveCurrentPlan = useCallback(
     async (planToSave?: NutritionPlanFull | null) => {
-      const target = planToSave ? normalizePlanGrams(planToSave) : plan ? normalizePlanGrams(plan) : null;
+      const basePlan = planMode === "published" ? reviewPlan : (planToSave ?? plan);
+      const target = basePlan
+        ? normalizePlanGrams({ ...basePlan, status: "review" })
+        : null;
       if (!target) return null;
 
       setSaveState("saving");
@@ -887,7 +1135,10 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
           throw new Error(json.error ?? "No se pudo guardar.");
         }
 
-        setPlan(normalizePlanGrams(json.plan));
+        const normalized = normalizePlanGrams({ ...json.plan, status: "review" });
+        setPlan(normalized);
+        setReviewPlan(normalized);
+        setPlanMode("review");
         setIntegerInputDrafts({});
         upsertPlanSummary(json.plan);
         setSaveState("saved");
@@ -899,7 +1150,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
         return null;
       }
     },
-    [plan, upsertPlanSummary]
+    [plan, planMode, reviewPlan, upsertPlanSummary]
   );
 
   useEffect(() => {
@@ -943,7 +1194,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       setPlanNameDraft("Dia de entrenamiento");
       upsertPlanSummary(json.plan);
       setSelectedPlanId(json.plan.id);
-      setPlan(normalizePlanGrams(json.plan));
+      const normalized = normalizePlanGrams({ ...json.plan, status: "review" });
+      setPlan(normalized);
+      setReviewPlan(normalized);
+      setPublishedPlan(null);
+      setPlanMode("review");
       setIntegerInputDrafts({});
       setSaveState("saved");
       toast.success("Plan creado.");
@@ -964,7 +1219,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       if (!res.ok || !json.plan) throw new Error(json.error ?? "No se pudo duplicar.");
       upsertPlanSummary(json.plan);
       setSelectedPlanId(json.plan.id);
-      setPlan(normalizePlanGrams(json.plan));
+      const normalized = normalizePlanGrams({ ...json.plan, status: "review" });
+      setPlan(normalized);
+      setReviewPlan(normalized);
+      setPublishedPlan(null);
+      setPlanMode("review");
       setIntegerInputDrafts({});
       setSaveState("saved");
       toast.success("Plan duplicado.");
@@ -990,6 +1249,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
         const nextPlan = plansForAthlete.find((item) => item.id !== planId);
         setSelectedPlanId(nextPlan?.id ?? "");
         setPlan(null);
+        setReviewPlan(null);
+        setPublishedPlan(null);
+        setPlanMode("review");
       }
       toast.success("Plan eliminado.");
     } catch (error) {
@@ -1003,6 +1265,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     const firstPlan = plans.find((item) => item.athleteUsername === username);
     setSelectedPlanId(firstPlan?.id ?? "");
     setPlan(null);
+    setReviewPlan(null);
+    setPublishedPlan(null);
+    setPlanMode("review");
     setIntegerInputDrafts({});
     setSaveState("idle");
   }
@@ -1011,6 +1276,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     setSelectedAthlete(input.username);
     setSelectedPlanId(input.firstPlanId || plans.find((item) => item.athleteUsername === input.username)?.id || "");
     setPlan(null);
+    setReviewPlan(null);
+    setPublishedPlan(null);
+    setPlanMode("review");
     setIntegerInputDrafts({});
     setSaveState("idle");
   }
@@ -1093,6 +1361,32 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     }));
   }
 
+  function handlePlanModeChange(nextMode: NutritionPlanStatus) {
+    if (nextMode === "published") {
+      if (!publishedPlan) {
+        toast.error("Este plan todavia no tiene una version publicada.");
+        return;
+      }
+      setPlanMode("published");
+      setPlan(publishedPlan);
+      setIntegerInputDrafts({});
+      setSaveState((current) => (current === "dirty" ? current : "saved"));
+      return;
+    }
+
+    const sourcePlan = reviewPlan ?? plan ?? publishedPlan;
+    if (!sourcePlan) return;
+    const editablePlan = normalizePlanGrams({
+      ...sourcePlan,
+      status: "review"
+    });
+    setReviewPlan(editablePlan);
+    setPlan(editablePlan);
+    setPlanMode("review");
+    setIntegerInputDrafts({});
+    setSaveState((current) => (current === "dirty" ? current : "saved"));
+  }
+
   function updateTarget(key: "targetProteinG" | "targetCarbsG" | "targetFatG", value: number) {
     updatePlanDraft((current) => ({
       ...current,
@@ -1151,13 +1445,12 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
         position: current.meals.length + 1,
         createdAt: now,
         updatedAt: now,
-        entries: source.entries.map((entry, index) => {
+        entries: source.entries.map((entry) => {
           const nextEntryId = createClientId();
           return {
             ...entry,
             id: nextEntryId,
             mealId: nextMealId,
-            position: index + 1,
             alternatives: (entry.alternatives ?? []).map((alternative, alternativeIndex) => ({
               ...alternative,
               id: createClientId(),
@@ -1212,14 +1505,13 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
             position: basePosition + mealIndex + 1,
             createdAt: now,
             updatedAt: now,
-            entries: meal.entries.map((entry, entryIndex) => {
+            entries: meal.entries.map((entry) => {
               const nextEntryId = createClientId();
               return {
                 ...entry,
                 id: nextEntryId,
                 planId: current.id,
                 mealId: nextMealId,
-                position: entryIndex + 1,
                 alternatives: (entry.alternatives ?? []).map((alternative, alternativeIndex) => ({
                   ...alternative,
                   id: createClientId(),
@@ -1267,18 +1559,81 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     });
   }
 
-  function addFoodToMeal(mealId: string, food: NutritionFood) {
+  function addFoodToMeal(mealId: string, food: NutritionFood, optionNumber: number) {
     if (!plan) return;
-    const quantity = clampInteger(parseIntegerInput(foodQuantities[mealId] || "100") ?? 100, 1, 10000);
+    const optionKey = buildMealOptionKey(mealId, optionNumber);
+    const quantity = clampInteger(parseIntegerInput(foodQuantities[optionKey] || "100") ?? 100, 1, 10000);
     updateMeal(mealId, (meal) => ({
       ...meal,
       entries: [
         ...meal.entries,
-        buildEntryFromFood(plan.id, mealId, food, quantity, meal.entries.length + 1)
+        buildEntryFromFood(
+          plan.id,
+          mealId,
+          food,
+          quantity,
+          meal.entries.filter((entry) => getMealOptionNumber(entry) === optionNumber).length + 1,
+          optionNumber
+        )
       ]
     }));
-    setFoodSearches((current) => ({ ...current, [mealId]: "" }));
-    setFoodQuantities((current) => ({ ...current, [mealId]: "100" }));
+    setFoodSearches((current) => ({ ...current, [optionKey]: "" }));
+    setFoodQuantities((current) => ({ ...current, [optionKey]: "100" }));
+  }
+
+  function addMealOption(mealId: string) {
+    const sourceMeal = plan?.meals.find((meal) => meal.id === mealId);
+    const hasReferenceEntries = Boolean(
+      sourceMeal?.entries.some((entry) => getMealOptionNumber(entry) === 1)
+    );
+    if (!hasReferenceEntries) {
+      toast.error("Anade alimentos a la opcion 1 antes de crear otra opcion.");
+      return;
+    }
+
+    updateMeal(mealId, (meal) => {
+      const optionNumbers = getMealOptionGroups(meal).map((group) => group.optionNumber);
+      const nextOption = Math.min(20, Math.max(...optionNumbers, 1) + 1);
+      if (optionNumbers.includes(nextOption)) return meal;
+
+      const now = new Date().toISOString();
+      const referenceEntries = meal.entries
+        .filter((entry) => getMealOptionNumber(entry) === 1)
+        .sort((a, b) => a.position - b.position);
+      const clonedEntries = referenceEntries.map((entry, index) => {
+        const nextEntryId = createClientId();
+        return {
+          ...entry,
+          id: nextEntryId,
+          mealOption: nextOption,
+          position: index + 1,
+          alternatives: (entry.alternatives ?? []).map((alternative, alternativeIndex) => ({
+            ...alternative,
+            id: createClientId(),
+            entryId: nextEntryId,
+            position: alternativeIndex + 1,
+            createdAt: now,
+            updatedAt: now
+          })),
+          createdAt: now,
+          updatedAt: now
+        };
+      });
+
+      return { ...meal, entries: [...meal.entries, ...clonedEntries] };
+    });
+  }
+
+  function removeMealOption(mealId: string, optionNumber: number) {
+    if (optionNumber === 1) {
+      toast.error("La opcion 1 es la referencia y no se puede eliminar.");
+      return;
+    }
+
+    updateMeal(mealId, (meal) => ({
+      ...meal,
+      entries: meal.entries.filter((entry) => getMealOptionNumber(entry) !== optionNumber)
+    }));
   }
 
   function updateEntry(
@@ -1297,7 +1652,13 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       ...meal,
       entries: meal.entries
         .filter((entry) => entry.id !== entryId)
-        .map((entry, index) => ({ ...entry, position: index + 1 }))
+        .map((entry) => {
+          const optionEntries = meal.entries.filter(
+            (item) => item.id !== entryId && getMealOptionNumber(item) === getMealOptionNumber(entry)
+          );
+          const nextPosition = optionEntries.findIndex((item) => item.id === entry.id) + 1;
+          return { ...entry, position: Math.max(1, nextPosition) };
+        })
     }));
     setAlternativeSearches((current) => {
       const next = { ...current };
@@ -1355,7 +1716,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     }));
   }
 
-  async function submitFoodForm(options?: { mealId?: string | null }) {
+  async function submitFoodForm(options?: { mealId?: string | null; optionNumber?: number }) {
     const payload = buildFoodPayload(foodForm);
     if (!payload.name) {
       toast.error("El nombre del alimento es obligatorio.");
@@ -1387,8 +1748,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       toast.success(editingFoodId ? "Alimento actualizado." : "Alimento creado.");
 
       if (options?.mealId && json.food) {
-        addFoodToMeal(options.mealId, json.food);
+        addFoodToMeal(options.mealId, json.food, options.optionNumber ?? 1);
         setQuickFoodMealId(null);
+        setQuickFoodOptionNumber(1);
       }
 
       return json.food;
@@ -1425,10 +1787,12 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     if (!plan) return;
     setPreviewLoading(true);
     try {
-      const saved = await saveCurrentPlan(plan);
+      const saved = planMode === "published" ? plan : await saveCurrentPlan(plan);
       if (!saved) return;
       const res = await fetch(`/api/admin/nutrition-management/plans/${saved.id}/pdf`, {
-        method: "POST"
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeMacros: pdfIncludeMacros, mode: planMode })
       });
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string };
@@ -1450,12 +1814,18 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
 
   async function publishPlan() {
     if (!plan) return;
+    if (planMode === "published") {
+      toast.error("El plan publicado es solo de lectura.");
+      return;
+    }
     setPublishing(true);
     try {
       const saved = await saveCurrentPlan(plan);
       if (!saved) return;
       const res = await fetch(`/api/admin/nutrition-management/plans/${saved.id}/publish`, {
-        method: "POST"
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeMacros: pdfIncludeMacros })
       });
       const json = (await res.json()) as {
         plan?: NutritionPlanFull;
@@ -1464,7 +1834,12 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
       };
       if (!res.ok || !json.plan) throw new Error(json.error ?? "No se pudo publicar.");
 
-      setPlan(normalizePlanGrams(json.plan));
+      const nextPublishedPlan = normalizePlanGrams({ ...json.plan, status: "published" });
+      const nextReviewPlan = normalizePlanGrams({ ...json.plan, status: "review" });
+      setPlan(nextPublishedPlan);
+      setPublishedPlan(nextPublishedPlan);
+      setReviewPlan(nextReviewPlan);
+      setPlanMode("published");
       setIntegerInputDrafts({});
       upsertPlanSummary(json.plan);
       setSaveState("saved");
@@ -1478,19 +1853,34 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
   }
 
   async function applyChangeRequest(request: NutritionChangeRequest) {
-    const requestedFood = foods.find((food) => food.id === request.requestedFoodId);
-    if (!requestedFood) {
-      toast.error("El alimento solicitado ya no existe en el catalogo.");
-      return;
-    }
-
     pendingRequestToApplyRef.current = request.id;
     setSelectedAthlete(request.athleteUsername);
 
-    if (plan?.id === request.planId) {
-      setPlan((current) =>
-        current ? applyChangeRequestToPlanDraft(current, request, requestedFood) : current
-      );
+    const currentEditablePlan =
+      reviewPlan?.id === request.planId ? reviewPlan : plan?.id === request.planId ? plan : null;
+    if (currentEditablePlan) {
+      if (!isFoodSwapRequest(request)) {
+        const nextPlan = normalizePlanGrams({ ...currentEditablePlan, status: "review" });
+        setReviewPlan(nextPlan);
+        setPlan(nextPlan);
+        setPlanMode("review");
+        setSaveState("dirty");
+        pendingRequestToApplyRef.current = null;
+        toast.success("Solicitud abierta. Ajusta el plan en revision y publica cuando este listo.");
+        return;
+      }
+
+      const requestedFood = foods.find((food) => food.id === request.requestedFoodId);
+      if (!requestedFood) {
+        pendingRequestToApplyRef.current = null;
+        toast.error("El alimento solicitado ya no existe en el catalogo.");
+        return;
+      }
+
+      const nextPlan = applyChangeRequestToPlanDraft(currentEditablePlan, request, requestedFood);
+      setReviewPlan(nextPlan);
+      setPlan(nextPlan);
+      setPlanMode("review");
       setSaveState("dirty");
       pendingRequestToApplyRef.current = null;
       toast.success("Solicitud aplicada al editor. Ajusta el plan y aprueba/publica.");
@@ -1539,7 +1929,12 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
         current.map((item) => (item.id === json.request?.id ? json.request : item))
       );
       if (json.plan) {
-        setPlan(normalizePlanGrams(json.plan));
+        const nextPublishedPlan = normalizePlanGrams({ ...json.plan, status: "published" });
+        const nextReviewPlan = normalizePlanGrams({ ...json.plan, status: "review" });
+        setPlan(nextPublishedPlan);
+        setPublishedPlan(nextPublishedPlan);
+        setReviewPlan(nextReviewPlan);
+        setPlanMode("published");
         upsertPlanSummary(json.plan);
         setIntegerInputDrafts({});
         setSaveState("saved");
@@ -1547,11 +1942,20 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
         const planRes = await fetch(`/api/admin/nutrition-management/plans/${request.planId}`, {
           cache: "no-store"
         });
-        const planJson = (await planRes.json()) as { plan?: NutritionPlanFull; error?: string };
+        const planJson = (await planRes.json()) as PlanResponse;
         if (!planRes.ok || !planJson.plan) {
           throw new Error(planJson.error ?? "No se pudo recuperar el ultimo planning.");
         }
-        setPlan(normalizePlanGrams(planJson.plan));
+        const nextReviewPlan = normalizePlanGrams({ ...planJson.plan, status: "review" });
+        const nextPublishedPlan = planJson.publishedPlan
+          ? normalizePlanGrams({ ...planJson.publishedPlan, status: "published" })
+          : planJson.plan.status === "published"
+            ? normalizePlanGrams({ ...planJson.plan, status: "published" })
+            : null;
+        setReviewPlan(nextReviewPlan);
+        setPublishedPlan(nextPublishedPlan);
+        setPlanMode(nextPublishedPlan ? "published" : "review");
+        setPlan(nextPublishedPlan ?? nextReviewPlan);
         upsertPlanSummary(planJson.plan);
         setIntegerInputDrafts({});
         setSaveState("saved");
@@ -1570,9 +1974,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
     }
   }
 
-  function startQuickFood(mealId: string) {
-    const search = foodSearches[mealId] ?? "";
+  function startQuickFood(mealId: string, optionNumber = 1) {
+    const optionKey = buildMealOptionKey(mealId, optionNumber);
+    const search = foodSearches[optionKey] ?? "";
     setQuickFoodMealId(mealId);
+    setQuickFoodOptionNumber(optionNumber);
     setEditingFoodId(null);
     setFoodForm({ ...EMPTY_FOOD_FORM, name: search });
   }
@@ -1955,18 +2361,19 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                   {selectedAthleteChangeRequests.map((request) => {
                     const isActiveRequest = plan?.id === request.planId;
                     const resolving = resolvingRequestId === request.id;
+                    const foodSwap = isFoodSwapRequest(request);
                     return (
                       <article key={request.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-brand-text">
-                              {request.mealName}
+                            <span className="inline-flex rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-2 py-1 text-[11px] font-semibold text-brand-text">
+                              {getChangeRequestTypeLabel(request)}
+                            </span>
+                            <p className="mt-2 truncate text-sm font-semibold text-brand-text">
+                              {getChangeRequestMainText(request)}
                             </p>
                             <p className="mt-1 text-xs text-brand-muted">
-                              {request.originalFoodName} ({request.originalQuantityG} g)
-                            </p>
-                            <p className="mt-1 text-xs text-brand-text">
-                              Cambio: {request.requestedFoodName} ({request.requestedQuantityG} g)
+                              {getChangeRequestDetailText(request)}
                             </p>
                           </div>
                           <span className="rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-2 py-1 text-[11px] text-brand-text">
@@ -1997,22 +2404,20 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                             className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/40 bg-brand-accent/10 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/20"
                           >
                             <Pencil className="h-3.5 w-3.5" />
-                            {isActiveRequest ? "Aplicar" : "Abrir y aplicar"}
+                            {foodSwap ? (isActiveRequest ? "Aplicar" : "Abrir y aplicar") : "Abrir editor"}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => void resolveChangeRequest(request, "approved")}
-                            disabled={resolving || !isActiveRequest}
-                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                            title={
-                              isActiveRequest
-                                ? "Guardar, publicar PDF y aprobar"
-                                : "Primero abre/aplica esta solicitud"
-                            }
-                          >
-                            <Check className="h-3.5 w-3.5" />
-                            Aprobar y publicar
-                          </button>
+                          {foodSwap ? (
+                            <button
+                              type="button"
+                              onClick={() => void resolveChangeRequest(request, "approved")}
+                              disabled={resolving || !isActiveRequest}
+                              className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                              title={isActiveRequest ? "Guardar, publicar PDF y aprobar" : "Primero abre esta solicitud"}
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                              Aprobar y publicar
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => void resolveChangeRequest(request, "denied")}
@@ -2248,7 +2653,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                         <input
                           value={plan.name}
                           onChange={(event) => updatePlanField("name", event.target.value)}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
@@ -2268,7 +2674,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                             )
                           }
                           onBlur={() => clearIntegerInputDraft(`${plan.id}:targetProteinG`)}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
@@ -2288,7 +2695,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                             )
                           }
                           onBlur={() => clearIntegerInputDraft(`${plan.id}:targetCarbsG`)}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
@@ -2308,24 +2716,30 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                             )
                           }
                           onBlur={() => clearIntegerInputDraft(`${plan.id}:targetFatG`)}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
                         Estado
                         <select
-                          value={plan.status}
+                          value={planMode}
                           onChange={(event) =>
-                            updatePlanField("status", event.target.value as NutritionPlanStatus)
+                            handlePlanModeChange(event.target.value as NutritionPlanStatus)
                           }
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         >
-                          <option value="draft">Borrador</option>
-                          <option value="review">En revision</option>
-                          {plan.publishedFileId ? <option value="published">Publicado</option> : null}
+                          <option value="review">Revision</option>
+                          {hasPublishedSnapshot ? <option value="published">Publicado</option> : null}
                         </select>
                       </label>
                     </div>
+
+                    {isCurrentPlanPublished ? (
+                      <p className="mt-3 rounded-xl border border-emerald-300/25 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+                        Modo publicado: estos valores son la referencia entregada al atleta y no se pueden editar. Cambia a Revision para preparar nuevos valores.
+                      </p>
+                    ) : null}
 
                     <div className="mt-4 grid gap-3 lg:grid-cols-4">
                       <div className="min-w-0 rounded-xl border border-white/10 bg-black/25 p-3">
@@ -2350,7 +2764,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                         <select
                           value={selectedClonePlanId}
                           onChange={(event) => setSelectedClonePlanId(event.target.value)}
-                          disabled={!cloneablePlans.length || cloningMenus}
+                          disabled={!cloneablePlans.length || cloningMenus || isCurrentPlanPublished}
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {cloneablePlans.length ? (
@@ -2368,7 +2782,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                         <button
                           type="button"
                           onClick={() => void cloneMenusFromPlan("replace")}
-                          disabled={!selectedClonePlanId || cloningMenus}
+                          disabled={!selectedClonePlanId || cloningMenus || isCurrentPlanPublished}
                           className="inline-flex items-center justify-center gap-2 rounded-xl border border-brand-accent/45 bg-brand-accent/10 px-4 py-2.5 text-sm font-semibold text-brand-text transition hover:bg-brand-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {cloningMenus ? (
@@ -2381,7 +2795,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                         <button
                           type="button"
                           onClick={() => void cloneMenusFromPlan("append")}
-                          disabled={!selectedClonePlanId || cloningMenus}
+                          disabled={!selectedClonePlanId || cloningMenus || isCurrentPlanPublished}
                           className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-brand-text transition hover:border-brand-accent/50 hover:bg-brand-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <Plus className="h-4 w-4" />
@@ -2390,20 +2804,71 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                       </div>
                     </div>
 
-                    <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                      <label className="block min-w-0 flex-1 text-sm text-brand-muted">
+                    <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                      <label className="block min-w-0 text-sm text-brand-muted">
                         Observaciones
                         <textarea
                           value={plan.notes}
                           onChange={(event) => updatePlanField("notes", event.target.value)}
-                          rows={2}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          rows={3}
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                       </label>
+                      <label className="block min-w-0 text-sm text-brand-muted">
+                        Suplementacion
+                        <textarea
+                          value={plan.supplementation}
+                          onChange={(event) => updatePlanField("supplementation", event.target.value)}
+                          rows={3}
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                      </label>
+                      <label className="block min-w-0 text-sm text-brand-muted">
+                        Recomendaciones
+                        <textarea
+                          value={plan.recommendations}
+                          onChange={(event) => updatePlanField("recommendations", event.target.value)}
+                          rows={3}
+                          disabled={isCurrentPlanPublished}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-4 flex flex-col gap-3 border-t border-white/10 pt-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="inline-flex w-fit rounded-xl border border-white/10 bg-black/20 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setPdfIncludeMacros(true)}
+                          className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                            pdfIncludeMacros
+                              ? "bg-brand-accent text-black"
+                              : "text-brand-muted hover:bg-white/10 hover:text-brand-text"
+                          }`}
+                        >
+                          PDF con macros
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPdfIncludeMacros(false)}
+                          className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                            !pdfIncludeMacros
+                              ? "bg-brand-accent text-black"
+                              : "text-brand-muted hover:bg-white/10 hover:text-brand-text"
+                          }`}
+                        >
+                          PDF sin macros
+                        </button>
+                      </div>
                       <div className="flex flex-wrap gap-2">
-                        <BrandButton onClick={() => void saveCurrentPlan(plan)} disabled={saveState === "saving"}>
+                        <BrandButton
+                          onClick={() => void saveCurrentPlan(plan)}
+                          disabled={saveState === "saving" || isCurrentPlanPublished}
+                        >
                           <Save className="mr-2 h-4 w-4" />
-                          Guardar borrador
+                          Guardar revision
                         </BrandButton>
                         <BrandButton onClick={generatePreview} disabled={previewLoading || saveState === "saving"}>
                           {previewLoading ? (
@@ -2420,10 +2885,21 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                   <div className="space-y-4">
                     {plan.meals.map((meal, mealIndex) => {
                       const totals = calculateMealTotals(meal.entries);
-                      const search = foodSearches[meal.id] ?? "";
+                      const mealOptionGroups = getMealOptionGroups(meal);
+                      const availableOptionNumbers = mealOptionGroups.map((group) => group.optionNumber);
+                      const selectedOptionCandidate = normalizeMealOption(mealSelectedOptions[meal.id] ?? 1);
+                      const selectedOptionNumber = availableOptionNumbers.includes(selectedOptionCandidate)
+                        ? selectedOptionCandidate
+                        : 1;
+                      const optionKey = buildMealOptionKey(meal.id, selectedOptionNumber);
+                      const search = foodSearches[optionKey] ?? "";
                       const results = search.trim()
                         ? activeFoods
-                            .filter((food) => food.name.toLowerCase().includes(search.trim().toLowerCase()))
+                            .filter(
+                              (food) =>
+                                food.name.toLowerCase().includes(search.trim().toLowerCase()) ||
+                                food.category.toLowerCase().includes(search.trim().toLowerCase())
+                            )
                             .slice(0, 8)
                         : [];
 
@@ -2436,7 +2912,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                 onChange={(event) =>
                                   updateMeal(meal.id, (current) => ({ ...current, name: event.target.value }))
                                 }
-                                className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-base font-semibold text-brand-text outline-none transition focus:border-brand-accent/60"
+                                disabled={isCurrentPlanPublished}
+                                className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-base font-semibold text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                               />
                               <label className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-muted">
                                 <input
@@ -2448,6 +2925,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                       included: event.target.checked
                                     }))
                                   }
+                                  disabled={isCurrentPlanPublished}
                                   className="h-4 w-4 rounded border-white/20 bg-black/20 accent-brand-accent"
                                 />
                                 Suma al total
@@ -2457,7 +2935,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                               <button
                                 type="button"
                                 onClick={() => moveMeal(meal.id, -1)}
-                                disabled={mealIndex === 0}
+                                disabled={mealIndex === 0 || isCurrentPlanPublished}
                                 className="inline-flex aspect-square h-10 items-center justify-center rounded-xl border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Subir comida"
                               >
@@ -2466,7 +2944,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                               <button
                                 type="button"
                                 onClick={() => moveMeal(meal.id, 1)}
-                                disabled={mealIndex === plan.meals.length - 1}
+                                disabled={mealIndex === plan.meals.length - 1 || isCurrentPlanPublished}
                                 className="inline-flex aspect-square h-10 items-center justify-center rounded-xl border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Bajar comida"
                               >
@@ -2475,15 +2953,26 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                               <button
                                 type="button"
                                 onClick={() => duplicateMeal(meal.id)}
-                                className="inline-flex aspect-square h-10 items-center justify-center rounded-xl border border-white/15 text-brand-text transition hover:bg-white/10"
+                                disabled={isCurrentPlanPublished}
+                                className="inline-flex aspect-square h-10 items-center justify-center rounded-xl border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Duplicar comida"
                               >
                                 <Copy className="h-4 w-4" />
                               </button>
                               <button
                                 type="button"
+                                onClick={() => addMealOption(meal.id)}
+                                disabled={isCurrentPlanPublished || mealOptionGroups.length >= 20}
+                                className="inline-flex items-center justify-center gap-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 px-3 py-2 text-xs font-semibold text-brand-text transition hover:bg-brand-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                Opcion
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => removeMeal(meal.id)}
-                                className="inline-flex aspect-square h-10 items-center justify-center rounded-xl border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20"
+                                disabled={isCurrentPlanPublished || plan.meals.length <= 1}
+                                className="inline-flex aspect-square h-10 items-center justify-center rounded-xl border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Eliminar comida"
                               >
                                 <Trash2 className="h-4 w-4" />
@@ -2507,11 +2996,12 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                               onChange={(event) =>
                                 updateMeal(meal.id, (current) => ({ ...current, notes: event.target.value }))
                               }
-                              className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                              disabled={isCurrentPlanPublished}
+                              className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                             />
                           </label>
 
-                          <div className="mt-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_120px_150px]">
+                          <div className="mt-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_110px_120px_150px]">
                             <div className="relative">
                               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-muted" />
                               <input
@@ -2519,11 +3009,12 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                 onChange={(event) =>
                                   setFoodSearches((current) => ({
                                     ...current,
-                                    [meal.id]: event.target.value
+                                    [optionKey]: event.target.value
                                   }))
                                 }
                                 placeholder="Buscar alimento"
-                                className="w-full rounded-xl border border-white/10 bg-black/20 py-2.5 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                disabled={isCurrentPlanPublished}
+                                className="w-full rounded-xl border border-white/10 bg-black/20 py-2.5 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                               />
                               {search.trim() ? (
                                 <div className="absolute left-0 right-0 top-full z-20 mt-2 max-h-72 overflow-auto rounded-xl border border-white/10 bg-[#111114] p-2 shadow-glow">
@@ -2534,8 +3025,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                         <button
                                           key={food.id}
                                           type="button"
-                                          onClick={() => addFoodToMeal(meal.id, food)}
-                                          className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-white/10"
+                                          onClick={() => addFoodToMeal(meal.id, food, selectedOptionNumber)}
+                                          disabled={isCurrentPlanPublished}
+                                          className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
                                           <span className="flex min-w-0 items-center gap-2">
                                             <span
@@ -2570,8 +3062,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                   ) : (
                                     <button
                                       type="button"
-                                      onClick={() => startQuickFood(meal.id)}
-                                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-brand-text transition hover:bg-white/10"
+                                      onClick={() => startQuickFood(meal.id, selectedOptionNumber)}
+                                      disabled={isCurrentPlanPublished}
+                                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                       <Plus className="h-4 w-4 text-brand-accent" />
                                       Crear nuevo alimento
@@ -2580,42 +3073,126 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                 </div>
                               ) : null}
                             </div>
+                            <select
+                              value={selectedOptionNumber}
+                              onChange={(event) =>
+                                setMealSelectedOptions((current) => ({
+                                  ...current,
+                                  [meal.id]: event.target.value
+                                }))
+                              }
+                              disabled={isCurrentPlanPublished}
+                              className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                              aria-label="Opcion de comida"
+                            >
+                              {availableOptionNumbers.map((optionNumber) => (
+                                <option key={optionNumber} value={optionNumber}>
+                                  Opcion {optionNumber}
+                                </option>
+                              ))}
+                            </select>
                             <input
                               type="text"
                               inputMode="numeric"
                               pattern="[0-9]*"
-                              aria-label="Cantidad en gramos"
-                              value={foodQuantities[meal.id] ?? "100"}
+                              aria-label="Cantidad"
+                              value={foodQuantities[optionKey] ?? "100"}
                               onChange={(event) =>
                                 setFoodQuantities((current) => ({
                                   ...current,
-                                  [meal.id]: sanitizeIntegerInput(event.target.value)
+                                  [optionKey]: sanitizeIntegerInput(event.target.value)
                                 }))
                               }
                               onBlur={() =>
                                 setFoodQuantities((current) => ({
                                   ...current,
-                                  [meal.id]: current[meal.id]?.trim() ? current[meal.id] : "100"
+                                  [optionKey]: current[optionKey]?.trim() ? current[optionKey] : "100"
                                 }))
                               }
-                              className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                              disabled={isCurrentPlanPublished}
+                              className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                             />
                             <button
                               type="button"
-                              onClick={() => startQuickFood(meal.id)}
-                              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-brand-text transition hover:border-brand-accent/50 hover:bg-brand-accent/10"
+                              onClick={() => startQuickFood(meal.id, selectedOptionNumber)}
+                              disabled={isCurrentPlanPublished}
+                              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-brand-text transition hover:border-brand-accent/50 hover:bg-brand-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Plus className="h-4 w-4" />
                               Alimento
                             </button>
                           </div>
 
-                          <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
-                            <table className="min-w-[980px] w-full text-sm">
+                          <div className="mt-4 space-y-3">
+                            {mealOptionGroups.map(({ optionNumber, entries }) => {
+                              const optionTotals = calculateMealOptionTotals(meal.entries, optionNumber);
+                              const isReferenceOption = optionNumber === 1;
+
+                              return (
+                                <div
+                                  key={optionNumber}
+                                  className={`rounded-2xl border p-3 ${
+                                    isReferenceOption
+                                      ? "border-brand-accent/35 bg-brand-accent/10"
+                                      : "border-white/10 bg-black/20"
+                                  }`}
+                                >
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                      <p className="text-sm font-semibold text-brand-text">
+                                        Opcion {optionNumber}
+                                        {isReferenceOption ? " - referencia" : ""}
+                                      </p>
+                                      <p className="mt-1 text-xs text-brand-muted">
+                                        {entries.length} alimentos
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <SmallTotal
+                                        label="Kcal"
+                                        value={optionTotals.caloriesKcal}
+                                        unit=""
+                                        alert={!isReferenceOption && optionTotals.caloriesKcal > totals.caloriesKcal}
+                                      />
+                                      <SmallTotal
+                                        label="P"
+                                        value={optionTotals.proteinG}
+                                        unit="g"
+                                        alert={!isReferenceOption && optionTotals.proteinG > totals.proteinG}
+                                      />
+                                      <SmallTotal
+                                        label="C"
+                                        value={optionTotals.carbsG}
+                                        unit="g"
+                                        alert={!isReferenceOption && optionTotals.carbsG > totals.carbsG}
+                                      />
+                                      <SmallTotal
+                                        label="G"
+                                        value={optionTotals.fatG}
+                                        unit="g"
+                                        alert={!isReferenceOption && optionTotals.fatG > totals.fatG}
+                                      />
+                                      {!isReferenceOption ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => removeMealOption(meal.id, optionNumber)}
+                                          disabled={isCurrentPlanPublished}
+                                          className="inline-flex aspect-square h-8 w-8 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                          aria-label={`Eliminar opcion ${optionNumber}`}
+                                          title="Eliminar opcion"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
+                                    <table className="min-w-[1080px] w-full text-sm">
                               <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
                                 <tr>
                                   <th className="px-3 py-2 text-left">Alimento</th>
-                                  <th className="px-3 py-2 text-right">Cantidad(g)</th>
+                                  <th className="px-3 py-2 text-right">Cantidad</th>
                                   <th className="px-3 py-2 text-right">Kcal</th>
                                   <th className="px-3 py-2 text-right">P</th>
                                   <th className="px-3 py-2 text-right">C</th>
@@ -2627,12 +3204,17 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                 </tr>
                               </thead>
                               <tbody>
-                                {meal.entries.map((entry) => {
+                                {entries.map((entry) => {
                                   const entryTotals = calculateEntryTotals(entry);
                                   const entryCatalogFood = foods.find((food) => food.id === entry.foodId);
+                                  const entryFood = getFoodLikeForEntry(entry, foods);
                                   const entryConflict = entryCatalogFood
                                     ? getRestrictionConflict(entryCatalogFood, selectedAthleteRestrictions)
                                     : null;
+                                  const entryQuantityUnit = normalizeQuantityUnitForFood(
+                                    entryFood,
+                                    normalizeQuantityUnit(entry.quantityUnit)
+                                  );
                                   const alternatives = [...(entry.alternatives ?? [])].sort(
                                     (a, b) => a.position - b.position
                                   );
@@ -2682,7 +3264,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                             <button
                                               type="button"
                                               onClick={() => openAlternativeSearch(entry.id)}
-                                              className="inline-flex aspect-square h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-brand-accent/35 bg-brand-accent/10 text-brand-text transition hover:bg-brand-accent/20"
+                                              disabled={isCurrentPlanPublished}
+                                              className="inline-flex aspect-square h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-brand-accent/35 bg-brand-accent/10 text-brand-text transition hover:bg-brand-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
                                               aria-label={`Añadir alternativa a ${entry.foodName}`}
                                               title="Añadir alternativa"
                                             >
@@ -2691,32 +3274,56 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                           </div>
                                         </td>
                                         <td className="px-3 py-2 text-right">
-                                          <input
-                                            type="text"
-                                            inputMode="numeric"
-                                            pattern="[0-9]*"
-                                            value={getIntegerInputValue(
-                                              `${entry.id}:quantityG`,
-                                              entry.quantityG,
-                                              1,
-                                              10000
-                                            )}
-                                            onChange={(event) =>
-                                              handleIntegerInputChange(
+                                          <div className="ml-auto flex justify-end gap-1">
+                                            <input
+                                              type="text"
+                                              inputMode="numeric"
+                                              pattern="[0-9]*"
+                                              value={getIntegerInputValue(
                                                 `${entry.id}:quantityG`,
-                                                event.target.value,
+                                                entry.quantityG,
                                                 1,
-                                                10000,
-                                                (value) =>
-                                                  updateEntry(meal.id, entry.id, (current) => ({
-                                                    ...current,
-                                                    quantityG: value
-                                                  }))
-                                              )
-                                            }
-                                            onBlur={() => clearIntegerInputDraft(`${entry.id}:quantityG`)}
-                                            className="ml-auto w-24 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                                          />
+                                                10000
+                                              )}
+                                              onChange={(event) =>
+                                                handleIntegerInputChange(
+                                                  `${entry.id}:quantityG`,
+                                                  event.target.value,
+                                                  1,
+                                                  10000,
+                                                  (value) =>
+                                                    updateEntry(meal.id, entry.id, (current) => ({
+                                                      ...current,
+                                                      quantityG: value
+                                                    }))
+                                                )
+                                              }
+                                              onBlur={() => clearIntegerInputDraft(`${entry.id}:quantityG`)}
+                                              disabled={isCurrentPlanPublished}
+                                              className="w-20 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                                            />
+                                            <select
+                                              value={entryQuantityUnit}
+                                              onChange={(event) =>
+                                                updateEntry(meal.id, entry.id, (current) => ({
+                                                  ...current,
+                                                  ...convertQuantityUnitForFood(
+                                                    current,
+                                                    getFoodLikeForEntry(current, foods),
+                                                    event.target.value as NutritionQuantityUnit
+                                                  )
+                                                }))
+                                              }
+                                              disabled={isCurrentPlanPublished}
+                                              className="w-24 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                              {getQuantityUnitOptionsForFood(entryFood).map((option) => (
+                                                <option key={option.value} value={option.value}>
+                                                  {option.label}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </div>
                                         </td>
                                         <td className="px-3 py-2 text-right text-brand-text">
                                           {formatNumber(entryTotals.caloriesKcal, 0)}
@@ -2746,14 +3353,16 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                               }))
                                             }
                                             placeholder={entry.foodName}
-                                            className="w-full rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                            disabled={isCurrentPlanPublished}
+                                            className="w-full rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                           />
                                         </td>
                                         <td className="px-3 py-2">
                                           <button
                                             type="button"
                                             onClick={() => removeEntry(meal.id, entry.id)}
-                                            className="inline-flex aspect-square h-8 w-8 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20"
+                                            disabled={isCurrentPlanPublished}
+                                            className="inline-flex aspect-square h-8 w-8 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                                             aria-label={`Eliminar ${entry.foodName}`}
                                             title="Eliminar"
                                           >
@@ -2769,6 +3378,11 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                 const alternativeTotals = calculateEntryTotals(alternative);
                                                 const alternativeCatalogFood = foods.find(
                                                   (food) => food.id === alternative.foodId
+                                                );
+                                                const alternativeFood = getFoodLikeForEntry(alternative, foods);
+                                                const alternativeQuantityUnit = normalizeQuantityUnitForFood(
+                                                  alternativeFood,
+                                                  normalizeQuantityUnit(alternative.quantityUnit)
                                                 );
                                                 const alternativeConflict = alternativeCatalogFood
                                                   ? getRestrictionConflict(
@@ -2809,8 +3423,9 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                         </p>
                                                       </div>
                                                     </div>
-                                                    <label className="w-full text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted lg:w-28">
-                                                      Cantidad(g)
+                                                    <label className="w-full text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted lg:w-52">
+                                                      Cantidad
+                                                      <div className="mt-1 flex gap-1">
                                                       <input
                                                         type="text"
                                                         inputMode="numeric"
@@ -2842,8 +3457,36 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                         onBlur={() =>
                                                           clearIntegerInputDraft(`${alternative.id}:quantityG`)
                                                         }
-                                                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                                        disabled={isCurrentPlanPublished}
+                                                        className="w-20 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                                       />
+                                                      <select
+                                                        value={alternativeQuantityUnit}
+                                                        onChange={(event) =>
+                                                          updateAlternative(
+                                                            meal.id,
+                                                            entry.id,
+                                                            alternative.id,
+                                                            (current) => ({
+                                                              ...current,
+                                                              ...convertQuantityUnitForFood(
+                                                                current,
+                                                                getFoodLikeForEntry(current, foods),
+                                                                event.target.value as NutritionQuantityUnit
+                                                              )
+                                                            })
+                                                          )
+                                                        }
+                                                        disabled={isCurrentPlanPublished}
+                                                        className="w-24 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                                                      >
+                                                        {getQuantityUnitOptionsForFood(alternativeFood).map((option) => (
+                                                          <option key={option.value} value={option.value}>
+                                                            {option.label}
+                                                          </option>
+                                                        ))}
+                                                      </select>
+                                                      </div>
                                                     </label>
                                                     <div className="grid flex-[1.8] grid-cols-3 gap-2 text-xs sm:grid-cols-6">
                                                       <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-text">
@@ -2868,7 +3511,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                     <button
                                                       type="button"
                                                       onClick={() => removeAlternative(meal.id, entry.id, alternative.id)}
-                                                      className="inline-flex aspect-square h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20"
+                                                      disabled={isCurrentPlanPublished}
+                                                      className="inline-flex aspect-square h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                                                       aria-label={`Eliminar alternativa ${alternative.foodName}`}
                                                       title="Eliminar alternativa"
                                                     >
@@ -2892,7 +3536,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                           }))
                                                         }
                                                         placeholder="Buscar alimento alternativo"
-                                                        className="w-full rounded-lg border border-white/10 bg-black/25 py-2 pl-9 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                                                        disabled={isCurrentPlanPublished}
+                                                        className="w-full rounded-lg border border-white/10 bg-black/25 py-2 pl-9 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                                       />
                                                     </div>
                                                     <button
@@ -2913,19 +3558,27 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                           food,
                                                           selectedAthleteRestrictions
                                                         );
+                                                        const quantityUnit = getDefaultQuantityUnitForFood(food);
+                                                        const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
+                                                        const caloriesPerUnit = foodCaloriesPer100g * (unitWeightG / 100);
                                                         const suggestedQuantity =
-                                                          entryTotals.caloriesKcal > 0 && foodCaloriesPer100g > 0
-                                                            ? normalizeQuantityG(
-                                                                (entryTotals.caloriesKcal / foodCaloriesPer100g) * 100
-                                                              )
-                                                            : normalizeQuantityG(entry.quantityG);
+                                                          quantityUnit === "g"
+                                                            ? entryTotals.caloriesKcal > 0 && foodCaloriesPer100g > 0
+                                                              ? normalizeQuantityG(
+                                                                  (entryTotals.caloriesKcal / foodCaloriesPer100g) * 100
+                                                                )
+                                                              : normalizeQuantityG(getEffectiveQuantityG(entry))
+                                                            : entryTotals.caloriesKcal > 0 && caloriesPerUnit > 0
+                                                              ? normalizeQuantityG(entryTotals.caloriesKcal / caloriesPerUnit)
+                                                              : 1;
 
                                                         return (
                                                           <button
                                                             key={food.id}
                                                             type="button"
                                                             onClick={() => addAlternativeToEntry(meal.id, entry.id, food)}
-                                                            className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-brand-text transition hover:bg-white/10"
+                                                            disabled={isCurrentPlanPublished}
+                                                            className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
                                                           >
                                                             <span className="flex min-w-0 items-center gap-2">
                                                               <span
@@ -2949,7 +3602,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                                               <span className="min-w-0 truncate">{food.name}</span>
                                                             </span>
                                                             <span className="shrink-0 text-xs text-brand-muted">
-                                                              {formatNumber(suggestedQuantity, 0)} g -{" "}
+                                                              {formatDisplayQuantity({ quantityG: suggestedQuantity, quantityUnit, unitWeightG })} -{" "}
                                                               {formatNumber(foodCaloriesPer100g, 0)} kcal/100g
                                                             </span>
                                                           </button>
@@ -2968,7 +3621,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                     </Fragment>
                                   );
                                 })}
-                                {!meal.entries.length ? (
+                                {!entries.length ? (
                                   <tr>
                                     <td colSpan={10} className="px-3 py-6 text-center text-sm text-brand-muted">
                                       Sin alimentos.
@@ -2977,6 +3630,10 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                                 ) : null}
                               </tbody>
                             </table>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </article>
                       );
@@ -2985,7 +3642,8 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                     <button
                       type="button"
                       onClick={addMeal}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-brand-accent/45 bg-brand-accent/10 px-4 py-4 text-sm font-semibold text-brand-text transition hover:bg-brand-accent/15"
+                      disabled={isCurrentPlanPublished}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-brand-accent/45 bg-brand-accent/10 px-4 py-4 text-sm font-semibold text-brand-text transition hover:bg-brand-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Plus className="h-4 w-4" />
                       Anadir comida
@@ -3006,6 +3664,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                   type="button"
                   onClick={() => {
                     setQuickFoodMealId(null);
+                    setQuickFoodOptionNumber(1);
                     setFoodForm(EMPTY_FOOD_FORM);
                   }}
                   className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-brand-text transition hover:bg-white/10"
@@ -3058,7 +3717,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                   onToggle={toggleFoodRestrictionTag}
                 />
                 <BrandButton
-                  onClick={() => void submitFoodForm({ mealId: quickFoodMealId })}
+                  onClick={() => void submitFoodForm({ mealId: quickFoodMealId, optionNumber: quickFoodOptionNumber })}
                   disabled={foodSubmitting}
                   className="w-full"
                 >
@@ -3087,7 +3746,7 @@ export function AdminNutritionManagementShell({ user }: AdminNutritionManagement
                     <Download className="h-4 w-4" />
                     Descargar PDF
                   </a>
-                  <BrandButton onClick={publishPlan} disabled={publishing}>
+                  <BrandButton onClick={publishPlan} disabled={publishing || planMode === "published"}>
                     {publishing ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     ) : (

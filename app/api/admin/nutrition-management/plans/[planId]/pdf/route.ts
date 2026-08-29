@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import {
   buildNutritionPlanPdfFileName,
+  getAthleteRoadmapSteps,
   getNutritionPlanById,
+  getPublishedNutritionPlanSnapshot,
   listNutritionPlansForAthlete
 } from "@/lib/google/nutrition-management";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
@@ -18,7 +20,22 @@ function isValidId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,}$/.test(value);
 }
 
-export async function POST(_req: Request, context: RouteContext) {
+async function parsePdfOptions(req: Request): Promise<{
+  includeMacros: boolean;
+  mode: "review" | "published";
+}> {
+  try {
+    const body = (await req.json()) as { includeMacros?: unknown; mode?: unknown };
+    return {
+      includeMacros: body.includeMacros !== false,
+      mode: body.mode === "published" ? "published" : "review"
+    };
+  } catch {
+    return { includeMacros: true, mode: "review" };
+  }
+}
+
+export async function POST(req: Request, context: RouteContext) {
   const auth = await requireAdminSession();
   if (!auth.session) return auth.response;
 
@@ -28,11 +45,22 @@ export async function POST(_req: Request, context: RouteContext) {
   }
 
   try {
-    const plan = await getNutritionPlanById(planId);
+    const options = await parsePdfOptions(req);
+    const plan =
+      options.mode === "published"
+        ? (await getPublishedNutritionPlanSnapshot(planId)) ?? (await getNutritionPlanById(planId))
+        : await getNutritionPlanById(planId);
     if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
 
-    const comparisonPlans = await listNutritionPlansForAthlete(plan.athleteUsername);
-    const pdf = await renderNutritionPlanPdf(plan, { comparisonPlans });
+    const [comparisonPlans, roadmapSteps] = await Promise.all([
+      listNutritionPlansForAthlete(plan.athleteUsername),
+      getAthleteRoadmapSteps(plan.athleteUsername)
+    ]);
+    const pdf = await renderNutritionPlanPdf(plan, {
+      comparisonPlans,
+      includeMacros: options.includeMacros,
+      roadmapSteps
+    });
     const fileName = buildNutritionPlanPdfFileName(plan);
 
     return new NextResponse(new Uint8Array(pdf), {

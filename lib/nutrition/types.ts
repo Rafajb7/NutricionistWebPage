@@ -1,6 +1,10 @@
-export type NutritionPlanStatus = "draft" | "review" | "published";
+export type NutritionPlanStatus = "review" | "published";
 
 export type NutritionMacroKey = "protein" | "carbs" | "fat";
+
+export type NutritionQuantityUnit = "g" | "piece" | "serving";
+
+export type AthleteRoadmapStepStatus = "completed" | "current" | "pending";
 
 export type NutritionFoodRestrictionTag =
   | "gluten"
@@ -75,6 +79,8 @@ export type NutritionPlanSummary = {
   targetCarbsG: number;
   targetFatG: number;
   notes: string;
+  supplementation: string;
+  recommendations: string;
   createdAt: string;
   updatedAt: string;
   publishedAt: string;
@@ -99,6 +105,8 @@ export type NutritionPlanFoodAlternative = {
   foodId: string;
   foodName: string;
   quantityG: number;
+  quantityUnit: NutritionQuantityUnit;
+  unitWeightG: number;
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
@@ -117,12 +125,15 @@ export type NutritionPlanFoodEntry = {
   foodId: string;
   foodName: string;
   quantityG: number;
+  quantityUnit: NutritionQuantityUnit;
+  unitWeightG: number;
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
   sodiumPer100g: number;
   waterPer100g: number;
   position: number;
+  mealOption: number;
   customText: string;
   alternatives: NutritionPlanFoodAlternative[];
   createdAt: string;
@@ -145,6 +156,19 @@ export type AthletePrivateNote = {
   updatedAt: string;
 };
 
+export type AthleteRoadmapStep = {
+  id: string;
+  athleteUsername: string;
+  title: string;
+  description: string;
+  status: AthleteRoadmapStepStatus;
+  startDate: string;
+  endDate: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type NutritionMealCompletion = {
   id: string;
   athleteUsername: string;
@@ -157,8 +181,17 @@ export type NutritionMealCompletion = {
 
 export type NutritionChangeRequestStatus = "pending" | "approved" | "denied";
 
+export type NutritionChangeRequestType =
+  | "food_swap"
+  | "calorie_increase"
+  | "calorie_decrease"
+  | "meal_add"
+  | "meal_remove"
+  | "meal_redistribution";
+
 export type NutritionChangeRequest = {
   id: string;
+  requestType: NutritionChangeRequestType;
   athleteUsername: string;
   athleteName: string;
   planId: string;
@@ -172,6 +205,7 @@ export type NutritionChangeRequest = {
   requestedFoodId: string;
   requestedFoodName: string;
   requestedQuantityG: number;
+  requestSummary: string;
   status: NutritionChangeRequestStatus;
   athleteNotes: string;
   adminNotes: string;

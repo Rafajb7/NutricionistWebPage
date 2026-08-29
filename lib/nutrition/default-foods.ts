@@ -202,5 +202,7 @@ export const DEFAULT_NUTRITION_FOODS: DefaultNutritionFood[] = [
   { id: "mercadona-claras-huevo-pasteurizadas", name: "Claras de huevo pasteurizadas (Mercadona)", category: "Mercadona", proteinPer100g: 11, carbsPer100g: 0.5, fatPer100g: 0.5, sodiumPer100g: 176, waterPer100g: 87.5 },
   { id: "mercadona-queso-fresco-batido-0", name: "Queso fresco batido 0% (Mercadona)", category: "Mercadona", proteinPer100g: 8, carbsPer100g: 3.5, fatPer100g: 0.1, sodiumPer100g: 40, waterPer100g: 88.3 },
   { id: "mercadona-yogur-griego-ligero-natural", name: "Yogur griego ligero natural (Mercadona)", category: "Mercadona", proteinPer100g: 5.8, carbsPer100g: 4.7, fatPer100g: 2, sodiumPer100g: 64, waterPer100g: 86.9 },
-  { id: "mercadona-yogur-griego-natural", name: "Yogur griego natural (Mercadona)", category: "Mercadona", proteinPer100g: 3.9, carbsPer100g: 3.9, fatPer100g: 10.8, sodiumPer100g: 48, waterPer100g: 81.3 }
+  { id: "mercadona-yogur-griego-natural", name: "Yogur griego natural (Mercadona)", category: "Mercadona", proteinPer100g: 3.9, carbsPer100g: 3.9, fatPer100g: 10.8, sodiumPer100g: 48, waterPer100g: 81.3 },
+  { id: "default-racion-fruta", name: "Racion de fruta", category: "Frutas", proteinPer100g: 0.7, carbsPer100g: 14.5, fatPer100g: 0.3, sodiumPer100g: 1, waterPer100g: 84.2 },
+  { id: "default-racion-verdura", name: "Racion de verdura", category: "Verduras", proteinPer100g: 1.8, carbsPer100g: 6, fatPer100g: 0.2, sodiumPer100g: 25, waterPer100g: 91.5 }
 ];

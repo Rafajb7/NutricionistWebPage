@@ -4,6 +4,7 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import {
   deleteNutritionPlanById,
   getNutritionPlanById,
+  getPublishedNutritionPlanSnapshot,
   saveNutritionPlan
 } from "@/lib/google/nutrition-management";
 import { deleteDriveFileById } from "@/lib/google/drive";
@@ -30,9 +31,12 @@ export async function GET(_req: Request, context: RouteContext) {
   }
 
   try {
-    const plan = await getNutritionPlanById(planId);
+    const [plan, publishedPlan] = await Promise.all([
+      getNutritionPlanById(planId),
+      getPublishedNutritionPlanSnapshot(planId)
+    ]);
     if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
-    return NextResponse.json({ plan });
+    return NextResponse.json({ plan, publishedPlan });
   } catch (error) {
     logError("Failed to load nutrition plan", { username: auth.session.username, planId, error });
     return NextResponse.json({ error: "Could not load nutrition plan." }, { status: 500 });

@@ -3,6 +3,7 @@ import type {
   NutritionPlanFull,
   NutritionTotals
 } from "@/lib/nutrition/types";
+import { getEffectiveQuantityG } from "@/lib/nutrition/quantity-units";
 
 export const EMPTY_NUTRITION_TOTALS: NutritionTotals = {
   proteinG: 0,
@@ -33,8 +34,11 @@ export function calculateEntryTotals(entry: Pick<
   | "fatPer100g"
   | "sodiumPer100g"
   | "waterPer100g"
->): NutritionTotals {
-  const ratio = Math.max(0, entry.quantityG) / 100;
+> & {
+  quantityUnit?: NutritionPlanFoodEntry["quantityUnit"];
+  unitWeightG?: number;
+}): NutritionTotals {
+  const ratio = getEffectiveQuantityG(entry) / 100;
   const proteinG = entry.proteinPer100g * ratio;
   const carbsG = entry.carbsPer100g * ratio;
   const fatG = entry.fatPer100g * ratio;
@@ -71,11 +75,30 @@ export function addNutritionTotals(items: NutritionTotals[]): NutritionTotals {
 }
 
 export function calculateMealTotals(entries: NutritionPlanFoodEntry[]): NutritionTotals {
-  return addNutritionTotals(entries.map(calculateEntryTotals));
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  return addNutritionTotals(
+    safeEntries
+      .filter((entry) => !entry.mealOption || entry.mealOption === 1)
+      .map(calculateEntryTotals)
+  );
+}
+
+export function calculateMealOptionTotals(
+  entries: NutritionPlanFoodEntry[],
+  optionNumber: number
+): NutritionTotals {
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const targetOption = Math.max(1, Math.round(optionNumber));
+  return addNutritionTotals(
+    safeEntries
+      .filter((entry) => (entry.mealOption || 1) === targetOption)
+      .map(calculateEntryTotals)
+  );
 }
 
 export function calculatePlanTotals(plan: NutritionPlanFull): NutritionTotals {
-  const mealTotals = plan.meals
+  const meals = Array.isArray(plan.meals) ? plan.meals : [];
+  const mealTotals = meals
     .filter((meal) => meal.included)
     .map((meal) => calculateMealTotals(meal.entries));
   return addNutritionTotals(mealTotals);

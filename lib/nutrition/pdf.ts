@@ -4,11 +4,19 @@ import PDFDocument from "pdfkit";
 import {
   ATWATER_KCAL_PER_GRAM,
   calculateEntryTotals,
+  calculateMealOptionTotals,
   calculateMealTotals,
   calculatePlanTotals,
   roundNutritionValue
 } from "@/lib/nutrition/calculations";
-import type { NutritionPlanFull, NutritionTotals } from "@/lib/nutrition/types";
+import type {
+  AthleteRoadmapStep,
+  NutritionPlanFoodAlternative,
+  NutritionPlanFoodEntry,
+  NutritionPlanFull,
+  NutritionQuantityUnit,
+  NutritionTotals
+} from "@/lib/nutrition/types";
 
 type PdfTableColumn = {
   label: string;
@@ -18,6 +26,8 @@ type PdfTableColumn = {
 
 type NutritionPlanPdfOptions = {
   comparisonPlans?: NutritionPlanFull[];
+  includeMacros?: boolean;
+  roadmapSteps?: AthleteRoadmapStep[];
 };
 
 type MacroChartKey = "proteinG" | "carbsG" | "fatG";
@@ -97,24 +107,76 @@ function normalizePdfQuantityG(value: number): number {
   return Math.min(10000, Math.max(1, Math.round(value)));
 }
 
+function normalizePdfQuantityUnit(value: unknown): NutritionQuantityUnit {
+  if (value === "piece" || value === "serving") return value;
+  return "g";
+}
+
+function normalizePdfUnitWeightG(value: unknown, unit: NutritionQuantityUnit): number {
+  if (unit === "g") return 1;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 150;
+  return Math.min(10000, Math.max(1, Math.round(parsed)));
+}
+
+function normalizePdfMealOption(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.min(20, Math.max(1, Math.round(parsed)));
+}
+
 function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull {
+  const meals = Array.isArray(plan.meals) ? plan.meals : [];
+
   return {
     ...plan,
+    supplementation: plan.supplementation ?? "",
+    recommendations: plan.recommendations ?? "",
     targetProteinG: Number.isFinite(plan.targetProteinG) ? Math.max(0, Math.round(plan.targetProteinG)) : 0,
     targetCarbsG: Number.isFinite(plan.targetCarbsG) ? Math.max(0, Math.round(plan.targetCarbsG)) : 0,
     targetFatG: Number.isFinite(plan.targetFatG) ? Math.max(0, Math.round(plan.targetFatG)) : 0,
-    meals: plan.meals.map((meal) => ({
+    meals: meals.map((meal) => ({
       ...meal,
-      entries: meal.entries.map((entry) => ({
-        ...entry,
-        quantityG: normalizePdfQuantityG(entry.quantityG),
-        alternatives: (entry.alternatives ?? []).map((alternative) => ({
-          ...alternative,
-          quantityG: normalizePdfQuantityG(alternative.quantityG)
-        }))
-      }))
+      entries: (Array.isArray(meal.entries) ? meal.entries : [])
+        .map((entry) => {
+          const quantityUnit = normalizePdfQuantityUnit(entry.quantityUnit);
+          return {
+            ...entry,
+            quantityG: normalizePdfQuantityG(entry.quantityG),
+            quantityUnit,
+            unitWeightG: normalizePdfUnitWeightG(entry.unitWeightG, quantityUnit),
+            mealOption: normalizePdfMealOption(entry.mealOption),
+            alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) => {
+              const alternativeQuantityUnit = normalizePdfQuantityUnit(alternative.quantityUnit);
+              return {
+                ...alternative,
+                quantityG: normalizePdfQuantityG(alternative.quantityG),
+                quantityUnit: alternativeQuantityUnit,
+                unitWeightG: normalizePdfUnitWeightG(alternative.unitWeightG, alternativeQuantityUnit)
+              };
+            })
+          };
+        })
+        .sort((a, b) => {
+          const optionDiff = normalizePdfMealOption(a.mealOption) - normalizePdfMealOption(b.mealOption);
+          if (optionDiff !== 0) return optionDiff;
+          return a.position - b.position;
+        })
     }))
   };
+}
+
+function getQuantityUnitLabel(unit: NutritionQuantityUnit, value: number): string {
+  if (unit === "piece") return value === 1 ? "pieza" : "piezas";
+  if (unit === "serving") return value === 1 ? "racion" : "raciones";
+  return "g";
+}
+
+function formatQuantity(
+  item: Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, "quantityG" | "quantityUnit">
+): string {
+  const quantity = normalizePdfQuantityG(item.quantityG);
+  return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(normalizePdfQuantityUnit(item.quantityUnit), quantity)}`;
 }
 
 function getNiceAxisMax(value: number): number {
@@ -460,13 +522,13 @@ function drawPlanSectionCover(
   plan: NutritionPlanFull,
   generatedAt: string,
   index: number,
-  count: number
+  count: number,
+  includeMacros: boolean
 ) {
   const left = doc.page.margins.left;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const title = uppercase(getPlanLabel(plan));
   const titleSize = fitFontSize(doc, title, "Helvetica-Bold", pageWidth, 48, 22, 0.4);
-  const totals = calculatePlanTotals(plan);
   const visibleMeals = getVisibleMeals(plan);
   const tagWidth = 164;
 
@@ -483,33 +545,18 @@ function drawPlanSectionCover(
 
   const detailY = doc.y + 34;
   const gap = 12;
-  const detailWidth = (pageWidth - gap * 3) / 4;
-  drawMetricCard(doc, "Kcal", formatNumber(totals.caloriesKcal, 0), "Energia total", left, detailY, detailWidth);
-  drawMetricCard(doc, "Menus", String(visibleMeals.length), "Comidas definidas", left + detailWidth + gap, detailY, detailWidth);
-  drawMetricCard(doc, "Atleta", uppercase(plan.athleteName || plan.athleteUsername), "Nombre del atleta", left + (detailWidth + gap) * 2, detailY, detailWidth);
-  drawMetricCard(doc, "Fecha", formatDate(generatedAt), "Fecha del PDF", left + (detailWidth + gap) * 3, detailY, detailWidth);
-
-  if (plan.notes.trim()) {
-    const notesY = detailY + 98;
-    doc.rect(left, notesY, pageWidth, 116).fill(COLORS.panel);
-    doc.rect(left, notesY, 5, 116).fill(COLORS.yellow);
-    doc
-      .fillColor(COLORS.yellow)
-      .font("Helvetica-Bold")
-      .fontSize(8)
-      .text("OBSERVACIONES DEL PLAN", left + 20, notesY + 16, {
-        width: pageWidth - 40,
-        characterSpacing: 1.4
-      });
-    doc
-      .fillColor(COLORS.white)
-      .font("Helvetica")
-      .fontSize(10)
-      .text(plan.notes, left + 20, notesY + 38, {
-        width: pageWidth - 40,
-        height: 58,
-        lineGap: 3
-      });
+  if (includeMacros) {
+    const totals = calculatePlanTotals(plan);
+    const detailWidth = (pageWidth - gap * 3) / 4;
+    drawMetricCard(doc, "Kcal", formatNumber(totals.caloriesKcal, 0), "Energia total", left, detailY, detailWidth);
+    drawMetricCard(doc, "Menus", String(visibleMeals.length), "Comidas definidas", left + detailWidth + gap, detailY, detailWidth);
+    drawMetricCard(doc, "Atleta", uppercase(plan.athleteName || plan.athleteUsername), "Nombre del atleta", left + (detailWidth + gap) * 2, detailY, detailWidth);
+    drawMetricCard(doc, "Fecha", formatDate(generatedAt), "Fecha del PDF", left + (detailWidth + gap) * 3, detailY, detailWidth);
+  } else {
+    const detailWidth = (pageWidth - gap * 2) / 3;
+    drawMetricCard(doc, "Menus", String(visibleMeals.length), "Comidas definidas", left, detailY, detailWidth);
+    drawMetricCard(doc, "Atleta", uppercase(plan.athleteName || plan.athleteUsername), "Nombre del atleta", left + detailWidth + gap, detailY, detailWidth);
+    drawMetricCard(doc, "Fecha", formatDate(generatedAt), "Fecha del PDF", left + (detailWidth + gap) * 2, detailY, detailWidth);
   }
 }
 
@@ -518,16 +565,25 @@ function drawOverviewMealTable(
   meals: NutritionPlanFull["meals"],
   x: number,
   y: number,
-  tableWidth: number
+  tableWidth: number,
+  includeMacros: boolean
 ): number {
-  const columns: PdfTableColumn[] = [
-    { label: "MENU", width: 270 },
-    { label: "ESTADO", width: 116 },
-    { label: "KCAL", width: 64, align: "right" },
-    { label: "P", width: 54, align: "right" },
-    { label: "C", width: 54, align: "right" },
-    { label: "G", width: 54, align: "right" }
-  ];
+  const columns: PdfTableColumn[] = includeMacros
+    ? [
+        { label: "MENU", width: 230 },
+        { label: "ESTADO", width: 108 },
+        { label: "OPCIONES", width: 62, align: "right" },
+        { label: "KCAL", width: 64, align: "right" },
+        { label: "P", width: 54, align: "right" },
+        { label: "C", width: 54, align: "right" },
+        { label: "G", width: 54, align: "right" }
+      ]
+    : [
+        { label: "MENU", width: 350 },
+        { label: "ESTADO", width: 150 },
+        { label: "OPCIONES", width: 80, align: "right" },
+        { label: "ALIMENTOS", width: 80, align: "right" }
+      ];
   const effectiveWidth = columns.reduce((sum, column) => sum + column.width, 0);
   const offsetX = x + Math.max(0, (tableWidth - effectiveWidth) / 2);
 
@@ -546,17 +602,27 @@ function drawOverviewMealTable(
 
   meals.forEach((meal, index) => {
     const totals = calculateMealTotals(meal.entries);
+    const optionGroups = getPdfMealOptionGroups(meal);
+    const values = includeMacros
+      ? [
+          meal.name,
+          meal.included ? "Suma al total" : "No suma",
+          String(optionGroups.length),
+          formatNumber(totals.caloriesKcal, 0),
+          formatNumber(totals.proteinG),
+          formatNumber(totals.carbsG),
+          formatNumber(totals.fatG)
+        ]
+      : [
+          meal.name,
+          meal.included ? "Incluida" : "No incluida",
+          String(optionGroups.length),
+          String(meal.entries.length)
+        ];
     cursorY += drawTableRow(
       doc,
       columns,
-      [
-        meal.name,
-        meal.included ? "Suma al total" : "No suma",
-        formatNumber(totals.caloriesKcal, 0),
-        formatNumber(totals.proteinG),
-        formatNumber(totals.carbsG),
-        formatNumber(totals.fatG)
-      ],
+      values,
       offsetX,
       cursorY,
       index % 2 === 1
@@ -570,7 +636,8 @@ function drawOverviewPage(
   doc: PDFKit.PDFDocument,
   plan: NutritionPlanFull,
   totals: NutritionTotals,
-  generatedAt: string
+  generatedAt: string,
+  includeMacros: boolean
 ) {
   const left = doc.page.margins.left;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -603,7 +670,9 @@ function drawOverviewPage(
   drawMetricCard(doc, "Menus", String(visibleMeals.length), "Menus definidos en el plan", left + (infoWidth + gap) * 2, infoY, infoWidth);
 
   doc.y = infoY + 86;
-  drawTargets(doc, plan, totals);
+  if (includeMacros) {
+    drawTargets(doc, plan, totals);
+  }
 
   doc
     .fillColor(COLORS.yellow)
@@ -613,7 +682,7 @@ function drawOverviewPage(
       width: pageWidth,
       characterSpacing: 2
     });
-  doc.y = drawOverviewMealTable(doc, visibleMeals, left, doc.y + 22, pageWidth);
+  doc.y = drawOverviewMealTable(doc, visibleMeals, left, doc.y + 22, pageWidth, includeMacros);
 }
 
 function drawChartLegend(
@@ -1128,7 +1197,230 @@ function drawTableRow(
   return rowHeight;
 }
 
-function drawMeal(doc: PDFKit.PDFDocument, meal: NutritionPlanFull["meals"][number]) {
+function getPdfMealOptionNumber(entry: Pick<NutritionPlanFoodEntry, "mealOption">): number {
+  return normalizePdfMealOption(entry.mealOption);
+}
+
+function getPdfMealOptionGroups(meal: NutritionPlanFull["meals"][number]): Array<{
+  optionNumber: number;
+  entries: NutritionPlanFoodEntry[];
+}> {
+  const entries = Array.isArray(meal.entries) ? meal.entries : [];
+  const optionNumbers = new Set<number>([1]);
+  entries.forEach((entry) => optionNumbers.add(getPdfMealOptionNumber(entry)));
+
+  return Array.from(optionNumbers)
+    .sort((a, b) => a - b)
+    .map((optionNumber) => ({
+      optionNumber,
+      entries: entries
+        .filter((entry) => getPdfMealOptionNumber(entry) === optionNumber)
+        .sort((a, b) => a.position - b.position)
+    }));
+}
+
+function isOverReference(value: number, reference: number): boolean {
+  return value > reference && value - reference > 0.05;
+}
+
+function drawOptionMetric(
+  doc: PDFKit.PDFDocument,
+  label: string,
+  value: string,
+  alert: boolean,
+  x: number,
+  y: number,
+  width: number
+) {
+  doc.rect(x, y, width, 22).fill(alert ? "#2A0F0E" : COLORS.panelAlt);
+  doc.rect(x, y, 2.5, 22).fill(alert ? COLORS.red : COLORS.yellow);
+  doc
+    .fillColor(alert ? COLORS.red : COLORS.white)
+    .font("Helvetica-Bold")
+    .fontSize(7.2)
+    .text(`${label} ${value}`, x + 7, y + 7, {
+      width: width - 12,
+      align: "right",
+      lineBreak: false
+    });
+}
+
+function drawMealOptionSummary(
+  doc: PDFKit.PDFDocument,
+  optionNumber: number,
+  entriesCount: number,
+  totals: NutritionTotals,
+  referenceTotals: NutritionTotals,
+  includeMacros: boolean,
+  x: number,
+  width: number
+) {
+  ensureSpace(doc, includeMacros ? 34 : 26);
+  const y = doc.y;
+  const isReference = optionNumber === 1;
+
+  doc
+    .fillColor(isReference ? "#050505" : COLORS.yellow)
+    .rect(x, y, 88, 22)
+    .fill(isReference ? COLORS.yellow : COLORS.panelAlt);
+  doc
+    .fillColor(isReference ? "#050505" : COLORS.yellow)
+    .font("Helvetica-Bold")
+    .fontSize(7.4)
+    .text(`OPCION ${optionNumber}`, x + 10, y + 7, {
+      width: 68,
+      characterSpacing: 0.9,
+      lineBreak: false
+    });
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica-Bold")
+    .fontSize(7)
+    .text(`${entriesCount} alimentos`, x + 100, y + 7, {
+      width: includeMacros ? 126 : width - 110,
+      lineBreak: false
+    });
+
+  if (includeMacros) {
+    const metricGap = 6;
+    const metricWidth = 78;
+    const startX = x + width - metricWidth * 4 - metricGap * 3;
+    drawOptionMetric(
+      doc,
+      "KCAL",
+      formatNumber(totals.caloriesKcal, 0),
+      !isReference && isOverReference(totals.caloriesKcal, referenceTotals.caloriesKcal),
+      startX,
+      y,
+      metricWidth
+    );
+    drawOptionMetric(
+      doc,
+      "P",
+      `${formatNumber(totals.proteinG)} g`,
+      !isReference && isOverReference(totals.proteinG, referenceTotals.proteinG),
+      startX + metricWidth + metricGap,
+      y,
+      metricWidth
+    );
+    drawOptionMetric(
+      doc,
+      "C",
+      `${formatNumber(totals.carbsG)} g`,
+      !isReference && isOverReference(totals.carbsG, referenceTotals.carbsG),
+      startX + (metricWidth + metricGap) * 2,
+      y,
+      metricWidth
+    );
+    drawOptionMetric(
+      doc,
+      "G",
+      `${formatNumber(totals.fatG)} g`,
+      !isReference && isOverReference(totals.fatG, referenceTotals.fatG),
+      startX + (metricWidth + metricGap) * 3,
+      y,
+      metricWidth
+    );
+  }
+
+  doc.y = y + 30;
+}
+
+function drawMealEntryRows(
+  doc: PDFKit.PDFDocument,
+  entries: NutritionPlanFoodEntry[],
+  columns: PdfTableColumn[],
+  x: number,
+  includeMacros: boolean
+) {
+  const tableWidth = columns.reduce((sum, column) => sum + column.width, 0);
+
+  drawTableHeader(doc, columns, x, doc.y);
+  doc.y += 22;
+
+  if (!entries.length) {
+    ensureSpace(doc, 30);
+    const y = doc.y;
+    doc.rect(x, y, tableWidth, 26).fill(COLORS.panel);
+    doc
+      .fillColor(COLORS.muted)
+      .font("Helvetica")
+      .fontSize(8)
+      .text("Sin alimentos pautados.", x + 10, y + 9, { width: tableWidth - 20 });
+    doc.y = y + 36;
+    return;
+  }
+
+  entries.forEach((entry, index) => {
+    const entryTotals = calculateEntryTotals(entry);
+    const label = entry.customText.trim() || entry.foodName;
+    const values = includeMacros
+      ? [
+          label,
+          formatQuantity(entry),
+          formatNumber(entryTotals.caloriesKcal, 0),
+          formatNumber(entryTotals.proteinG),
+          formatNumber(entryTotals.carbsG),
+          formatNumber(entryTotals.fatG),
+          formatNumber(entryTotals.waterG),
+          `${formatNumber(entryTotals.sodiumMg, 0)} mg`
+        ]
+      : [label, formatQuantity(entry)];
+    const estimatedHeight = Math.max(
+      22,
+      Math.max(
+        ...values.map((value, valueIndex) =>
+          doc.heightOfString(value, {
+            width: columns[valueIndex].width - 10,
+            align: columns[valueIndex].align ?? "left"
+          })
+        )
+      ) + 11
+    );
+
+    ensureSpace(doc, estimatedHeight + 4);
+    doc.y += drawTableRow(doc, columns, values, x, doc.y, index % 2 === 1);
+
+    [...(entry.alternatives ?? [])]
+      .sort((a, b) => a.position - b.position)
+      .forEach((alternative) => {
+        const alternativeTotals = calculateEntryTotals(alternative);
+        const alternativeLabel = alternative.customText.trim() || alternative.foodName;
+        const alternativeValues = includeMacros
+          ? [
+              `Alternativa - ${alternativeLabel}`,
+              formatQuantity(alternative),
+              formatNumber(alternativeTotals.caloriesKcal, 0),
+              formatNumber(alternativeTotals.proteinG),
+              formatNumber(alternativeTotals.carbsG),
+              formatNumber(alternativeTotals.fatG),
+              formatNumber(alternativeTotals.waterG),
+              `${formatNumber(alternativeTotals.sodiumMg, 0)} mg`
+            ]
+          : [`Alternativa - ${alternativeLabel}`, formatQuantity(alternative)];
+        const alternativeEstimatedHeight = Math.max(
+          22,
+          Math.max(
+            ...alternativeValues.map((value, valueIndex) =>
+              doc.heightOfString(value, {
+                width: columns[valueIndex].width - 10,
+                align: columns[valueIndex].align ?? "left"
+              })
+            )
+          ) + 11
+        );
+
+        ensureSpace(doc, alternativeEstimatedHeight + 4);
+        doc.y += drawTableRow(doc, columns, alternativeValues, x, doc.y, true);
+      });
+  });
+}
+
+function drawMeal(
+  doc: PDFKit.PDFDocument,
+  meal: NutritionPlanFull["meals"][number],
+  includeMacros: boolean
+) {
   ensureSpace(doc, 112);
 
   const left = doc.page.margins.left;
@@ -1144,27 +1436,31 @@ function drawMeal(doc: PDFKit.PDFDocument, meal: NutritionPlanFull["meals"][numb
   );
 
   drawYellowTag(doc, meal.name, left, titleY, tagWidth);
-  doc
-    .fillColor(meal.included ? COLORS.muted : COLORS.red)
-    .font("Helvetica-Bold")
-    .fontSize(8)
-    .text(meal.included ? "SUMA AL TOTAL DIARIO" : "NO SUMA AL TOTAL DIARIO", left + tableWidth - statusWidth, titleY + 7, {
-      width: statusWidth,
-      align: "right",
-      characterSpacing: 1
-    });
+  if (includeMacros) {
+    doc
+      .fillColor(meal.included ? COLORS.muted : COLORS.red)
+      .font("Helvetica-Bold")
+      .fontSize(8)
+      .text(meal.included ? "SUMA AL TOTAL DIARIO" : "NO SUMA AL TOTAL DIARIO", left + tableWidth - statusWidth, titleY + 7, {
+        width: statusWidth,
+        align: "right",
+        characterSpacing: 1
+      });
+  }
 
   doc.y = titleY + 34;
-  doc
-    .fillColor(COLORS.white)
-    .font("Helvetica-Bold")
-    .fontSize(8)
-    .text(
-      `KCAL ${formatNumber(totals.caloriesKcal, 0)}  |  P ${formatNumber(totals.proteinG)} g  |  C ${formatNumber(totals.carbsG)} g  |  G ${formatNumber(totals.fatG)} g  |  AGUA ${formatNumber(totals.waterG)} g  |  SODIO ${formatNumber(totals.sodiumMg, 0)} mg`,
-      left,
-      doc.y,
-      { width: tableWidth, characterSpacing: 0.5 }
-    );
+  if (includeMacros) {
+    doc
+      .fillColor(COLORS.white)
+      .font("Helvetica-Bold")
+      .fontSize(8)
+      .text(
+        `KCAL ${formatNumber(totals.caloriesKcal, 0)}  |  P ${formatNumber(totals.proteinG)} g  |  C ${formatNumber(totals.carbsG)} g  |  G ${formatNumber(totals.fatG)} g  |  AGUA ${formatNumber(totals.waterG)} g  |  SODIO ${formatNumber(totals.sodiumMg, 0)} mg`,
+        left,
+        doc.y,
+        { width: tableWidth, characterSpacing: 0.5 }
+      );
+  }
 
   if (meal.notes.trim()) {
     doc.moveDown(0.25);
@@ -1173,91 +1469,38 @@ function drawMeal(doc: PDFKit.PDFDocument, meal: NutritionPlanFull["meals"][numb
 
   doc.moveDown(0.65);
 
-  const columns: PdfTableColumn[] = [
-    { label: "ALIMENTO", width: 270 },
-    { label: "CANTIDAD(g)", width: 70, align: "right" },
-    { label: "KCAL", width: 48, align: "right" },
-    { label: "P", width: 44, align: "right" },
-    { label: "C", width: 44, align: "right" },
-    { label: "G", width: 44, align: "right" },
-    { label: "AGUA", width: 56, align: "right" },
-    { label: "SODIO", width: 62, align: "right" }
-  ];
+  const columns: PdfTableColumn[] = includeMacros
+    ? [
+        { label: "ALIMENTO", width: 360 },
+        { label: "CANTIDAD", width: 74, align: "right" },
+        { label: "KCAL", width: 52, align: "right" },
+        { label: "P", width: 48, align: "right" },
+        { label: "C", width: 48, align: "right" },
+        { label: "G", width: 48, align: "right" },
+        { label: "AGUA", width: 60, align: "right" },
+        { label: "SODIO", width: 64, align: "right" }
+      ]
+    : [
+        { label: "ALIMENTO", width: 590 },
+        { label: "CANTIDAD", width: 164, align: "right" }
+      ];
 
-  drawTableHeader(doc, columns, left, doc.y);
-  doc.y += 22;
-
-  if (!meal.entries.length) {
-    ensureSpace(doc, 30);
-    const y = doc.y;
-    doc.rect(left, y, tableWidth, 26).fill(COLORS.panel);
-    doc
-      .fillColor(COLORS.muted)
-      .font("Helvetica")
-      .fontSize(8)
-      .text("Sin alimentos pautados.", left + 10, y + 9, { width: tableWidth - 20 });
-    doc.y = y + 40;
-    return;
-  }
-
-  meal.entries.forEach((entry, index) => {
-    const entryTotals = calculateEntryTotals(entry);
-    const label = entry.customText.trim() || entry.foodName;
-    const values = [
-      label,
-      `${formatNumber(entry.quantityG)} g`,
-      formatNumber(entryTotals.caloriesKcal, 0),
-      formatNumber(entryTotals.proteinG),
-      formatNumber(entryTotals.carbsG),
-      formatNumber(entryTotals.fatG),
-      formatNumber(entryTotals.waterG),
-      `${formatNumber(entryTotals.sodiumMg, 0)} mg`
-    ];
-    const estimatedHeight = Math.max(
-      22,
-      Math.max(
-        ...values.map((value, valueIndex) =>
-          doc.heightOfString(value, {
-            width: columns[valueIndex].width - 10,
-            align: columns[valueIndex].align ?? "left"
-          })
-        )
-      ) + 11
+  const optionGroups = getPdfMealOptionGroups(meal);
+  const referenceTotals = calculateMealOptionTotals(meal.entries, 1);
+  optionGroups.forEach(({ optionNumber, entries }) => {
+    const optionTotals = calculateMealOptionTotals(meal.entries, optionNumber);
+    drawMealOptionSummary(
+      doc,
+      optionNumber,
+      entries.length,
+      optionTotals,
+      referenceTotals,
+      includeMacros,
+      left,
+      tableWidth
     );
-
-    ensureSpace(doc, estimatedHeight + 4);
-    doc.y += drawTableRow(doc, columns, values, left, doc.y, index % 2 === 1);
-
-    [...(entry.alternatives ?? [])]
-      .sort((a, b) => a.position - b.position)
-      .forEach((alternative) => {
-        const alternativeTotals = calculateEntryTotals(alternative);
-        const alternativeLabel = alternative.customText.trim() || alternative.foodName;
-        const alternativeValues = [
-          `Alternativa - ${alternativeLabel}`,
-          `${formatNumber(alternative.quantityG)} g`,
-          formatNumber(alternativeTotals.caloriesKcal, 0),
-          formatNumber(alternativeTotals.proteinG),
-          formatNumber(alternativeTotals.carbsG),
-          formatNumber(alternativeTotals.fatG),
-          formatNumber(alternativeTotals.waterG),
-          `${formatNumber(alternativeTotals.sodiumMg, 0)} mg`
-        ];
-        const alternativeEstimatedHeight = Math.max(
-          22,
-          Math.max(
-            ...alternativeValues.map((value, valueIndex) =>
-              doc.heightOfString(value, {
-                width: columns[valueIndex].width - 10,
-                align: columns[valueIndex].align ?? "left"
-              })
-            )
-          ) + 11
-        );
-
-        ensureSpace(doc, alternativeEstimatedHeight + 4);
-        doc.y += drawTableRow(doc, columns, alternativeValues, left, doc.y, true);
-      });
+    drawMealEntryRows(doc, entries, columns, left, includeMacros);
+    doc.moveDown(0.45);
   });
 
   doc.y += 16;
@@ -1266,7 +1509,8 @@ function drawMeal(doc: PDFKit.PDFDocument, meal: NutritionPlanFull["meals"][numb
 function drawPlanMenusPage(
   doc: PDFKit.PDFDocument,
   plan: NutritionPlanFull,
-  index: number
+  index: number,
+  includeMacros: boolean
 ) {
   const left = doc.page.margins.left;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -1304,26 +1548,22 @@ function drawPlanMenusPage(
   doc.y += 20;
 
   for (const meal of visibleMeals) {
-    drawMeal(doc, meal);
+    drawMeal(doc, meal, includeMacros);
   }
 }
 
-function drawObservationsPage(doc: PDFKit.PDFDocument, plans: NutritionPlanFull[]) {
+function drawRoadmapPage(doc: PDFKit.PDFDocument, steps: AthleteRoadmapStep[]) {
   doc.addPage();
   const left = doc.page.margins.left;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const y = 120;
-  const observationItems = plans.map((plan) => ({
-    title: getPlanLabel(plan),
-    notes: plan.notes.trim() || "Sin observaciones adicionales."
-  }));
+  const sortedSteps = [...steps].sort((a, b) => a.position - b.position).slice(0, 10);
 
-  doc.y = y;
+  doc.y = 104;
   doc
     .fillColor(COLORS.yellow)
     .font("Helvetica-Bold")
     .fontSize(9)
-    .text("APORTE EXPLICATIVO DEL NUTRICIONISTA", left, doc.y, {
+    .text("HOJA DE RUTA DEL PROCESO", left, doc.y, {
       width: pageWidth,
       characterSpacing: 2.2
     });
@@ -1331,15 +1571,146 @@ function drawObservationsPage(doc: PDFKit.PDFDocument, plans: NutritionPlanFull[
     .fillColor(COLORS.white)
     .font("Helvetica-Bold")
     .fontSize(44)
-    .text("OBSERVACIONES", left, doc.y + 12, { width: pageWidth });
+    .text("ROADMAP", left, doc.y + 12, { width: pageWidth });
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica")
+    .fontSize(9)
+    .text("Etapas completadas, etapa actual y siguientes pasos del proceso nutricional.", left, doc.y + 2, {
+      width: pageWidth
+    });
+
+  if (!sortedSteps.length) {
+    drawEmptyChartPanel(doc, "No hay etapas definidas.", left, 230, pageWidth, 170);
+    return;
+  }
+
+  const hasDates = sortedSteps.some((step) => step.startDate || step.endDate);
+  const cardGap = 10;
+  const columns = sortedSteps.length <= 5 ? sortedSteps.length : 5;
+  const cardWidth = (pageWidth - cardGap * (columns - 1)) / columns;
+  const cardHeight = hasDates ? 138 : 120;
+  const startY = 220;
+
+  sortedSteps.forEach((step, index) => {
+    const row = Math.floor(index / columns);
+    const column = index % columns;
+    const x = left + column * (cardWidth + cardGap);
+    const y = startY + row * (cardHeight + 22);
+    const color =
+      step.status === "completed" ? "#34D399" : step.status === "current" ? COLORS.yellow : COLORS.dim;
+    const panelColor = step.status === "current" ? "#1F1A0A" : COLORS.panel;
+    const statusLabel =
+      step.status === "completed" ? "COMPLETADA" : step.status === "current" ? "ACTUAL" : "PENDIENTE";
+
+    if (index > 0 && column > 0) {
+      doc
+        .moveTo(x - cardGap, y + 22)
+        .lineTo(x, y + 22)
+        .strokeColor(COLORS.line)
+        .lineWidth(1)
+        .stroke();
+    }
+
+    doc.rect(x, y, cardWidth, cardHeight).fill(panelColor);
+    doc.rect(x, y, 5, cardHeight).fill(color);
+    doc.circle(x + 22, y + 22, 8).fill(color);
+    doc
+      .fillColor(COLORS.white)
+      .font("Helvetica-Bold")
+      .fontSize(9)
+      .text(`${String(index + 1).padStart(2, "0")}. ${uppercase(shortLabel(step.title, 28))}`, x + 38, y + 13, {
+        width: cardWidth - 50,
+        height: 26,
+        characterSpacing: 0.7
+      });
+    doc
+      .fillColor(color)
+      .font("Helvetica-Bold")
+      .fontSize(7)
+      .text(statusLabel, x + 18, y + 48, {
+        width: cardWidth - 36,
+        characterSpacing: 1.2
+      });
+
+    if (hasDates) {
+      const dateLabel =
+        step.startDate && step.endDate
+          ? `${formatDate(step.startDate)} - ${formatDate(step.endDate)}`
+          : step.startDate
+            ? `Desde ${formatDate(step.startDate)}`
+            : step.endDate
+              ? `Hasta ${formatDate(step.endDate)}`
+              : "Sin fecha cerrada";
+      doc
+        .fillColor(COLORS.muted)
+        .font("Helvetica-Bold")
+        .fontSize(7)
+        .text(dateLabel, x + 18, y + 66, {
+          width: cardWidth - 36,
+          height: 16
+        });
+    }
+
+    if (step.description.trim()) {
+      doc
+        .fillColor(COLORS.muted)
+        .font("Helvetica")
+        .fontSize(8)
+        .text(step.description, x + 18, y + (hasDates ? 86 : 68), {
+          width: cardWidth - 36,
+          height: cardHeight - (hasDates ? 96 : 78),
+          lineGap: 2
+        });
+    }
+  });
+}
+
+function drawGuidancePage(doc: PDFKit.PDFDocument, plan: NutritionPlanFull) {
+  doc.addPage();
+  const left = doc.page.margins.left;
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const y = 120;
+  const guidanceItems = [
+    {
+      title: "Observaciones",
+      eyebrow: "APORTE EXPLICATIVO DEL NUTRICIONISTA",
+      text: plan.notes.trim() || "Sin observaciones adicionales."
+    },
+    {
+      title: "Suplementacion",
+      eyebrow: "APOYO COMPLEMENTARIO",
+      text: plan.supplementation.trim() || "Sin suplementacion pautada."
+    },
+    {
+      title: "Recomendaciones",
+      eyebrow: "PAUTAS GENERALES",
+      text: plan.recommendations.trim() || "Sin recomendaciones adicionales."
+    }
+  ];
+
+  doc.y = y;
+  doc
+    .fillColor(COLORS.yellow)
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text("OBSERVACIONES GLOBALES DEL PLAN", left, doc.y, {
+      width: pageWidth,
+      characterSpacing: 2.2
+    });
+  doc
+    .fillColor(COLORS.white)
+    .font("Helvetica-Bold")
+    .fontSize(44)
+    .text("GUIA DEL NUTRICIONISTA", left, doc.y + 12, { width: pageWidth });
 
   doc.y += 28;
-  observationItems.forEach((item, index) => {
-    const textHeight = doc.heightOfString(item.notes, {
+  guidanceItems.forEach((item, index) => {
+    const textHeight = doc.heightOfString(item.text, {
       width: pageWidth - 44,
       lineGap: 3
     });
-    const panelHeight = Math.max(76, Math.min(138, textHeight + 48));
+    const panelHeight = Math.max(82, Math.min(132, textHeight + 52));
     ensureSpace(doc, panelHeight + 12);
     const panelY = doc.y;
 
@@ -1349,17 +1720,25 @@ function drawObservationsPage(doc: PDFKit.PDFDocument, plans: NutritionPlanFull[
       .fillColor(COLORS.yellow)
       .font("Helvetica-Bold")
       .fontSize(8)
-      .text(uppercase(shortLabel(item.title, 62)), left + 22, panelY + 14, {
+      .text(item.eyebrow, left + 22, panelY + 14, {
         width: pageWidth - 44,
         characterSpacing: 1.2
       });
     doc
       .fillColor(COLORS.white)
+      .font("Helvetica-Bold")
+      .fontSize(14)
+      .text(uppercase(item.title), left + 22, panelY + 28, {
+        width: pageWidth - 44,
+        height: 18
+      });
+    doc
+      .fillColor(COLORS.white)
       .font("Helvetica")
       .fontSize(10)
-      .text(item.notes, left + 22, panelY + 34, {
+      .text(item.text, left + 22, panelY + 52, {
         width: pageWidth - 44,
-        height: panelHeight - 44,
+        height: panelHeight - 60,
         lineGap: 3
       });
     doc.y = panelY + panelHeight + 12;
@@ -1382,6 +1761,8 @@ export async function renderNutritionPlanPdf(
 ): Promise<Buffer> {
   const primaryPlan = normalizePdfPlanQuantities(plan);
   const normalizedComparisonPlans = (options.comparisonPlans ?? []).map(normalizePdfPlanQuantities);
+  const includeMacros = options.includeMacros !== false;
+  const roadmapSteps = [...(options.roadmapSteps ?? [])].sort((a, b) => a.position - b.position);
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
@@ -1408,30 +1789,37 @@ export async function renderNutritionPlanPdf(
     const generatedAt = new Date().toISOString();
     const documentPlans = getComparisonPlans(primaryPlan, normalizedComparisonPlans);
     drawCover(doc, primaryPlan, generatedAt);
+    if (roadmapSteps.length) {
+      drawRoadmapPage(doc, roadmapSteps);
+    }
 
     documentPlans.forEach((documentPlan) => {
       doc.addPage();
       doc.y = 96;
-      drawOverviewPage(doc, documentPlan, calculatePlanTotals(documentPlan), generatedAt);
+      drawOverviewPage(doc, documentPlan, calculatePlanTotals(documentPlan), generatedAt, includeMacros);
     });
 
     documentPlans.forEach((documentPlan, index) => {
       doc.addPage();
-      drawPlanSectionCover(doc, documentPlan, generatedAt, index, documentPlans.length);
+      drawPlanSectionCover(doc, documentPlan, generatedAt, index, documentPlans.length, includeMacros);
+
+      if (includeMacros) {
+        doc.addPage();
+        doc.y = 96;
+        drawMealMacroChartsPage(doc, documentPlan);
+      }
 
       doc.addPage();
-      doc.y = 96;
-      drawMealMacroChartsPage(doc, documentPlan);
-
-      doc.addPage();
-      drawPlanMenusPage(doc, documentPlan, index);
+      drawPlanMenusPage(doc, documentPlan, index, includeMacros);
     });
 
-    drawObservationsPage(doc, documentPlans);
+    drawGuidancePage(doc, primaryPlan);
 
-    doc.addPage();
-    doc.y = 96;
-    drawPlanComparisonChartsPage(doc, primaryPlan, documentPlans);
+    if (includeMacros) {
+      doc.addPage();
+      doc.y = 96;
+      drawPlanComparisonChartsPage(doc, primaryPlan, documentPlans);
+    }
 
     const range = doc.bufferedPageRange();
     for (let index = range.start; index < range.start + range.count; index += 1) {

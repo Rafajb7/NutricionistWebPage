@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowLeft,
+  Building2,
   CalendarDays,
   CheckCircle2,
   ChevronLeft,
@@ -13,12 +14,17 @@ import {
   CircleDollarSign,
   Clock3,
   CreditCard,
+  Download,
   FileClock,
+  FileText,
   LineChart,
   LogOut,
   Plus,
+  ReceiptText,
   RefreshCw,
+  Save,
   Search,
+  Trash2,
   UserRound,
   WalletCards,
   XCircle
@@ -31,17 +37,25 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   addDays,
   addMonths,
+  calculateFinanceInvoiceTotals,
+  calculateInvoiceLineBaseCents,
   differenceInCalendarDays,
   formatCents,
   getComputedPaymentStatus,
   getMonthRange,
+  parseCurrencyToCents,
   todayIsoDate
 } from "@/lib/finance/calculations";
+import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
 import type {
   FinanceAthlete,
   FinanceComputedPaymentStatus,
   FinanceContract,
   FinanceDashboard,
+  FinanceExpense,
+  FinanceInvoice,
+  FinanceInvoiceIssuerSettings,
+  FinanceInvoiceLineItem,
   FinanceManagementData,
   FinanceMonthlyPoint,
   FinancePayment,
@@ -82,9 +96,71 @@ type PaymentEditState = {
   notes: string;
 };
 
+type ExpenseFormState = {
+  date: string;
+  category: string;
+  description: string;
+  amount: string;
+  currency: string;
+  notes: string;
+};
+
+type InvoiceSettingsFormState = {
+  businessName: string;
+  taxId: string;
+  address: string;
+  postalCode: string;
+  city: string;
+  province: string;
+  country: string;
+  email: string;
+  phone: string;
+  website: string;
+  invoiceSeries: string;
+  nextInvoiceNumber: string;
+  defaultVatRate: string;
+  defaultIrpfRate: string;
+  paymentMethod: string;
+  bankIban: string;
+  notes: string;
+};
+
+type InvoiceLineFormState = {
+  id: string;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  discountPercent: string;
+  vatRate: string;
+};
+
+type InvoiceFormState = {
+  series: string;
+  sequenceNumber: string;
+  issueDate: string;
+  operationDate: string;
+  dueDate: string;
+  clientAthleteUsername: string;
+  clientName: string;
+  clientTaxId: string;
+  clientAddress: string;
+  clientPostalCode: string;
+  clientCity: string;
+  clientProvince: string;
+  clientCountry: string;
+  clientEmail: string;
+  lineItems: InvoiceLineFormState[];
+  irpfRate: string;
+  currency: string;
+  paymentMethod: string;
+  notes: string;
+};
+
 const EMPTY_DASHBOARD: FinanceDashboard = {
   paidThisMonthCents: 0,
   expectedThisMonthCents: 0,
+  expensesThisMonthCents: 0,
+  netThisMonthCents: 0,
   pendingCents: 0,
   next30DaysCents: 0,
   overdueCount: 0,
@@ -110,6 +186,86 @@ function defaultFinanceForm(): FinanceFormState {
     previousContractId: "",
     notes: ""
   };
+}
+
+function defaultExpenseForm(): ExpenseFormState {
+  return {
+    date: todayIsoDate(),
+    category: "General",
+    description: "",
+    amount: "",
+    currency: "EUR",
+    notes: ""
+  };
+}
+
+function settingsToInvoiceFormState(settings: FinanceInvoiceIssuerSettings): InvoiceSettingsFormState {
+  return {
+    businessName: settings.businessName,
+    taxId: settings.taxId,
+    address: settings.address,
+    postalCode: settings.postalCode,
+    city: settings.city,
+    province: settings.province,
+    country: settings.country,
+    email: settings.email,
+    phone: settings.phone,
+    website: settings.website,
+    invoiceSeries: settings.invoiceSeries,
+    nextInvoiceNumber: String(settings.nextInvoiceNumber),
+    defaultVatRate: String(settings.defaultVatRate),
+    defaultIrpfRate: String(settings.defaultIrpfRate),
+    paymentMethod: settings.paymentMethod,
+    bankIban: settings.bankIban,
+    notes: settings.notes
+  };
+}
+
+function createInvoiceLine(settings: FinanceInvoiceIssuerSettings): InvoiceLineFormState {
+  return {
+    id: crypto.randomUUID(),
+    description: "Asesoramiento nutricional",
+    quantity: "1",
+    unitPrice: "",
+    discountPercent: "0",
+    vatRate: String(settings.defaultVatRate)
+  };
+}
+
+function defaultInvoiceForm(settings: FinanceInvoiceIssuerSettings): InvoiceFormState {
+  const today = todayIsoDate();
+  return {
+    series: settings.invoiceSeries,
+    sequenceNumber: String(settings.nextInvoiceNumber),
+    issueDate: today,
+    operationDate: today,
+    dueDate: "",
+    clientAthleteUsername: "",
+    clientName: "",
+    clientTaxId: "",
+    clientAddress: "",
+    clientPostalCode: "",
+    clientCity: "",
+    clientProvince: "",
+    clientCountry: "Espana",
+    clientEmail: "",
+    lineItems: [createInvoiceLine(settings)],
+    irpfRate: String(settings.defaultIrpfRate),
+    currency: "EUR",
+    paymentMethod: settings.paymentMethod,
+    notes: ""
+  };
+}
+
+function buildPreviewLineItems(form: InvoiceFormState): FinanceInvoiceLineItem[] {
+  return form.lineItems.map((line) => ({
+    id: line.id,
+    description: line.description.trim(),
+    quantity: Math.max(0, Number(String(line.quantity).replace(",", ".")) || 0),
+    unitPriceCents: parseCurrencyToCents(line.unitPrice) ?? 0,
+    discountPercent: Math.min(100, Math.max(0, Number(String(line.discountPercent).replace(",", ".")) || 0)),
+    vatRate: Math.min(100, Math.max(0, Number(String(line.vatRate).replace(",", ".")) || 0))
+  }));
 }
 
 function centsToInput(cents: number): string {
@@ -207,7 +363,7 @@ function ExpectedVsPaidChart({ points }: { points: FinanceMonthlyPoint[] }) {
   const data = points.slice(-12);
   const maxValue = Math.max(
     1,
-    ...data.flatMap((point) => [point.expectedCents, point.paidCents])
+    ...data.flatMap((point) => [point.expectedCents, point.paidCents, point.expenseCents])
   );
   if (!data.length || maxValue <= 1) return <EmptyChart />;
 
@@ -226,6 +382,10 @@ function ExpectedVsPaidChart({ points }: { points: FinanceMonthlyPoint[] }) {
           <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
           Cobrado
         </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="h-2.5 w-2.5 rounded-full bg-red-400" />
+          Gastos
+        </span>
       </div>
       <svg viewBox={`0 0 ${width} 220`} className="h-56 w-full" role="img">
         <line x1="20" y1="170" x2={width - 8} y2="170" stroke="rgba(255,255,255,0.18)" />
@@ -233,6 +393,7 @@ function ExpectedVsPaidChart({ points }: { points: FinanceMonthlyPoint[] }) {
           const x = 28 + index * barSlot;
           const expectedHeight = (point.expectedCents / maxValue) * chartHeight;
           const paidHeight = (point.paidCents / maxValue) * chartHeight;
+          const expenseHeight = (point.expenseCents / maxValue) * chartHeight;
           return (
             <g key={point.month}>
               <rect
@@ -250,6 +411,14 @@ function ExpectedVsPaidChart({ points }: { points: FinanceMonthlyPoint[] }) {
                 height={paidHeight}
                 rx="3"
                 fill="#34d399"
+              />
+              <rect
+                x={x + 30}
+                y={170 - expenseHeight}
+                width="12"
+                height={expenseHeight}
+                rx="3"
+                fill="#f87171"
               />
               <text
                 x={x + 13}
@@ -269,7 +438,7 @@ function ExpectedVsPaidChart({ points }: { points: FinanceMonthlyPoint[] }) {
 
 function EvolutionChart({ points }: { points: FinanceMonthlyPoint[] }) {
   const data = points.slice(-12);
-  const maxValue = Math.max(1, ...data.map((point) => point.paidCents));
+  const maxValue = Math.max(1, ...data.map((point) => Math.max(0, point.netCents)));
   if (!data.length || maxValue <= 1) return <EmptyChart />;
 
   const width = 560;
@@ -278,7 +447,7 @@ function EvolutionChart({ points }: { points: FinanceMonthlyPoint[] }) {
   const step = data.length > 1 ? (width - 56) / (data.length - 1) : 0;
   const coords = data.map((point, index) => {
     const x = 28 + index * step;
-    const y = 160 - (point.paidCents / maxValue) * graphHeight;
+    const y = 160 - (Math.max(0, point.netCents) / maxValue) * graphHeight;
     return `${x},${y}`;
   });
 
@@ -320,12 +489,18 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     athletes: [],
     contracts: [],
     payments: [],
+    expenses: [],
+    invoices: [],
+    invoiceSettings: DEFAULT_FINANCE_INVOICE_SETTINGS,
     planOptions: [],
     dashboard: EMPTY_DASHBOARD
   });
   const [loading, setLoading] = useState(true);
   const [savingContract, setSavingContract] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
+  const [savingExpense, setSavingExpense] = useState(false);
+  const [savingInvoiceSettings, setSavingInvoiceSettings] = useState(false);
+  const [savingInvoice, setSavingInvoice] = useState(false);
   const [contractActionId, setContractActionId] = useState<string | null>(null);
 
   const [athleteFilter, setAthleteFilter] = useState("");
@@ -336,6 +511,13 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
   const [calendarMonth, setCalendarMonth] = useState(todayIsoDate().slice(0, 7));
 
   const [form, setForm] = useState<FinanceFormState>(defaultFinanceForm);
+  const [expenseForm, setExpenseForm] = useState<ExpenseFormState>(defaultExpenseForm);
+  const [invoiceSettingsForm, setInvoiceSettingsForm] = useState<InvoiceSettingsFormState>(() =>
+    settingsToInvoiceFormState(DEFAULT_FINANCE_INVOICE_SETTINGS)
+  );
+  const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(() =>
+    defaultInvoiceForm(DEFAULT_FINANCE_INVOICE_SETTINGS)
+  );
   const [paymentEdit, setPaymentEdit] = useState<PaymentEditState | null>(null);
 
   const today = todayIsoDate();
@@ -355,14 +537,32 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
 
       const json = (await res.json()) as Partial<FinanceManagementData> & { error?: string };
       if (!res.ok) throw new Error(json.error ?? "No se pudo cargar Finanzas.");
+      const invoiceSettings = json.invoiceSettings ?? DEFAULT_FINANCE_INVOICE_SETTINGS;
 
       setData({
         athletes: json.athletes ?? [],
         contracts: json.contracts ?? [],
         payments: json.payments ?? [],
+        expenses: json.expenses ?? [],
+        invoices: json.invoices ?? [],
+        invoiceSettings,
         planOptions: json.planOptions ?? [],
         dashboard: json.dashboard ?? EMPTY_DASHBOARD
       });
+      setInvoiceSettingsForm(settingsToInvoiceFormState(invoiceSettings));
+      setInvoiceForm((current) => ({
+        ...current,
+        series: current.series || invoiceSettings.invoiceSeries,
+        sequenceNumber: current.sequenceNumber || String(invoiceSettings.nextInvoiceNumber),
+        irpfRate: current.irpfRate || String(invoiceSettings.defaultIrpfRate),
+        paymentMethod: current.paymentMethod || invoiceSettings.paymentMethod,
+        lineItems: current.lineItems.length
+          ? current.lineItems.map((line) => ({
+              ...line,
+              vatRate: line.vatRate || String(invoiceSettings.defaultVatRate)
+            }))
+          : [createInvoiceLine(invoiceSettings)]
+      }));
     } catch (error) {
       console.error(error);
       toast.error("Error cargando Finanzas.");
@@ -399,6 +599,16 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     });
     return map;
   }, [data.payments]);
+
+  const expensesByDate = useMemo(() => {
+    const map = new Map<string, FinanceExpense[]>();
+    data.expenses.forEach((expense) => {
+      const list = map.get(expense.date) ?? [];
+      list.push(expense);
+      map.set(expense.date, list);
+    });
+    return map;
+  }, [data.expenses]);
 
   const filteredPayments = useMemo(() => {
     const monthRange = getMonthRange(today);
@@ -450,6 +660,16 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     return { athlete, contracts, payments };
   }, [contractsByAthlete, data.athletes, data.payments, selectedAthlete]);
 
+  const invoicePreviewLineItems = useMemo(() => buildPreviewLineItems(invoiceForm), [invoiceForm]);
+  const invoicePreviewTotals = useMemo(
+    () =>
+      calculateFinanceInvoiceTotals(
+        invoicePreviewLineItems,
+        Number(String(invoiceForm.irpfRate).replace(",", ".")) || 0
+      ),
+    [invoiceForm.irpfRate, invoicePreviewLineItems]
+  );
+
   async function handleLogout() {
     const res = await fetch("/api/logout", { method: "POST" });
     if (!res.ok) {
@@ -461,6 +681,158 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
 
   function updateForm<K extends keyof FinanceFormState>(key: K, value: FinanceFormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateInvoiceSettingsForm<K extends keyof InvoiceSettingsFormState>(
+    key: K,
+    value: InvoiceSettingsFormState[K]
+  ) {
+    setInvoiceSettingsForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateInvoiceForm<K extends keyof InvoiceFormState>(key: K, value: InvoiceFormState[K]) {
+    setInvoiceForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateInvoiceLine(lineId: string, patch: Partial<InvoiceLineFormState>) {
+    setInvoiceForm((current) => ({
+      ...current,
+      lineItems: current.lineItems.map((line) => (line.id === lineId ? { ...line, ...patch } : line))
+    }));
+  }
+
+  function addInvoiceLine() {
+    setInvoiceForm((current) => ({
+      ...current,
+      lineItems: [...current.lineItems, createInvoiceLine(data.invoiceSettings)]
+    }));
+  }
+
+  function removeInvoiceLine(lineId: string) {
+    setInvoiceForm((current) => ({
+      ...current,
+      lineItems:
+        current.lineItems.length > 1
+          ? current.lineItems.filter((line) => line.id !== lineId)
+          : current.lineItems
+    }));
+  }
+
+  function selectInvoiceClient(username: string) {
+    const athlete = data.athletes.find((item) => item.username === username);
+    setInvoiceForm((current) => ({
+      ...current,
+      clientAthleteUsername: username,
+      clientName: athlete?.name ?? current.clientName,
+      clientEmail: athlete?.email ?? current.clientEmail
+    }));
+  }
+
+  async function handleSaveInvoiceSettings() {
+    setSavingInvoiceSettings(true);
+    try {
+      const res = await fetch("/api/admin/finance/invoice-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...invoiceSettingsForm,
+          nextInvoiceNumber: Number(invoiceSettingsForm.nextInvoiceNumber || 1),
+          defaultVatRate: Number(String(invoiceSettingsForm.defaultVatRate).replace(",", ".") || 0),
+          defaultIrpfRate: Number(String(invoiceSettingsForm.defaultIrpfRate).replace(",", ".") || 0)
+        })
+      });
+      const json = (await res.json()) as {
+        invoiceSettings?: FinanceInvoiceIssuerSettings;
+        error?: string;
+      };
+      if (!res.ok || !json.invoiceSettings) {
+        throw new Error(json.error ?? "No se pudieron guardar los datos de facturacion.");
+      }
+
+      setData((current) => ({ ...current, invoiceSettings: json.invoiceSettings! }));
+      setInvoiceSettingsForm(settingsToInvoiceFormState(json.invoiceSettings));
+      setInvoiceForm((current) => ({
+        ...current,
+        series: current.series || json.invoiceSettings!.invoiceSeries,
+        sequenceNumber: current.sequenceNumber || String(json.invoiceSettings!.nextInvoiceNumber),
+        irpfRate: current.irpfRate || String(json.invoiceSettings!.defaultIrpfRate),
+        paymentMethod: current.paymentMethod || json.invoiceSettings!.paymentMethod
+      }));
+      toast.success("Datos de facturacion guardados.");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Error guardando datos de facturacion.");
+    } finally {
+      setSavingInvoiceSettings(false);
+    }
+  }
+
+  async function handleCreateInvoice() {
+    if (!data.invoiceSettings.businessName.trim() || !data.invoiceSettings.taxId.trim() || !data.invoiceSettings.address.trim()) {
+      toast.error("Completa primero los datos fiscales del emisor.");
+      return;
+    }
+    if (!invoiceForm.clientName.trim() || !invoiceForm.clientTaxId.trim() || !invoiceForm.clientAddress.trim()) {
+      toast.error("Nombre, NIF y direccion del cliente son obligatorios.");
+      return;
+    }
+    if (!invoiceForm.lineItems.some((line) => line.description.trim() && line.unitPrice.trim())) {
+      toast.error("Anade al menos una linea con concepto e importe.");
+      return;
+    }
+
+    setSavingInvoice(true);
+    try {
+      const res = await fetch("/api/admin/finance/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          series: invoiceForm.series,
+          sequenceNumber: Number(invoiceForm.sequenceNumber || 1),
+          issueDate: invoiceForm.issueDate,
+          operationDate: invoiceForm.operationDate || invoiceForm.issueDate,
+          dueDate: invoiceForm.dueDate || undefined,
+          client: {
+            name: invoiceForm.clientName,
+            taxId: invoiceForm.clientTaxId,
+            address: invoiceForm.clientAddress,
+            postalCode: invoiceForm.clientPostalCode,
+            city: invoiceForm.clientCity,
+            province: invoiceForm.clientProvince,
+            country: invoiceForm.clientCountry,
+            email: invoiceForm.clientEmail
+          },
+          lineItems: invoiceForm.lineItems,
+          irpfRate: Number(String(invoiceForm.irpfRate).replace(",", ".") || 0),
+          currency: invoiceForm.currency,
+          paymentMethod: invoiceForm.paymentMethod,
+          notes: invoiceForm.notes
+        })
+      });
+      const json = (await res.json()) as {
+        invoice?: FinanceInvoice;
+        invoices?: FinanceInvoice[];
+        invoiceSettings?: FinanceInvoiceIssuerSettings;
+        error?: string;
+      };
+      if (!res.ok || !json.invoice) throw new Error(json.error ?? "No se pudo emitir la factura.");
+
+      const nextSettings = json.invoiceSettings ?? data.invoiceSettings;
+      setData((current) => ({
+        ...current,
+        invoices: json.invoices ?? [json.invoice!, ...current.invoices],
+        invoiceSettings: nextSettings
+      }));
+      setInvoiceSettingsForm(settingsToInvoiceFormState(nextSettings));
+      setInvoiceForm(defaultInvoiceForm(nextSettings));
+      toast.success(`Factura ${json.invoice.invoiceNumber} emitida.`);
+      window.open(`/api/admin/finance/invoices/${json.invoice.id}/pdf`, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Error emitiendo factura.");
+    } finally {
+      setSavingInvoice(false);
+    }
   }
 
   async function handleCreateContract() {
@@ -505,6 +877,41 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
       toast.error("Error creando contrato.");
     } finally {
       setSavingContract(false);
+    }
+  }
+
+  async function handleCreateExpense() {
+    if (!expenseForm.description.trim() || !expenseForm.amount.trim()) {
+      toast.error("Descripcion e importe del gasto son obligatorios.");
+      return;
+    }
+
+    setSavingExpense(true);
+    try {
+      const res = await fetch("/api/admin/finance/expenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(expenseForm)
+      });
+      const json = (await res.json()) as {
+        expense?: FinanceExpense;
+        dashboard?: FinanceDashboard;
+        error?: string;
+      };
+      if (!res.ok || !json.expense) throw new Error(json.error ?? "No se pudo registrar el gasto.");
+
+      setData((current) => ({
+        ...current,
+        expenses: [json.expense!, ...current.expenses].sort((a, b) => b.date.localeCompare(a.date)),
+        dashboard: json.dashboard ?? current.dashboard
+      }));
+      setExpenseForm(defaultExpenseForm());
+      toast.success("Gasto registrado.");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Error registrando gasto.");
+    } finally {
+      setSavingExpense(false);
     }
   }
 
@@ -687,7 +1094,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
           </div>
         ) : (
           <>
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <SummaryCard
                 icon={CircleDollarSign}
                 label="Cobrado mes"
@@ -699,6 +1106,18 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                 label="Previsto mes"
                 value={formatCents(data.dashboard.expectedThisMonthCents)}
                 hint="Pagos con vencimiento este mes"
+              />
+              <SummaryCard
+                icon={ReceiptText}
+                label="Gastos mes"
+                value={formatCents(data.dashboard.expensesThisMonthCents)}
+                hint="Salidas registradas este mes"
+              />
+              <SummaryCard
+                icon={LineChart}
+                label="Neto mes"
+                value={formatCents(data.dashboard.netThisMonthCents)}
+                hint="Cobrado menos gastos"
               />
               <SummaryCard
                 icon={Clock3}
@@ -914,6 +1333,77 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-brand-text">Nuevo gasto</h2>
+                    <p className="text-sm text-brand-muted">Se registra en calendario y cuentas actuales.</p>
+                  </div>
+                  <ReceiptText className="h-5 w-5 text-brand-accent" />
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <label className="block text-sm text-brand-muted">
+                    Fecha
+                    <input
+                      type="date"
+                      value={expenseForm.date}
+                      onChange={(event) =>
+                        setExpenseForm((current) => ({ ...current, date: event.target.value }))
+                      }
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Categoria
+                    <input
+                      value={expenseForm.category}
+                      onChange={(event) =>
+                        setExpenseForm((current) => ({ ...current, category: event.target.value }))
+                      }
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Descripcion
+                    <input
+                      value={expenseForm.description}
+                      onChange={(event) =>
+                        setExpenseForm((current) => ({ ...current, description: event.target.value }))
+                      }
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Importe
+                    <input
+                      value={expenseForm.amount}
+                      onChange={(event) =>
+                        setExpenseForm((current) => ({ ...current, amount: event.target.value }))
+                      }
+                      placeholder="120,00"
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted md:col-span-2">
+                    Notas
+                    <textarea
+                      value={expenseForm.notes}
+                      onChange={(event) =>
+                        setExpenseForm((current) => ({ ...current, notes: event.target.value }))
+                      }
+                      rows={3}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                </div>
+                <div className="mt-4">
+                  <BrandButton onClick={handleCreateExpense} disabled={savingExpense}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    {savingExpense ? "Guardando..." : "Registrar gasto"}
+                  </BrandButton>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <h2 className="text-lg font-semibold text-brand-text">Proximos cobros</h2>
                 <div className="mt-3 space-y-2">
                   {upcomingPayments.length ? (
@@ -950,6 +1440,501 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
               </div>
             </section>
 
+            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-5 w-5 text-brand-accent" />
+                      <h2 className="text-lg font-semibold text-brand-text">Generador de facturas</h2>
+                    </div>
+                    <p className="mt-1 text-sm text-brand-muted">
+                      Factura ordinaria con emisor, receptor, conceptos, base, IVA, IRPF opcional y total.
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-2 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-xs text-brand-text">
+                    {invoiceForm.series}-{String(invoiceForm.sequenceNumber || "1").padStart(4, "0")}
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-4 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="h-4 w-4 text-brand-accent" />
+                        <h3 className="text-sm font-semibold text-brand-text">Datos fiscales por defecto</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSaveInvoiceSettings}
+                        disabled={savingInvoiceSettings}
+                        className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10 disabled:opacity-60"
+                      >
+                        <Save className="h-3.5 w-3.5" />
+                        {savingInvoiceSettings ? "Guardando..." : "Guardar"}
+                      </button>
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Nombre fiscal
+                        <input
+                          value={invoiceSettingsForm.businessName}
+                          onChange={(event) => updateInvoiceSettingsForm("businessName", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        NIF/CIF
+                        <input
+                          value={invoiceSettingsForm.taxId}
+                          onChange={(event) => updateInvoiceSettingsForm("taxId", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Email
+                        <input
+                          value={invoiceSettingsForm.email}
+                          onChange={(event) => updateInvoiceSettingsForm("email", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Direccion fiscal
+                        <input
+                          value={invoiceSettingsForm.address}
+                          onChange={(event) => updateInvoiceSettingsForm("address", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        CP
+                        <input
+                          value={invoiceSettingsForm.postalCode}
+                          onChange={(event) => updateInvoiceSettingsForm("postalCode", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Ciudad
+                        <input
+                          value={invoiceSettingsForm.city}
+                          onChange={(event) => updateInvoiceSettingsForm("city", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Provincia
+                        <input
+                          value={invoiceSettingsForm.province}
+                          onChange={(event) => updateInvoiceSettingsForm("province", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Pais
+                        <input
+                          value={invoiceSettingsForm.country}
+                          onChange={(event) => updateInvoiceSettingsForm("country", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Serie
+                        <input
+                          value={invoiceSettingsForm.invoiceSeries}
+                          onChange={(event) => updateInvoiceSettingsForm("invoiceSeries", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Siguiente numero
+                        <input
+                          type="number"
+                          min={1}
+                          value={invoiceSettingsForm.nextInvoiceNumber}
+                          onChange={(event) => updateInvoiceSettingsForm("nextInvoiceNumber", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        IVA por defecto (%)
+                        <input
+                          value={invoiceSettingsForm.defaultVatRate}
+                          onChange={(event) => updateInvoiceSettingsForm("defaultVatRate", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        IRPF por defecto (%)
+                        <input
+                          value={invoiceSettingsForm.defaultIrpfRate}
+                          onChange={(event) => updateInvoiceSettingsForm("defaultIrpfRate", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Telefono
+                        <input
+                          value={invoiceSettingsForm.phone}
+                          onChange={(event) => updateInvoiceSettingsForm("phone", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Web
+                        <input
+                          value={invoiceSettingsForm.website}
+                          onChange={(event) => updateInvoiceSettingsForm("website", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Metodo de pago
+                        <input
+                          value={invoiceSettingsForm.paymentMethod}
+                          onChange={(event) => updateInvoiceSettingsForm("paymentMethod", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        IBAN
+                        <input
+                          value={invoiceSettingsForm.bankIban}
+                          onChange={(event) => updateInvoiceSettingsForm("bankIban", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Notas por defecto
+                        <textarea
+                          value={invoiceSettingsForm.notes}
+                          onChange={(event) => updateInvoiceSettingsForm("notes", event.target.value)}
+                          rows={2}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <h3 className="text-sm font-semibold text-brand-text">Nueva factura</h3>
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <label className="block text-sm text-brand-muted">
+                        Serie
+                        <input
+                          value={invoiceForm.series}
+                          onChange={(event) => updateInvoiceForm("series", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Numero
+                        <input
+                          type="number"
+                          min={1}
+                          value={invoiceForm.sequenceNumber}
+                          onChange={(event) => updateInvoiceForm("sequenceNumber", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Fecha
+                        <input
+                          type="date"
+                          value={invoiceForm.issueDate}
+                          onChange={(event) => updateInvoiceForm("issueDate", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Fecha operacion
+                        <input
+                          type="date"
+                          value={invoiceForm.operationDate}
+                          onChange={(event) => updateInvoiceForm("operationDate", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Vencimiento
+                        <input
+                          type="date"
+                          value={invoiceForm.dueDate}
+                          onChange={(event) => updateInvoiceForm("dueDate", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Cliente atleta
+                        <select
+                          value={invoiceForm.clientAthleteUsername}
+                          onChange={(event) => selectInvoiceClient(event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        >
+                          <option value="">Manual</option>
+                          {data.athletes.map((athlete) => (
+                            <option key={athlete.username} value={athlete.username}>
+                              {athlete.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Nombre / razon social cliente
+                        <input
+                          value={invoiceForm.clientName}
+                          onChange={(event) => updateInvoiceForm("clientName", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        NIF cliente
+                        <input
+                          value={invoiceForm.clientTaxId}
+                          onChange={(event) => updateInvoiceForm("clientTaxId", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-3">
+                        Direccion cliente
+                        <input
+                          value={invoiceForm.clientAddress}
+                          onChange={(event) => updateInvoiceForm("clientAddress", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        CP
+                        <input
+                          value={invoiceForm.clientPostalCode}
+                          onChange={(event) => updateInvoiceForm("clientPostalCode", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Ciudad
+                        <input
+                          value={invoiceForm.clientCity}
+                          onChange={(event) => updateInvoiceForm("clientCity", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Provincia
+                        <input
+                          value={invoiceForm.clientProvince}
+                          onChange={(event) => updateInvoiceForm("clientProvince", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Pais
+                        <input
+                          value={invoiceForm.clientCountry}
+                          onChange={(event) => updateInvoiceForm("clientCountry", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Email cliente
+                        <input
+                          value={invoiceForm.clientEmail}
+                          onChange={(event) => updateInvoiceForm("clientEmail", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="text-sm font-semibold text-brand-text">Conceptos</h4>
+                        <button
+                          type="button"
+                          onClick={addInvoiceLine}
+                          className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Linea
+                        </button>
+                      </div>
+                      {invoiceForm.lineItems.map((line) => (
+                        <div key={line.id} className="grid gap-2 rounded-xl border border-white/10 bg-black/25 p-3 md:grid-cols-12">
+                          <label className="block text-xs text-brand-muted md:col-span-4">
+                            Concepto
+                            <input
+                              value={line.description}
+                              onChange={(event) => updateInvoiceLine(line.id, { description: event.target.value })}
+                              className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
+                          <label className="block text-xs text-brand-muted md:col-span-2">
+                            Cantidad
+                            <input
+                              value={line.quantity}
+                              onChange={(event) => updateInvoiceLine(line.id, { quantity: event.target.value })}
+                              className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
+                          <label className="block text-xs text-brand-muted md:col-span-2">
+                            Precio
+                            <input
+                              value={line.unitPrice}
+                              onChange={(event) => updateInvoiceLine(line.id, { unitPrice: event.target.value })}
+                              placeholder="90,00"
+                              className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
+                          <label className="block text-xs text-brand-muted md:col-span-1">
+                            Dto.
+                            <input
+                              value={line.discountPercent}
+                              onChange={(event) => updateInvoiceLine(line.id, { discountPercent: event.target.value })}
+                              className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
+                          <label className="block text-xs text-brand-muted md:col-span-1">
+                            IVA
+                            <input
+                              value={line.vatRate}
+                              onChange={(event) => updateInvoiceLine(line.id, { vatRate: event.target.value })}
+                              className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                            />
+                          </label>
+                          <div className="flex items-end justify-between gap-2 md:col-span-2">
+                            <p className="pb-2 text-sm font-semibold text-brand-text">
+                              {formatCents(
+                                calculateInvoiceLineBaseCents(
+                                  invoicePreviewLineItems.find((item) => item.id === line.id) ?? {
+                                    quantity: 0,
+                                    unitPriceCents: 0,
+                                    discountPercent: 0
+                                  }
+                                ).taxableBaseCents,
+                                invoiceForm.currency
+                              )}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => removeInvoiceLine(line.id)}
+                              className="rounded-lg border border-red-400/35 p-2 text-red-100 transition hover:bg-red-500/10"
+                              aria-label="Eliminar linea"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      <label className="block text-sm text-brand-muted">
+                        IRPF (%)
+                        <input
+                          value={invoiceForm.irpfRate}
+                          onChange={(event) => updateInvoiceForm("irpfRate", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        Metodo de pago
+                        <input
+                          value={invoiceForm.paymentMethod}
+                          onChange={(event) => updateInvoiceForm("paymentMethod", event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted md:col-span-3">
+                        Notas de factura
+                        <textarea
+                          value={invoiceForm.notes}
+                          onChange={(event) => updateInvoiceForm("notes", event.target.value)}
+                          rows={2}
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-4 grid gap-2 rounded-xl border border-brand-accent/20 bg-brand-accent/10 p-3 text-sm">
+                      <div className="flex justify-between gap-3 text-brand-muted">
+                        <span>Base imponible</span>
+                        <strong className="text-brand-text">
+                          {formatCents(invoicePreviewTotals.taxableBaseCents, invoiceForm.currency)}
+                        </strong>
+                      </div>
+                      <div className="flex justify-between gap-3 text-brand-muted">
+                        <span>IVA</span>
+                        <strong className="text-brand-text">
+                          {formatCents(invoicePreviewTotals.vatCents, invoiceForm.currency)}
+                        </strong>
+                      </div>
+                      {invoicePreviewTotals.irpfCents > 0 ? (
+                        <div className="flex justify-between gap-3 text-brand-muted">
+                          <span>IRPF</span>
+                          <strong className="text-brand-text">
+                            -{formatCents(invoicePreviewTotals.irpfCents, invoiceForm.currency)}
+                          </strong>
+                        </div>
+                      ) : null}
+                      <div className="flex justify-between gap-3 border-t border-white/10 pt-2 text-base text-brand-text">
+                        <span className="font-semibold">Total</span>
+                        <strong>{formatCents(invoicePreviewTotals.totalCents, invoiceForm.currency)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      <BrandButton onClick={handleCreateInvoice} disabled={savingInvoice}>
+                        <FileText className="mr-2 h-4 w-4" />
+                        {savingInvoice ? "Generando..." : "Emitir y abrir PDF"}
+                      </BrandButton>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+                <div className="flex items-center gap-2">
+                  <ReceiptText className="h-5 w-5 text-brand-accent" />
+                  <h2 className="text-lg font-semibold text-brand-text">Facturas emitidas</h2>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {data.invoices.slice(0, 10).map((invoice) => (
+                    <article key={invoice.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-brand-text">
+                            {invoice.invoiceNumber}
+                          </p>
+                          <p className="mt-1 text-xs text-brand-muted">
+                            {invoice.client.name} - {formatDate(invoice.issueDate)}
+                          </p>
+                        </div>
+                        <p className="shrink-0 text-sm font-semibold text-brand-text">
+                          {formatCents(invoice.totals.totalCents, invoice.currency)}
+                        </p>
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <a
+                          href={`/api/admin/finance/invoices/${invoice.id}/pdf`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          PDF
+                        </a>
+                      </div>
+                    </article>
+                  ))}
+                  {!data.invoices.length ? (
+                    <p className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                      Sin facturas emitidas.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+
             <section className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="mb-3 flex items-center gap-2">
@@ -980,7 +1965,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <h2 className="text-lg font-semibold text-brand-text">Calendario financiero</h2>
-                    <p className="text-sm text-brand-muted">Pagos previstos por dia.</p>
+                    <p className="text-sm text-brand-muted">Pagos previstos y gastos registrados por dia.</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -1016,6 +2001,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     const payments = (paymentsByDate.get(cell.date) ?? [])
                       .filter((payment) => !athleteFilter || payment.athleteUsername === athleteFilter)
                       .slice(0, 3);
+                    const expenses = (expensesByDate.get(cell.date) ?? []).slice(0, 3);
                     return (
                       <div
                         key={cell.date}
@@ -1041,6 +2027,15 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                               </button>
                             );
                           })}
+                          {expenses.map((expense) => (
+                            <div
+                              key={expense.id}
+                              className="block w-full truncate rounded-md border border-red-400/35 bg-red-500/10 px-1.5 py-1 text-left text-[11px] text-red-100"
+                              title={`${expense.description} - ${formatCents(expense.amountCents)}`}
+                            >
+                              {expense.description} - {formatCents(expense.amountCents)}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     );
@@ -1174,6 +2169,36 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     Selecciona un atleta para ver sus contratos, pagos e historico.
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="flex items-center gap-2">
+                <ReceiptText className="h-5 w-5 text-brand-accent" />
+                <h2 className="text-lg font-semibold text-brand-text">Gastos registrados</h2>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {data.expenses.slice(0, 9).map((expense) => (
+                  <article key={expense.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-brand-text">{expense.description}</p>
+                        <p className="mt-1 text-xs text-brand-muted">
+                          {expense.category} - {formatDate(expense.date)}
+                        </p>
+                      </div>
+                      <p className="shrink-0 text-sm font-semibold text-red-100">
+                        {formatCents(expense.amountCents, expense.currency)}
+                      </p>
+                    </div>
+                    {expense.notes ? <p className="mt-2 text-xs text-brand-muted">{expense.notes}</p> : null}
+                  </article>
+                ))}
+                {!data.expenses.length ? (
+                  <p className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                    Sin gastos registrados.
+                  </p>
+                ) : null}
               </div>
             </section>
 

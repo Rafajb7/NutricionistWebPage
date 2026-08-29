@@ -5,31 +5,45 @@ import { getGoogleAuth } from "@/lib/google/auth";
 import { isGoogleRateLimitError, withGoogleApiRetry } from "@/lib/google/retry";
 import {
   buildFinancePaymentsForContract,
+  calculateFinanceInvoiceTotals,
   getContractDates,
   todayIsoDate
 } from "@/lib/finance/calculations";
 import type {
+  CreateFinanceExpenseInput,
   CreateFinanceContractInput,
+  CreateFinanceInvoiceInput,
   FinanceContract,
   FinanceContractStatus,
+  FinanceExpense,
+  FinanceInvoice,
+  FinanceInvoiceIssuerSettings,
+  FinanceInvoiceLineItem,
   FinancePayment,
   FinancePaymentStatus,
   FinancePlanOption,
   UpdateFinanceContractInput,
+  UpdateFinanceInvoiceSettingsInput,
   UpdateFinancePaymentInput
 } from "@/lib/finance/types";
-import { DEFAULT_FINANCE_PLAN_OPTIONS } from "@/lib/finance/types";
+import { DEFAULT_FINANCE_INVOICE_SETTINGS, DEFAULT_FINANCE_PLAN_OPTIONS } from "@/lib/finance/types";
 
 type FinanceSheetsInfo = {
   spreadsheetId: string;
   contractsWorksheet: string;
   paymentsWorksheet: string;
+  expensesWorksheet: string;
+  invoicesWorksheet: string;
+  invoiceSettingsWorksheet: string;
   planOptionsWorksheet: string;
 };
 
 type FinanceDataset = {
   contracts: FinanceContract[];
   payments: FinancePayment[];
+  expenses: FinanceExpense[];
+  invoices: FinanceInvoice[];
+  invoiceSettings: FinanceInvoiceIssuerSettings;
   planOptions: FinancePlanOption[];
 };
 
@@ -42,6 +56,9 @@ let financeDatasetCacheVersion = 0;
 const WORKSHEETS = {
   contracts: "FinanceContracts",
   payments: "FinancePayments",
+  expenses: "FinanceExpenses",
+  invoices: "FinanceInvoices",
+  invoiceSettings: "FinanceInvoiceSettings",
   planOptions: "FinancePlanOptions"
 } as const;
 
@@ -100,6 +117,73 @@ const PAYMENT_HEADERS = [
   "Actualizado"
 ];
 
+const EXPENSE_HEADERS = [
+  "Id",
+  "Fecha",
+  "Categoria",
+  "Descripcion",
+  "Importe cents",
+  "Moneda",
+  "Notas",
+  "Creado",
+  "Actualizado"
+];
+
+const INVOICE_HEADERS = [
+  "Id",
+  "Numero factura",
+  "Serie",
+  "Numero secuencia",
+  "Fecha expedicion",
+  "Fecha operacion",
+  "Fecha vencimiento",
+  "Cliente nombre",
+  "Cliente NIF",
+  "Cliente direccion",
+  "Cliente CP",
+  "Cliente ciudad",
+  "Cliente provincia",
+  "Cliente pais",
+  "Cliente email",
+  "Emisor JSON",
+  "Lineas JSON",
+  "IRPF %",
+  "Subtotal cents",
+  "Descuento cents",
+  "Base imponible cents",
+  "IVA cents",
+  "IRPF cents",
+  "Total cents",
+  "Moneda",
+  "Metodo pago",
+  "Notas",
+  "Estado",
+  "Creado",
+  "Actualizado"
+];
+
+const INVOICE_SETTINGS_HEADERS = [
+  "Id",
+  "Nombre fiscal",
+  "NIF",
+  "Direccion",
+  "CP",
+  "Ciudad",
+  "Provincia",
+  "Pais",
+  "Email",
+  "Telefono",
+  "Web",
+  "Serie",
+  "Siguiente numero",
+  "IVA por defecto %",
+  "IRPF por defecto %",
+  "Metodo pago",
+  "IBAN",
+  "Notas",
+  "Actualizado"
+];
+
 const PLAN_OPTION_HEADERS = ["Key", "Label", "Duration months", "Active", "Sort order"];
 
 let financeSheetsPromise: Promise<FinanceSheetsInfo> | null = null;
@@ -139,6 +223,12 @@ function parseInteger(value: unknown): number {
   return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
 }
 
+function parseRate(value: unknown, fallback = 0): number {
+  const parsed = parseNumber(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(100, Math.max(0, parsed));
+}
+
 function parseBoolean(value: unknown, fallback = false): boolean {
   const normalized = String(value ?? "")
     .normalize("NFD")
@@ -149,6 +239,20 @@ function parseBoolean(value: unknown, fallback = false): boolean {
   if (["si", "yes", "true", "1", "activo", "active"].includes(normalized)) return true;
   if (["no", "false", "0", "inactivo", "inactive"].includes(normalized)) return false;
   return fallback;
+}
+
+function parseJsonValue<T>(value: unknown, fallback: T): T {
+  try {
+    const raw = String(value ?? "").trim();
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeText(value: unknown, maxLength: number): string {
+  return String(value ?? "").trim().slice(0, maxLength);
 }
 
 function parseContractStatus(value: unknown): FinanceContractStatus {
@@ -316,6 +420,9 @@ async function ensureFinanceSheetsReady(): Promise<FinanceSheetsInfo> {
     const spreadsheetId = await resolveFinanceSpreadsheetId();
     await ensureWorksheet(spreadsheetId, WORKSHEETS.contracts);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.payments);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.expenses);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.invoices);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.invoiceSettings);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.planOptions);
 
     await Promise.all([
@@ -331,6 +438,21 @@ async function ensureFinanceSheetsReady(): Promise<FinanceSheetsInfo> {
       }),
       ensureHeaderRow({
         spreadsheetId,
+        worksheetName: WORKSHEETS.expenses,
+        headers: EXPENSE_HEADERS
+      }),
+      ensureHeaderRow({
+        spreadsheetId,
+        worksheetName: WORKSHEETS.invoices,
+        headers: INVOICE_HEADERS
+      }),
+      ensureHeaderRow({
+        spreadsheetId,
+        worksheetName: WORKSHEETS.invoiceSettings,
+        headers: INVOICE_SETTINGS_HEADERS
+      }),
+      ensureHeaderRow({
+        spreadsheetId,
         worksheetName: WORKSHEETS.planOptions,
         headers: PLAN_OPTION_HEADERS
       })
@@ -340,6 +462,9 @@ async function ensureFinanceSheetsReady(): Promise<FinanceSheetsInfo> {
       spreadsheetId,
       contractsWorksheet: WORKSHEETS.contracts,
       paymentsWorksheet: WORKSHEETS.payments,
+      expensesWorksheet: WORKSHEETS.expenses,
+      invoicesWorksheet: WORKSHEETS.invoices,
+      invoiceSettingsWorksheet: WORKSHEETS.invoiceSettings,
       planOptionsWorksheet: WORKSHEETS.planOptions
     };
   })();
@@ -513,6 +638,142 @@ function parsePayment(row: string[]): FinancePayment | null {
   };
 }
 
+function parseExpense(row: string[]): FinanceExpense | null {
+  const id = String(row[0] ?? "").trim();
+  const date = String(row[1] ?? "").trim();
+  const description = String(row[3] ?? "").trim();
+  if (!id || !date || !description) return null;
+
+  return {
+    id,
+    date,
+    category: String(row[2] ?? "").trim(),
+    description,
+    amountCents: parseInteger(row[4]),
+    currency: String(row[5] ?? "EUR").trim() || "EUR",
+    notes: String(row[6] ?? "").trim(),
+    createdAt: String(row[7] ?? "").trim(),
+    updatedAt: String(row[8] ?? "").trim()
+  };
+}
+
+function normalizeInvoiceIssuerSettings(
+  input: Partial<FinanceInvoiceIssuerSettings>
+): FinanceInvoiceIssuerSettings {
+  return {
+    ...DEFAULT_FINANCE_INVOICE_SETTINGS,
+    ...input,
+    id: input.id?.trim() || DEFAULT_FINANCE_INVOICE_SETTINGS.id,
+    businessName: normalizeText(input.businessName, 180),
+    taxId: normalizeText(input.taxId, 40),
+    address: normalizeText(input.address, 240),
+    postalCode: normalizeText(input.postalCode, 20),
+    city: normalizeText(input.city, 120),
+    province: normalizeText(input.province, 120),
+    country: normalizeText(input.country || DEFAULT_FINANCE_INVOICE_SETTINGS.country, 80),
+    email: normalizeText(input.email, 160),
+    phone: normalizeText(input.phone, 60),
+    website: normalizeText(input.website, 160),
+    invoiceSeries: normalizeText(input.invoiceSeries || DEFAULT_FINANCE_INVOICE_SETTINGS.invoiceSeries, 40),
+    nextInvoiceNumber: Math.max(1, Math.trunc(input.nextInvoiceNumber ?? 1)),
+    defaultVatRate: parseRate(input.defaultVatRate, DEFAULT_FINANCE_INVOICE_SETTINGS.defaultVatRate),
+    defaultIrpfRate: parseRate(input.defaultIrpfRate, DEFAULT_FINANCE_INVOICE_SETTINGS.defaultIrpfRate),
+    paymentMethod: normalizeText(input.paymentMethod || DEFAULT_FINANCE_INVOICE_SETTINGS.paymentMethod, 160),
+    bankIban: normalizeText(input.bankIban, 80),
+    notes: normalizeText(input.notes, 1000),
+    updatedAt: normalizeText(input.updatedAt, 80)
+  };
+}
+
+function parseInvoiceSettings(row: string[]): FinanceInvoiceIssuerSettings | null {
+  const id = String(row[0] ?? "").trim();
+  if (!id) return null;
+  return normalizeInvoiceIssuerSettings({
+    id,
+    businessName: row[1],
+    taxId: row[2],
+    address: row[3],
+    postalCode: row[4],
+    city: row[5],
+    province: row[6],
+    country: row[7],
+    email: row[8],
+    phone: row[9],
+    website: row[10],
+    invoiceSeries: row[11],
+    nextInvoiceNumber: parseInteger(row[12]),
+    defaultVatRate: parseRate(row[13], DEFAULT_FINANCE_INVOICE_SETTINGS.defaultVatRate),
+    defaultIrpfRate: parseRate(row[14], DEFAULT_FINANCE_INVOICE_SETTINGS.defaultIrpfRate),
+    paymentMethod: row[15],
+    bankIban: row[16],
+    notes: row[17],
+    updatedAt: row[18]
+  });
+}
+
+function normalizeInvoiceLineItem(input: Partial<FinanceInvoiceLineItem>): FinanceInvoiceLineItem {
+  return {
+    id: normalizeText(input.id, 120) || randomUUID(),
+    description: normalizeText(input.description, 240),
+    quantity: Number.isFinite(input.quantity) ? Math.max(0.001, Number(input.quantity)) : 1,
+    unitPriceCents: Number.isFinite(input.unitPriceCents)
+      ? Math.max(0, Math.trunc(Number(input.unitPriceCents)))
+      : 0,
+    discountPercent: parseRate(input.discountPercent, 0),
+    vatRate: parseRate(input.vatRate, DEFAULT_FINANCE_INVOICE_SETTINGS.defaultVatRate)
+  };
+}
+
+function parseInvoice(row: string[]): FinanceInvoice | null {
+  const id = String(row[0] ?? "").trim();
+  const invoiceNumber = String(row[1] ?? "").trim();
+  if (!id || !invoiceNumber) return null;
+
+  const issuer = normalizeInvoiceIssuerSettings(
+    parseJsonValue<Partial<FinanceInvoiceIssuerSettings>>(row[15], DEFAULT_FINANCE_INVOICE_SETTINGS)
+  );
+  const lineItems = parseJsonValue<FinanceInvoiceLineItem[]>(row[16], []).map(normalizeInvoiceLineItem);
+  const irpfRate = parseRate(row[17], 0);
+  const fallbackTotals = calculateFinanceInvoiceTotals(lineItems, irpfRate);
+
+  return {
+    id,
+    invoiceNumber,
+    series: String(row[2] ?? "").trim(),
+    sequenceNumber: Math.max(1, parseInteger(row[3])),
+    issueDate: String(row[4] ?? "").trim(),
+    operationDate: String(row[5] ?? "").trim(),
+    dueDate: String(row[6] ?? "").trim(),
+    client: {
+      name: String(row[7] ?? "").trim(),
+      taxId: String(row[8] ?? "").trim(),
+      address: String(row[9] ?? "").trim(),
+      postalCode: String(row[10] ?? "").trim(),
+      city: String(row[11] ?? "").trim(),
+      province: String(row[12] ?? "").trim(),
+      country: String(row[13] ?? "Espana").trim() || "Espana",
+      email: String(row[14] ?? "").trim()
+    },
+    issuer,
+    lineItems,
+    irpfRate,
+    totals: {
+      subtotalCents: parseInteger(row[18]) || fallbackTotals.subtotalCents,
+      discountCents: parseInteger(row[19]) || fallbackTotals.discountCents,
+      taxableBaseCents: parseInteger(row[20]) || fallbackTotals.taxableBaseCents,
+      vatCents: parseInteger(row[21]) || fallbackTotals.vatCents,
+      irpfCents: parseInteger(row[22]) || fallbackTotals.irpfCents,
+      totalCents: parseInteger(row[23]) || fallbackTotals.totalCents
+    },
+    currency: String(row[24] ?? "EUR").trim() || "EUR",
+    paymentMethod: String(row[25] ?? "").trim(),
+    notes: String(row[26] ?? "").trim(),
+    status: String(row[27] ?? "").trim() === "cancelled" ? "cancelled" : "issued",
+    createdAt: String(row[28] ?? "").trim(),
+    updatedAt: String(row[29] ?? "").trim()
+  };
+}
+
 function serializePlanOption(option: FinancePlanOption): Array<string | number> {
   return [
     option.key,
@@ -569,6 +830,79 @@ function serializePayment(payment: FinancePayment): Array<string | number> {
   ];
 }
 
+function serializeExpense(expense: FinanceExpense): Array<string | number> {
+  return [
+    expense.id,
+    expense.date,
+    expense.category,
+    expense.description,
+    expense.amountCents,
+    expense.currency,
+    expense.notes,
+    expense.createdAt,
+    expense.updatedAt
+  ];
+}
+
+function serializeInvoiceSettings(settings: FinanceInvoiceIssuerSettings): Array<string | number> {
+  return [
+    settings.id,
+    settings.businessName,
+    settings.taxId,
+    settings.address,
+    settings.postalCode,
+    settings.city,
+    settings.province,
+    settings.country,
+    settings.email,
+    settings.phone,
+    settings.website,
+    settings.invoiceSeries,
+    settings.nextInvoiceNumber,
+    settings.defaultVatRate,
+    settings.defaultIrpfRate,
+    settings.paymentMethod,
+    settings.bankIban,
+    settings.notes,
+    settings.updatedAt
+  ];
+}
+
+function serializeInvoice(invoice: FinanceInvoice): Array<string | number> {
+  return [
+    invoice.id,
+    invoice.invoiceNumber,
+    invoice.series,
+    invoice.sequenceNumber,
+    invoice.issueDate,
+    invoice.operationDate,
+    invoice.dueDate,
+    invoice.client.name,
+    invoice.client.taxId,
+    invoice.client.address,
+    invoice.client.postalCode,
+    invoice.client.city,
+    invoice.client.province,
+    invoice.client.country,
+    invoice.client.email,
+    JSON.stringify(invoice.issuer),
+    JSON.stringify(invoice.lineItems),
+    invoice.irpfRate,
+    invoice.totals.subtotalCents,
+    invoice.totals.discountCents,
+    invoice.totals.taxableBaseCents,
+    invoice.totals.vatCents,
+    invoice.totals.irpfCents,
+    invoice.totals.totalCents,
+    invoice.currency,
+    invoice.paymentMethod,
+    invoice.notes,
+    invoice.status,
+    invoice.createdAt,
+    invoice.updatedAt
+  ];
+}
+
 async function ensureDefaultPlanOptions(dataset: FinanceDataset): Promise<FinanceDataset> {
   if (dataset.planOptions.length) return dataset;
 
@@ -586,11 +920,20 @@ async function ensureDefaultPlanOptions(dataset: FinanceDataset): Promise<Financ
 }
 
 async function readFinanceDatasetFresh(): Promise<FinanceDataset> {
-  const [contractRows, paymentRows, optionRows] = await readWorksheetRowsBatch([
+  const [contractRows, paymentRows, expenseRows, invoiceRows, invoiceSettingsRows, optionRows] = await readWorksheetRowsBatch([
     { worksheetName: WORKSHEETS.contracts, headers: CONTRACT_HEADERS },
     { worksheetName: WORKSHEETS.payments, headers: PAYMENT_HEADERS },
+    { worksheetName: WORKSHEETS.expenses, headers: EXPENSE_HEADERS },
+    { worksheetName: WORKSHEETS.invoices, headers: INVOICE_HEADERS },
+    { worksheetName: WORKSHEETS.invoiceSettings, headers: INVOICE_SETTINGS_HEADERS },
     { worksheetName: WORKSHEETS.planOptions, headers: PLAN_OPTION_HEADERS }
   ]);
+  const invoiceSettings =
+    invoiceSettingsRows
+      .map(parseInvoiceSettings)
+      .filter((settings): settings is FinanceInvoiceIssuerSettings => Boolean(settings))
+      .find((settings) => settings.id === DEFAULT_FINANCE_INVOICE_SETTINGS.id) ??
+    normalizeInvoiceIssuerSettings(DEFAULT_FINANCE_INVOICE_SETTINGS);
 
   return ensureDefaultPlanOptions({
     contracts: contractRows
@@ -599,6 +942,13 @@ async function readFinanceDatasetFresh(): Promise<FinanceDataset> {
     payments: paymentRows
       .map(parsePayment)
       .filter((payment): payment is FinancePayment => Boolean(payment)),
+    expenses: expenseRows
+      .map(parseExpense)
+      .filter((expense): expense is FinanceExpense => Boolean(expense)),
+    invoices: invoiceRows
+      .map(parseInvoice)
+      .filter((invoice): invoice is FinanceInvoice => Boolean(invoice)),
+    invoiceSettings,
     planOptions: optionRows
       .map(parsePlanOption)
       .filter((option): option is FinancePlanOption => Boolean(option))
@@ -647,14 +997,152 @@ async function readFinanceDataset(options?: { force?: boolean }): Promise<Financ
 export async function listFinanceRecords(): Promise<{
   contracts: FinanceContract[];
   payments: FinancePayment[];
+  expenses: FinanceExpense[];
+  invoices: FinanceInvoice[];
+  invoiceSettings: FinanceInvoiceIssuerSettings;
   planOptions: FinancePlanOption[];
 }> {
   const dataset = await readFinanceDataset();
   return {
     contracts: [...dataset.contracts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     payments: [...dataset.payments].sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    expenses: [...dataset.expenses].sort((a, b) => b.date.localeCompare(a.date)),
+    invoices: [...dataset.invoices].sort((a, b) => b.issueDate.localeCompare(a.issueDate)),
+    invoiceSettings: dataset.invoiceSettings,
     planOptions: [...dataset.planOptions].sort((a, b) => a.sortOrder - b.sortOrder)
   };
+}
+
+export async function updateFinanceInvoiceSettings(
+  input: UpdateFinanceInvoiceSettingsInput
+): Promise<FinanceInvoiceIssuerSettings> {
+  const dataset = await readFinanceDataset({ force: true });
+  const now = new Date().toISOString();
+  const settings = normalizeInvoiceIssuerSettings({
+    ...dataset.invoiceSettings,
+    ...input,
+    id: DEFAULT_FINANCE_INVOICE_SETTINGS.id,
+    updatedAt: now
+  });
+
+  const persisted = await updateWorksheetRowById(
+    WORKSHEETS.invoiceSettings,
+    INVOICE_SETTINGS_HEADERS,
+    settings.id,
+    serializeInvoiceSettings(settings)
+  );
+  if (!persisted) {
+    await appendWorksheetRows(WORKSHEETS.invoiceSettings, INVOICE_SETTINGS_HEADERS, [
+      serializeInvoiceSettings(settings)
+    ]);
+  }
+  cacheFinanceDataset({
+    ...dataset,
+    invoiceSettings: settings
+  });
+  return settings;
+}
+
+function buildInvoiceNumber(series: string, sequenceNumber: number): string {
+  return `${series}-${String(sequenceNumber).padStart(4, "0")}`;
+}
+
+function getNextInvoiceSequence(series: string, settings: FinanceInvoiceIssuerSettings, invoices: FinanceInvoice[]): number {
+  const highestInSeries = invoices
+    .filter((invoice) => invoice.series === series)
+    .reduce((highest, invoice) => Math.max(highest, invoice.sequenceNumber), 0);
+  const configuredNext = settings.invoiceSeries === series ? settings.nextInvoiceNumber : 1;
+  return Math.max(configuredNext, highestInSeries + 1, 1);
+}
+
+function normalizeInvoiceClient(input: CreateFinanceInvoiceInput["client"]): CreateFinanceInvoiceInput["client"] {
+  return {
+    name: normalizeText(input.name, 180),
+    taxId: normalizeText(input.taxId, 40),
+    address: normalizeText(input.address, 240),
+    postalCode: normalizeText(input.postalCode, 20),
+    city: normalizeText(input.city, 120),
+    province: normalizeText(input.province, 120),
+    country: normalizeText(input.country || "Espana", 80),
+    email: normalizeText(input.email, 160)
+  };
+}
+
+export async function createFinanceInvoice(input: CreateFinanceInvoiceInput): Promise<FinanceInvoice> {
+  const dataset = await readFinanceDataset({ force: true });
+  const now = new Date().toISOString();
+  const issuer = normalizeInvoiceIssuerSettings(dataset.invoiceSettings);
+  const series = normalizeText(input.series || issuer.invoiceSeries, 40) || DEFAULT_FINANCE_INVOICE_SETTINGS.invoiceSeries;
+  const sequenceNumber =
+    input.sequenceNumber && input.sequenceNumber > 0
+      ? Math.trunc(input.sequenceNumber)
+      : getNextInvoiceSequence(series, issuer, dataset.invoices);
+  const invoiceNumber = buildInvoiceNumber(series, sequenceNumber);
+
+  if (dataset.invoices.some((invoice) => invoice.invoiceNumber === invoiceNumber)) {
+    throw new Error(`Invoice number already exists: ${invoiceNumber}`);
+  }
+
+  const lineItems = input.lineItems
+    .map(normalizeInvoiceLineItem)
+    .filter((line) => line.description && line.quantity > 0 && line.unitPriceCents > 0);
+  if (!lineItems.length) {
+    throw new Error("Invoice must include at least one valid line item.");
+  }
+
+  const irpfRate = parseRate(input.irpfRate, 0);
+  const totals = calculateFinanceInvoiceTotals(lineItems, irpfRate);
+  const invoice: FinanceInvoice = {
+    id: randomUUID(),
+    invoiceNumber,
+    series,
+    sequenceNumber,
+    issueDate: input.issueDate,
+    operationDate: input.operationDate?.trim() || input.issueDate,
+    dueDate: input.dueDate?.trim() || "",
+    client: normalizeInvoiceClient(input.client),
+    issuer,
+    lineItems,
+    irpfRate,
+    totals,
+    currency: normalizeText(input.currency || "EUR", 3).toUpperCase() || "EUR",
+    paymentMethod: normalizeText(input.paymentMethod || issuer.paymentMethod, 160),
+    notes: normalizeText(input.notes, 1000),
+    status: "issued",
+    createdAt: now,
+    updatedAt: now
+  };
+
+  await appendWorksheetRows(WORKSHEETS.invoices, INVOICE_HEADERS, [serializeInvoice(invoice)]);
+
+  if (series === issuer.invoiceSeries && sequenceNumber >= issuer.nextInvoiceNumber) {
+    await updateFinanceInvoiceSettings({ nextInvoiceNumber: sequenceNumber + 1 });
+  }
+
+  return invoice;
+}
+
+export async function getFinanceInvoiceById(invoiceId: string): Promise<FinanceInvoice | null> {
+  const dataset = await readFinanceDataset();
+  return dataset.invoices.find((invoice) => invoice.id === invoiceId) ?? null;
+}
+
+export async function createFinanceExpense(input: CreateFinanceExpenseInput): Promise<FinanceExpense> {
+  const now = new Date().toISOString();
+  const expense: FinanceExpense = {
+    id: randomUUID(),
+    date: input.date,
+    category: input.category.trim().slice(0, 120),
+    description: input.description.trim().slice(0, 180),
+    amountCents: Math.max(1, Math.trunc(input.amountCents)),
+    currency: input.currency.trim().toUpperCase() || "EUR",
+    notes: input.notes?.trim().slice(0, 1000) ?? "",
+    createdAt: now,
+    updatedAt: now
+  };
+
+  await appendWorksheetRows(WORKSHEETS.expenses, EXPENSE_HEADERS, [serializeExpense(expense)]);
+  return expense;
 }
 
 export async function createFinanceContractWithPayments(

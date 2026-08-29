@@ -4,6 +4,8 @@ export type FinancePaymentStatus = "pending" | "paid" | "cancelled";
 
 export type FinanceComputedPaymentStatus = FinancePaymentStatus | "overdue";
 
+export type FinanceInvoiceStatus = "issued" | "cancelled";
+
 export type FinancePlanOption = {
   key: string;
   label: string;
@@ -54,6 +56,90 @@ export type FinancePayment = {
   updatedAt: string;
 };
 
+export type FinanceExpense = {
+  id: string;
+  date: string;
+  category: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FinanceInvoiceIssuerSettings = {
+  id: string;
+  businessName: string;
+  taxId: string;
+  address: string;
+  postalCode: string;
+  city: string;
+  province: string;
+  country: string;
+  email: string;
+  phone: string;
+  website: string;
+  invoiceSeries: string;
+  nextInvoiceNumber: number;
+  defaultVatRate: number;
+  defaultIrpfRate: number;
+  paymentMethod: string;
+  bankIban: string;
+  notes: string;
+  updatedAt: string;
+};
+
+export type FinanceInvoiceLineItem = {
+  id: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountPercent: number;
+  vatRate: number;
+};
+
+export type FinanceInvoiceTotals = {
+  subtotalCents: number;
+  discountCents: number;
+  taxableBaseCents: number;
+  vatCents: number;
+  irpfCents: number;
+  totalCents: number;
+};
+
+export type FinanceInvoiceClient = {
+  name: string;
+  taxId: string;
+  address: string;
+  postalCode: string;
+  city: string;
+  province: string;
+  country: string;
+  email: string;
+};
+
+export type FinanceInvoice = {
+  id: string;
+  invoiceNumber: string;
+  series: string;
+  sequenceNumber: number;
+  issueDate: string;
+  operationDate: string;
+  dueDate: string;
+  client: FinanceInvoiceClient;
+  issuer: FinanceInvoiceIssuerSettings;
+  lineItems: FinanceInvoiceLineItem[];
+  irpfRate: number;
+  totals: FinanceInvoiceTotals;
+  currency: string;
+  paymentMethod: string;
+  notes: string;
+  status: FinanceInvoiceStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type FinanceAthlete = {
   username: string;
   name: string;
@@ -74,12 +160,16 @@ export type FinanceMonthlyPoint = {
   month: string;
   expectedCents: number;
   paidCents: number;
+  expenseCents: number;
+  netCents: number;
   contractedCents: number;
 };
 
 export type FinanceDashboard = {
   paidThisMonthCents: number;
   expectedThisMonthCents: number;
+  expensesThisMonthCents: number;
+  netThisMonthCents: number;
   pendingCents: number;
   next30DaysCents: number;
   overdueCount: number;
@@ -94,6 +184,9 @@ export type FinanceManagementData = {
   athletes: FinanceAthlete[];
   contracts: FinanceContract[];
   payments: FinancePayment[];
+  expenses: FinanceExpense[];
+  invoices: FinanceInvoice[];
+  invoiceSettings: FinanceInvoiceIssuerSettings;
   planOptions: FinancePlanOption[];
   dashboard: FinanceDashboard;
 };
@@ -135,6 +228,33 @@ export type UpdateFinanceContractInput = {
   today?: string;
 };
 
+export type CreateFinanceExpenseInput = {
+  date: string;
+  category: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  notes?: string;
+};
+
+export type UpdateFinanceInvoiceSettingsInput = Partial<
+  Omit<FinanceInvoiceIssuerSettings, "id" | "updatedAt">
+>;
+
+export type CreateFinanceInvoiceInput = {
+  series?: string;
+  sequenceNumber?: number;
+  issueDate: string;
+  operationDate?: string;
+  dueDate?: string;
+  client: FinanceInvoiceClient;
+  lineItems: FinanceInvoiceLineItem[];
+  irpfRate: number;
+  currency: string;
+  paymentMethod?: string;
+  notes?: string;
+};
+
 export const DEFAULT_FINANCE_PLAN_OPTIONS: FinancePlanOption[] = [
   {
     key: "monthly",
@@ -165,3 +285,25 @@ export const DEFAULT_FINANCE_PLAN_OPTIONS: FinancePlanOption[] = [
     sortOrder: 4
   }
 ];
+
+export const DEFAULT_FINANCE_INVOICE_SETTINGS: FinanceInvoiceIssuerSettings = {
+  id: "default",
+  businessName: "",
+  taxId: "",
+  address: "",
+  postalCode: "",
+  city: "",
+  province: "",
+  country: "Espana",
+  email: "",
+  phone: "",
+  website: "",
+  invoiceSeries: `F-${new Date().getFullYear()}`,
+  nextInvoiceNumber: 1,
+  defaultVatRate: 21,
+  defaultIrpfRate: 0,
+  paymentMethod: "Transferencia bancaria",
+  bankIban: "",
+  notes: "",
+  updatedAt: ""
+};

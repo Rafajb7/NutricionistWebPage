@@ -16,19 +16,27 @@ import {
   parseRestrictionTags,
   serializeRestrictionTags
 } from "@/lib/nutrition/restrictions";
+import {
+  getDefaultUnitWeightGForFood,
+  normalizeQuantityUnitForFood
+} from "@/lib/nutrition/quantity-units";
 import type {
+  AthleteRoadmapStep,
+  AthleteRoadmapStepStatus,
   AthletePrivateNote,
   NutritionAthleteRestriction,
   NutritionAthleteRestrictionKey,
   NutritionAthleteRestrictionType,
   NutritionChangeRequest,
   NutritionChangeRequestStatus,
+  NutritionChangeRequestType,
   NutritionFood,
   NutritionMealCompletion,
   NutritionPlanFoodAlternative,
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionPlanMeal,
+  NutritionQuantityUnit,
   NutritionPlanStatus,
   NutritionPlanSummary,
   NutritionPlanVersion
@@ -43,6 +51,7 @@ type NutritionSheetsInfo = {
   versionsWorksheet: string;
   athleteRestrictionsWorksheet: string;
   athletePrivateNotesWorksheet: string;
+  athleteRoadmapStepsWorksheet: string;
   mealCompletionsWorksheet: string;
   changeRequestsWorksheet: string;
 };
@@ -78,6 +87,7 @@ const WORKSHEETS = {
   versions: "PlanVersions",
   athleteRestrictions: "AthleteRestrictions",
   athletePrivateNotes: "AthletePrivateNotes",
+  athleteRoadmapSteps: "AthleteRoadmapSteps",
   mealCompletions: "MealCompletions",
   changeRequests: "ChangeRequests"
 } as const;
@@ -156,7 +166,9 @@ const PLAN_HEADERS = [
   "Actualizado",
   "Publicado",
   "Drive file id publicado",
-  "Version"
+  "Version",
+  "Suplementacion",
+  "Recomendaciones"
 ];
 
 const MEAL_HEADERS = [
@@ -186,7 +198,10 @@ const PLAN_FOOD_HEADERS = [
   "Texto personalizado",
   "Creado",
   "Actualizado",
-  "Alternativas json"
+  "Alternativas json",
+  "Unidad cantidad",
+  "Gramos unidad",
+  "Opcion comida"
 ];
 
 const VERSION_HEADERS = [
@@ -213,6 +228,19 @@ const ATHLETE_RESTRICTION_HEADERS = [
 ];
 
 const ATHLETE_PRIVATE_NOTE_HEADERS = ["Usuario atleta", "Notas privadas", "Actualizado"];
+
+const ATHLETE_ROADMAP_STEP_HEADERS = [
+  "Id",
+  "Usuario atleta",
+  "Titulo",
+  "Descripcion",
+  "Estado",
+  "Fecha inicio",
+  "Fecha fin",
+  "Orden",
+  "Creado",
+  "Actualizado"
+];
 
 const MEAL_COMPLETION_HEADERS = [
   "Id",
@@ -245,7 +273,9 @@ const CHANGE_REQUEST_HEADERS = [
   "Creado",
   "Actualizado",
   "Resuelto",
-  "Resuelto por"
+  "Resuelto por",
+  "Tipo solicitud",
+  "Detalle solicitud"
 ];
 
 let nutritionSheetsPromise: Promise<NutritionSheetsInfo> | null = null;
@@ -309,8 +339,32 @@ function isIsoDateOnly(value: string): boolean {
 function parseStatus(value: unknown): NutritionPlanStatus {
   const normalized = normalizeTextKey(String(value ?? ""));
   if (normalized === "published" || normalized === "publicado") return "published";
-  if (normalized === "review" || normalized === "en revision") return "review";
-  return "draft";
+  return "review";
+}
+
+function parseQuantityUnit(value: unknown): NutritionQuantityUnit {
+  const normalized = normalizeTextKey(String(value ?? ""));
+  if (normalized === "piece" || normalized === "pieza" || normalized === "piezas") return "piece";
+  if (
+    normalized === "serving" ||
+    normalized === "racion" ||
+    normalized === "raciones" ||
+    normalized === "porcion"
+  ) {
+    return "serving";
+  }
+  return "g";
+}
+
+function parseRoadmapStatus(value: unknown): AthleteRoadmapStepStatus {
+  const normalized = normalizeTextKey(String(value ?? ""));
+  if (normalized === "completed" || normalized === "completada" || normalized === "vivida") {
+    return "completed";
+  }
+  if (normalized === "current" || normalized === "actual" || normalized === "en curso") {
+    return "current";
+  }
+  return "pending";
 }
 
 function parseChangeRequestStatus(value: unknown): NutritionChangeRequestStatus {
@@ -322,6 +376,27 @@ function parseChangeRequestStatus(value: unknown): NutritionChangeRequestStatus 
     return "denied";
   }
   return "pending";
+}
+
+function parseChangeRequestType(value: unknown): NutritionChangeRequestType {
+  const normalized = normalizeTextKey(String(value ?? ""));
+  if (normalized === "calorie_increase" || normalized === "aumentar calorias") return "calorie_increase";
+  if (normalized === "calorie_decrease" || normalized === "reducir calorias") return "calorie_decrease";
+  if (normalized === "meal_add" || normalized === "anadir comida" || normalized === "añadir comida") return "meal_add";
+  if (normalized === "meal_remove" || normalized === "eliminar comida") return "meal_remove";
+  if (normalized === "meal_redistribution" || normalized === "redistribuir comida") {
+    return "meal_redistribution";
+  }
+  return "food_swap";
+}
+
+function getChangeRequestTypeLabel(type: NutritionChangeRequestType): string {
+  if (type === "calorie_increase") return "Aumentar ingesta calorica";
+  if (type === "calorie_decrease") return "Reducir ingesta calorica";
+  if (type === "meal_add") return "Anadir comida/menu";
+  if (type === "meal_remove") return "Eliminar comida/menu";
+  if (type === "meal_redistribution") return "Redistribuir comida";
+  return "Sustitucion de alimento";
 }
 
 function toSheetBoolean(value: boolean): string {
@@ -342,6 +417,14 @@ function clampQuantityG(value: number): number {
   return clampInteger(value, 1, 10000);
 }
 
+function clampUnitWeightG(value: number): number {
+  return clampInteger(value, 1, 10000);
+}
+
+function clampMealOption(value: number): number {
+  return clampInteger(value, 1, 20);
+}
+
 function sanitizeName(value: string, fallback: string): string {
   const clean = value.trim();
   return clean || fallback;
@@ -359,14 +442,24 @@ function sanitizeAlternative(
   alternative: NutritionPlanFoodAlternative,
   entryId: string,
   index: number,
-  now: string
+  now: string,
+  foodsById: Map<string, NutritionFood>
 ): NutritionPlanFoodAlternative {
+  const food = getFoodLikeForEntry(alternative, foodsById);
+  const quantityUnit = normalizeQuantityUnitForFood(food, parseQuantityUnit(alternative.quantityUnit));
   return {
     id: alternative.id || randomUUID(),
     entryId,
     foodId: alternative.foodId,
     foodName: sanitizeName(alternative.foodName, "Alternativa").slice(0, 160),
     quantityG: clampQuantityG(alternative.quantityG),
+    quantityUnit,
+    unitWeightG:
+      quantityUnit === "g"
+        ? 1
+        : clampUnitWeightG(alternative.unitWeightG) > 1
+          ? clampUnitWeightG(alternative.unitWeightG)
+          : getDefaultUnitWeightGForFood(food, quantityUnit),
     proteinPer100g: clampNumber(alternative.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(alternative.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(alternative.fatPer100g, 0, 200),
@@ -616,6 +709,7 @@ async function ensureNutritionSheetsReady(): Promise<NutritionSheetsInfo> {
     await ensureWorksheet(spreadsheetId, WORKSHEETS.versions);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.athleteRestrictions);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.athletePrivateNotes);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.athleteRoadmapSteps);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.mealCompletions);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.changeRequests);
 
@@ -629,6 +723,7 @@ async function ensureNutritionSheetsReady(): Promise<NutritionSheetsInfo> {
         { worksheetName: WORKSHEETS.versions, headers: VERSION_HEADERS },
         { worksheetName: WORKSHEETS.athleteRestrictions, headers: ATHLETE_RESTRICTION_HEADERS },
         { worksheetName: WORKSHEETS.athletePrivateNotes, headers: ATHLETE_PRIVATE_NOTE_HEADERS },
+        { worksheetName: WORKSHEETS.athleteRoadmapSteps, headers: ATHLETE_ROADMAP_STEP_HEADERS },
         { worksheetName: WORKSHEETS.mealCompletions, headers: MEAL_COMPLETION_HEADERS },
         { worksheetName: WORKSHEETS.changeRequests, headers: CHANGE_REQUEST_HEADERS }
       ]
@@ -643,6 +738,7 @@ async function ensureNutritionSheetsReady(): Promise<NutritionSheetsInfo> {
       versionsWorksheet: WORKSHEETS.versions,
       athleteRestrictionsWorksheet: WORKSHEETS.athleteRestrictions,
       athletePrivateNotesWorksheet: WORKSHEETS.athletePrivateNotes,
+      athleteRoadmapStepsWorksheet: WORKSHEETS.athleteRoadmapSteps,
       mealCompletionsWorksheet: WORKSHEETS.mealCompletions,
       changeRequestsWorksheet: WORKSHEETS.changeRequests
     };
@@ -830,6 +926,8 @@ function parsePlan(row: string[]): NutritionPlanSummary | null {
     targetCarbsG: parseNumber(row[6]),
     targetFatG: parseNumber(row[7]),
     notes: String(row[8] ?? "").trim(),
+    supplementation: String(row[14] ?? "").trim(),
+    recommendations: String(row[15] ?? "").trim(),
     createdAt: String(row[9] ?? "").trim(),
     updatedAt: String(row[10] ?? "").trim(),
     publishedAt: String(row[11] ?? "").trim(),
@@ -879,6 +977,8 @@ function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanF
           foodId: String(record.foodId ?? "").trim(),
           foodName: foodName.slice(0, 160),
           quantityG: clampQuantityG(parseNumber(record.quantityG)),
+          quantityUnit: parseQuantityUnit(record.quantityUnit),
+          unitWeightG: clampUnitWeightG(parseNumber(record.unitWeightG)),
           proteinPer100g: clampNumber(parseNumber(record.proteinPer100g), 0, 200),
           carbsPer100g: clampNumber(parseNumber(record.carbsPer100g), 0, 200),
           fatPer100g: clampNumber(parseNumber(record.fatPer100g), 0, 200),
@@ -911,12 +1011,15 @@ function parseEntry(row: string[]): NutritionPlanFoodEntry | null {
     foodId: String(row[3] ?? "").trim(),
     foodName,
     quantityG: clampQuantityG(parseNumber(row[5])),
+    quantityUnit: parseQuantityUnit(row[16]),
+    unitWeightG: clampUnitWeightG(parseNumber(row[17])),
     proteinPer100g: parseNumber(row[6]),
     carbsPer100g: parseNumber(row[7]),
     fatPer100g: parseNumber(row[8]),
     sodiumPer100g: parseNumber(row[9]),
     waterPer100g: parseNumber(row[10]),
     position: parseInteger(row[11]),
+    mealOption: clampMealOption(parseInteger(row[18])),
     customText: String(row[12] ?? "").trim(),
     createdAt: String(row[13] ?? "").trim(),
     updatedAt: String(row[14] ?? "").trim(),
@@ -975,6 +1078,26 @@ function parseAthletePrivateNote(row: string[]): AthletePrivateNote | null {
   };
 }
 
+function parseAthleteRoadmapStep(row: string[]): AthleteRoadmapStep | null {
+  const id = String(row[0] ?? "").trim();
+  const athleteUsername = normalizeUsername(String(row[1] ?? ""));
+  const title = String(row[2] ?? "").trim();
+  if (!id || !athleteUsername || !title) return null;
+
+  return {
+    id,
+    athleteUsername,
+    title: title.slice(0, 120),
+    description: String(row[3] ?? "").trim().slice(0, 600),
+    status: parseRoadmapStatus(row[4]),
+    startDate: String(row[5] ?? "").trim().slice(0, 20),
+    endDate: String(row[6] ?? "").trim().slice(0, 20),
+    position: Math.max(1, parseInteger(row[7])),
+    createdAt: String(row[8] ?? "").trim(),
+    updatedAt: String(row[9] ?? "").trim()
+  };
+}
+
 function parseMealCompletion(row: string[]): NutritionMealCompletion | null {
   const id = String(row[0] ?? "").trim();
   const athleteUsername = normalizeUsername(String(row[1] ?? ""));
@@ -1002,12 +1125,20 @@ function parseChangeRequest(row: string[]): NutritionChangeRequest | null {
   const entryId = String(row[7] ?? "").trim();
   const requestedFoodId = String(row[11] ?? "").trim();
   const requestedFoodName = String(row[12] ?? "").trim();
-  if (!id || !athleteUsername || !planId || !mealId || !entryId || !requestedFoodId || !requestedFoodName) {
+  const requestType = parseChangeRequestType(row[21]);
+  if (!id || !athleteUsername || !planId) {
+    return null;
+  }
+  if (
+    requestType === "food_swap" &&
+    (!mealId || !entryId || !requestedFoodId || !requestedFoodName)
+  ) {
     return null;
   }
 
   return {
     id,
+    requestType,
     athleteUsername,
     athleteName: String(row[2] ?? "").trim(),
     planId,
@@ -1021,6 +1152,7 @@ function parseChangeRequest(row: string[]): NutritionChangeRequest | null {
     requestedFoodId,
     requestedFoodName,
     requestedQuantityG: clampQuantityG(parseNumber(row[13])),
+    requestSummary: String(row[22] ?? "").trim() || getChangeRequestTypeLabel(requestType),
     status: parseChangeRequestStatus(row[14]),
     athleteNotes: String(row[15] ?? "").trim(),
     adminNotes: String(row[16] ?? "").trim(),
@@ -1077,6 +1209,62 @@ async function ensureDefaultFoods(dataset: NutritionDataset): Promise<NutritionD
   return nextDataset;
 }
 
+function getFoodLikeForEntry(
+  entry: Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, "foodId" | "foodName">,
+  foodsById: Map<string, NutritionFood>
+): Pick<NutritionFood, "id" | "name" | "category"> {
+  const food = foodsById.get(entry.foodId);
+  return food ?? { id: entry.foodId, name: entry.foodName, category: "" };
+}
+
+function normalizeAlternativeQuantityMetadata(
+  alternative: NutritionPlanFoodAlternative,
+  foodsById: Map<string, NutritionFood>
+): NutritionPlanFoodAlternative {
+  const food = getFoodLikeForEntry(alternative, foodsById);
+  const unit = normalizeQuantityUnitForFood(food, parseQuantityUnit(alternative.quantityUnit));
+  return {
+    ...alternative,
+    quantityUnit: unit,
+    unitWeightG:
+      unit === "g"
+        ? 1
+        : alternative.unitWeightG > 1
+          ? clampUnitWeightG(alternative.unitWeightG)
+          : getDefaultUnitWeightGForFood(food, unit)
+  };
+}
+
+function normalizeEntryQuantityMetadata(
+  entry: NutritionPlanFoodEntry,
+  foodsById: Map<string, NutritionFood>
+): NutritionPlanFoodEntry {
+  const food = getFoodLikeForEntry(entry, foodsById);
+  const unit = normalizeQuantityUnitForFood(food, parseQuantityUnit(entry.quantityUnit));
+  return {
+    ...entry,
+    quantityUnit: unit,
+    unitWeightG:
+      unit === "g"
+        ? 1
+        : entry.unitWeightG > 1
+          ? clampUnitWeightG(entry.unitWeightG)
+          : getDefaultUnitWeightGForFood(food, unit),
+    mealOption: clampMealOption(entry.mealOption || 1),
+    alternatives: (entry.alternatives ?? []).map((alternative) =>
+      normalizeAlternativeQuantityMetadata(alternative, foodsById)
+    )
+  };
+}
+
+function normalizeDatasetQuantityMetadata(dataset: NutritionDataset): NutritionDataset {
+  const foodsById = new Map(dataset.foods.map((food) => [food.id, food]));
+  return {
+    ...dataset,
+    entries: dataset.entries.map((entry) => normalizeEntryQuantityMetadata(entry, foodsById))
+  };
+}
+
 function serializePlan(plan: NutritionPlanSummary): Array<string | number> {
   return [
     plan.id,
@@ -1092,7 +1280,9 @@ function serializePlan(plan: NutritionPlanSummary): Array<string | number> {
     plan.updatedAt,
     plan.publishedAt,
     plan.publishedFileId,
-    plan.versionNumber
+    plan.versionNumber,
+    plan.supplementation,
+    plan.recommendations
   ];
 }
 
@@ -1119,6 +1309,8 @@ function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]
         foodId: alternative.foodId,
         foodName: alternative.foodName,
         quantityG: clampQuantityG(alternative.quantityG),
+        quantityUnit: parseQuantityUnit(alternative.quantityUnit),
+        unitWeightG: clampUnitWeightG(alternative.unitWeightG),
         proteinPer100g: alternative.proteinPer100g,
         carbsPer100g: alternative.carbsPer100g,
         fatPer100g: alternative.fatPer100g,
@@ -1150,7 +1342,10 @@ function serializeEntry(entry: NutritionPlanFoodEntry): Array<string | number> {
     entry.customText,
     entry.createdAt,
     entry.updatedAt,
-    serializeEntryAlternatives(entry.alternatives ?? [])
+    serializeEntryAlternatives(entry.alternatives ?? []),
+    parseQuantityUnit(entry.quantityUnit),
+    clampUnitWeightG(entry.unitWeightG),
+    clampMealOption(entry.mealOption || 1)
   ];
 }
 
@@ -1186,6 +1381,21 @@ function serializeAthleteRestriction(restriction: NutritionAthleteRestriction): 
 
 function serializeAthletePrivateNote(note: AthletePrivateNote): Array<string | number> {
   return [normalizeUsername(note.athleteUsername), note.notes, note.updatedAt];
+}
+
+function serializeAthleteRoadmapStep(step: AthleteRoadmapStep): Array<string | number> {
+  return [
+    step.id,
+    normalizeUsername(step.athleteUsername),
+    step.title,
+    step.description,
+    step.status,
+    step.startDate,
+    step.endDate,
+    step.position,
+    step.createdAt,
+    step.updatedAt
+  ];
 }
 
 function buildMealCompletionId(input: {
@@ -1236,7 +1446,9 @@ function serializeChangeRequest(request: NutritionChangeRequest): Array<string |
     request.createdAt,
     request.updatedAt,
     request.resolvedAt,
-    request.resolvedBy
+    request.resolvedBy,
+    request.requestType,
+    request.requestSummary
   ];
 }
 
@@ -1251,7 +1463,7 @@ async function readNutritionDatasetFresh(): Promise<NutritionDataset> {
       { worksheetName: WORKSHEETS.athleteRestrictions, headers: ATHLETE_RESTRICTION_HEADERS }
     ]);
 
-  return {
+  return normalizeDatasetQuantityMetadata({
     foods: foodsRows.map(parseFood).filter((item): item is NutritionFood => Boolean(item)),
     plans: planRows.map(parsePlan).filter((item): item is NutritionPlanSummary => Boolean(item)),
     meals: mealRows.map(parseMeal).filter((item): item is NutritionPlanMeal => Boolean(item)),
@@ -1264,7 +1476,7 @@ async function readNutritionDatasetFresh(): Promise<NutritionDataset> {
     restrictions: restrictionRows
       .map(parseAthleteRestriction)
       .filter((item): item is NutritionAthleteRestriction => Boolean(item))
-  };
+  });
 }
 
 async function readNutritionDataset(options?: { force?: boolean }): Promise<NutritionDataset> {
@@ -1309,7 +1521,11 @@ function buildFullPlan(dataset: NutritionDataset, plan: NutritionPlanSummary): N
   const entriesByMeal = new Map<string, NutritionPlanFoodEntry[]>();
   dataset.entries
     .filter((entry) => entry.planId === plan.id)
-    .sort((a, b) => a.position - b.position)
+    .sort((a, b) => {
+      const optionDiff = (a.mealOption || 1) - (b.mealOption || 1);
+      if (optionDiff !== 0) return optionDiff;
+      return a.position - b.position;
+    })
     .forEach((entry) => {
       const list = entriesByMeal.get(entry.mealId) ?? [];
       list.push(entry);
@@ -1332,6 +1548,50 @@ function buildFullPlan(dataset: NutritionDataset, plan: NutritionPlanSummary): N
       .sort((a, b) => b.versionNumber - a.versionNumber)
       .map(({ snapshotJson: _snapshotJson, ...version }) => version)
   };
+}
+
+function parsePlanSnapshot(version: StoredNutritionPlanVersion): NutritionPlanFull | null {
+  try {
+    const parsed = JSON.parse(version.snapshotJson) as NutritionPlanFull;
+    if (!parsed || typeof parsed !== "object" || !parsed.id || !Array.isArray(parsed.meals)) {
+      return null;
+    }
+    return {
+      ...parsed,
+      status: "published",
+      publishedAt: version.publishedAt,
+      publishedFileId: version.driveFileId,
+      versionNumber: version.versionNumber,
+      supplementation: parsed.supplementation ?? "",
+      recommendations: parsed.recommendations ?? "",
+      meals: parsed.meals.map((meal) => ({
+        ...meal,
+        entries: (Array.isArray(meal.entries) ? meal.entries : []).map((entry) => ({
+          ...entry,
+          quantityUnit: parseQuantityUnit(entry.quantityUnit),
+          unitWeightG: clampUnitWeightG(entry.unitWeightG),
+          mealOption: clampMealOption(entry.mealOption || 1),
+          alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) => ({
+            ...alternative,
+            quantityUnit: parseQuantityUnit(alternative.quantityUnit),
+            unitWeightG: clampUnitWeightG(alternative.unitWeightG)
+          }))
+        }))
+      }))
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getLatestPlanSnapshotFromDataset(
+  dataset: NutritionDataset,
+  planId: string
+): NutritionPlanFull | null {
+  const latestVersion = dataset.versions
+    .filter((version) => version.planId === planId && version.snapshotJson.trim())
+    .sort((a, b) => b.versionNumber - a.versionNumber)[0];
+  return latestVersion ? parsePlanSnapshot(latestVersion) : null;
 }
 
 export async function listNutritionManagementData(): Promise<{
@@ -1357,6 +1617,17 @@ export async function getNutritionPlanById(planId: string): Promise<NutritionPla
   return buildFullPlan(dataset, plan);
 }
 
+export async function getPublishedNutritionPlanSnapshot(
+  planId: string
+): Promise<NutritionPlanFull | null> {
+  const dataset = await readNutritionDataset();
+  const snapshot = getLatestPlanSnapshotFromDataset(dataset, planId);
+  if (snapshot) return snapshot;
+
+  const plan = dataset.plans.find((item) => item.id === planId && item.status === "published");
+  return plan ? buildFullPlan(dataset, plan) : null;
+}
+
 export async function listNutritionPlansForAthlete(
   athleteUsername: string
 ): Promise<NutritionPlanFull[]> {
@@ -1365,7 +1636,7 @@ export async function listNutritionPlansForAthlete(
   return dataset.plans
     .filter((plan) => normalizeUsername(plan.athleteUsername) === username)
     .sort((a, b) => {
-      const statusOrder = { published: 0, review: 1, draft: 2 } satisfies Record<NutritionPlanStatus, number>;
+      const statusOrder = { published: 0, review: 1 } satisfies Record<NutritionPlanStatus, number>;
       const statusDiff = statusOrder[a.status] - statusOrder[b.status];
       if (statusDiff !== 0) return statusDiff;
       return b.updatedAt.localeCompare(a.updatedAt);
@@ -1390,7 +1661,7 @@ export async function listInteractiveNutritionDataForAthlete(
     listNutritionChangeRequests({ athleteUsername: username })
   ]);
 
-  const statusOrder = { published: 0, review: 1, draft: 2 } satisfies Record<NutritionPlanStatus, number>;
+  const statusOrder = { published: 0, review: 1 } satisfies Record<NutritionPlanStatus, number>;
   const plans = dataset.plans
     .filter((plan) => normalizeUsername(plan.athleteUsername) === username)
     .sort((a, b) => {
@@ -1398,7 +1669,11 @@ export async function listInteractiveNutritionDataForAthlete(
       if (statusDiff !== 0) return statusDiff;
       return b.updatedAt.localeCompare(a.updatedAt);
     })
-    .map((plan) => buildFullPlan(dataset, plan));
+    .map((plan) => {
+      if (plan.status === "published") return buildFullPlan(dataset, plan);
+      return getLatestPlanSnapshotFromDataset(dataset, plan.id);
+    })
+    .filter((plan): plan is NutritionPlanFull => Boolean(plan));
 
   return {
     plans,
@@ -1450,6 +1725,59 @@ export async function updateAthletePrivateNotes(input: {
   }
 
   return note;
+}
+
+export async function getAthleteRoadmapSteps(athleteUsername: string): Promise<AthleteRoadmapStep[]> {
+  const username = normalizeUsername(athleteUsername);
+  if (!username) return [];
+
+  const rows = await readWorksheetRows(WORKSHEETS.athleteRoadmapSteps, ATHLETE_ROADMAP_STEP_HEADERS);
+  return rows
+    .map(parseAthleteRoadmapStep)
+    .filter((item): item is AthleteRoadmapStep => Boolean(item && item.athleteUsername === username))
+    .sort((a, b) => {
+      const byPosition = a.position - b.position;
+      if (byPosition !== 0) return byPosition;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+}
+
+export async function replaceAthleteRoadmapSteps(input: {
+  athleteUsername: string;
+  steps: Array<Partial<AthleteRoadmapStep> & { title: string }>;
+}): Promise<AthleteRoadmapStep[]> {
+  const athleteUsername = normalizeUsername(input.athleteUsername);
+  if (!athleteUsername) throw new Error("Athlete username is required.");
+
+  const now = new Date().toISOString();
+  const steps: AthleteRoadmapStep[] = input.steps
+    .filter((step) => step.title?.trim())
+    .slice(0, 30)
+    .map((step, index) => ({
+      id: step.id?.trim() || randomUUID(),
+      athleteUsername,
+      title: sanitizeName(step.title, `Etapa ${index + 1}`).slice(0, 120),
+      description: step.description?.trim().slice(0, 600) ?? "",
+      status: parseRoadmapStatus(step.status),
+      startDate: step.startDate?.trim().slice(0, 20) ?? "",
+      endDate: step.endDate?.trim().slice(0, 20) ?? "",
+      position: index + 1,
+      createdAt: step.createdAt?.trim() || now,
+      updatedAt: now
+    }));
+
+  await deleteWorksheetRowsWhere(
+    WORKSHEETS.athleteRoadmapSteps,
+    ATHLETE_ROADMAP_STEP_HEADERS,
+    (row) => normalizeUsername(String(row[1] ?? "")) === athleteUsername
+  );
+  await appendWorksheetRows(
+    WORKSHEETS.athleteRoadmapSteps,
+    ATHLETE_ROADMAP_STEP_HEADERS,
+    steps.map(serializeAthleteRoadmapStep)
+  );
+
+  return steps;
 }
 
 export async function listNutritionMealCompletionsForAthlete(
@@ -1586,23 +1914,26 @@ export async function listNutritionChangeRequests(options?: {
 }
 
 export async function createNutritionChangeRequest(input: {
+  requestType?: NutritionChangeRequestType;
   athleteUsername: string;
   athleteName: string;
   planId: string;
   planName: string;
-  mealId: string;
-  mealName: string;
-  entryId: string;
-  originalFoodId: string;
-  originalFoodName: string;
-  originalQuantityG: number;
-  requestedFoodId: string;
-  requestedFoodName: string;
-  requestedQuantityG: number;
+  mealId?: string;
+  mealName?: string;
+  entryId?: string;
+  originalFoodId?: string;
+  originalFoodName?: string;
+  originalQuantityG?: number;
+  requestedFoodId?: string;
+  requestedFoodName?: string;
+  requestedQuantityG?: number;
+  requestSummary?: string;
   athleteNotes?: string;
 }): Promise<NutritionChangeRequest> {
   const athleteUsername = normalizeUsername(input.athleteUsername);
   if (!athleteUsername) throw new Error("Athlete username is required.");
+  const requestType = input.requestType ?? "food_swap";
 
   const pendingRequests = await listNutritionChangeRequests({
     athleteUsername,
@@ -1610,30 +1941,45 @@ export async function createNutritionChangeRequest(input: {
     force: true
   });
   const duplicate = pendingRequests.some(
-    (request) =>
-      request.planId === input.planId &&
-      request.mealId === input.mealId &&
-      request.entryId === input.entryId &&
-      request.requestedFoodId === input.requestedFoodId
+    (request) => {
+      if (request.planId !== input.planId || request.requestType !== requestType) return false;
+      if (requestType === "food_swap") {
+        return (
+          request.mealId === input.mealId &&
+          request.entryId === input.entryId &&
+          request.requestedFoodId === input.requestedFoodId
+        );
+      }
+      if (requestType === "meal_remove" || requestType === "meal_redistribution") {
+        return request.mealId === (input.mealId?.trim() ?? "");
+      }
+      return true;
+    }
   );
   if (duplicate) throw new Error("Change request already exists.");
 
   const now = new Date().toISOString();
+  const requestSummary = sanitizeName(
+    input.requestSummary?.trim() ?? "",
+    getChangeRequestTypeLabel(requestType)
+  ).slice(0, 220);
   const request: NutritionChangeRequest = {
     id: randomUUID(),
+    requestType,
     athleteUsername,
     athleteName: input.athleteName.trim().slice(0, 120),
     planId: input.planId.trim(),
     planName: input.planName.trim().slice(0, 120),
-    mealId: input.mealId.trim(),
-    mealName: input.mealName.trim().slice(0, 120),
-    entryId: input.entryId.trim(),
-    originalFoodId: input.originalFoodId.trim(),
-    originalFoodName: input.originalFoodName.trim().slice(0, 160),
-    originalQuantityG: clampQuantityG(input.originalQuantityG),
-    requestedFoodId: input.requestedFoodId.trim(),
-    requestedFoodName: input.requestedFoodName.trim().slice(0, 160),
-    requestedQuantityG: clampQuantityG(input.requestedQuantityG),
+    mealId: input.mealId?.trim() ?? "",
+    mealName: input.mealName?.trim().slice(0, 120) ?? "",
+    entryId: input.entryId?.trim() ?? "",
+    originalFoodId: input.originalFoodId?.trim() ?? "",
+    originalFoodName: input.originalFoodName?.trim().slice(0, 160) ?? "",
+    originalQuantityG: clampQuantityG(input.originalQuantityG ?? 1),
+    requestedFoodId: input.requestedFoodId?.trim() ?? "",
+    requestedFoodName: input.requestedFoodName?.trim().slice(0, 160) ?? "",
+    requestedQuantityG: clampQuantityG(input.requestedQuantityG ?? 1),
+    requestSummary,
     status: "pending",
     athleteNotes: input.athleteNotes?.trim().slice(0, 1000) ?? "",
     adminNotes: "",
@@ -1845,11 +2191,13 @@ export async function createNutritionPlanForAthlete(input: {
     athleteUsername: normalizeUsername(input.athleteUsername),
     athleteName: input.athleteName.trim(),
     name: sanitizeName(input.name, "Nuevo plan"),
-    status: "draft",
+    status: "review",
     targetProteinG: 0,
     targetCarbsG: 0,
     targetFatG: 0,
     notes: "",
+    supplementation: "",
+    recommendations: "",
     createdAt: now,
     updatedAt: now,
     publishedAt: "",
@@ -1881,9 +2229,12 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
   if (planIndex < 0) return null;
 
   const current = dataset.plans[planIndex];
+  if (current.status === "published" && input.status === "published") {
+    return buildFullPlan(dataset, current);
+  }
+
   const now = new Date().toISOString();
-  const nextStatus =
-    input.status === "published" && current.publishedFileId ? "published" : input.status;
+  const nextStatus = current.status === "published" && input.status === "published" ? "published" : "review";
   const plan: NutritionPlanSummary = {
     ...current,
     athleteUsername: normalizeUsername(current.athleteUsername),
@@ -1894,6 +2245,8 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
     targetCarbsG: clampNumber(input.targetCarbsG, 0, 3000),
     targetFatG: clampNumber(input.targetFatG, 0, 1000),
     notes: input.notes.trim().slice(0, 3000),
+    supplementation: input.supplementation.trim().slice(0, 3000),
+    recommendations: input.recommendations.trim().slice(0, 3000),
     updatedAt: now
   };
 
@@ -1908,13 +2261,25 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
     updatedAt: now
   }));
 
+  const foodsById = new Map(dataset.foods.map((food) => [food.id, food]));
   const validMealIds = new Set(meals.map((meal) => meal.id));
   const entries: NutritionPlanFoodEntry[] = input.meals.flatMap((meal, mealIndex) => {
     const savedMealId = meals[mealIndex]?.id ?? meal.id;
-    return meal.entries
+    const optionPositions = new Map<number, number>();
+    return (Array.isArray(meal.entries) ? meal.entries : [])
+      .sort((a, b) => {
+        const optionDiff = clampMealOption(a.mealOption || 1) - clampMealOption(b.mealOption || 1);
+        if (optionDiff !== 0) return optionDiff;
+        return a.position - b.position;
+      })
       .filter((entry) => savedMealId && validMealIds.has(savedMealId))
-      .map((entry, entryIndex) => {
+      .map((entry) => {
         const savedEntryId = entry.id || randomUUID();
+        const mealOption = clampMealOption(entry.mealOption || 1);
+        const position = (optionPositions.get(mealOption) ?? 0) + 1;
+        optionPositions.set(mealOption, position);
+        const food = getFoodLikeForEntry(entry, foodsById);
+        const quantityUnit = normalizeQuantityUnitForFood(food, parseQuantityUnit(entry.quantityUnit));
         return {
           id: savedEntryId,
           planId: plan.id,
@@ -1922,15 +2287,23 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
           foodId: entry.foodId,
           foodName: sanitizeName(entry.foodName, "Alimento").slice(0, 160),
           quantityG: clampQuantityG(entry.quantityG),
+          quantityUnit,
+          unitWeightG:
+            quantityUnit === "g"
+              ? 1
+              : clampUnitWeightG(entry.unitWeightG) > 1
+                ? clampUnitWeightG(entry.unitWeightG)
+                : getDefaultUnitWeightGForFood(food, quantityUnit),
           proteinPer100g: clampNumber(entry.proteinPer100g, 0, 200),
           carbsPer100g: clampNumber(entry.carbsPer100g, 0, 200),
           fatPer100g: clampNumber(entry.fatPer100g, 0, 200),
           sodiumPer100g: clampNumber(entry.sodiumPer100g, 0, 100000),
           waterPer100g: clampNumber(entry.waterPer100g, 0, 100),
-          position: entryIndex + 1,
+          position,
+          mealOption,
           customText: entry.customText.trim().slice(0, 240),
           alternatives: (entry.alternatives ?? []).map((alternative, alternativeIndex) =>
-            sanitizeAlternative(alternative, savedEntryId, alternativeIndex, now)
+            sanitizeAlternative(alternative, savedEntryId, alternativeIndex, now, foodsById)
           ),
           createdAt: entry.createdAt || now,
           updatedAt: now
@@ -2005,7 +2378,7 @@ export async function duplicateNutritionPlan(planId: string): Promise<NutritionP
     ...source,
     id: nextPlanId,
     name: `Copia de ${source.name}`.slice(0, 120),
-    status: "draft",
+    status: "review",
     createdAt: now,
     updatedAt: now,
     publishedAt: "",

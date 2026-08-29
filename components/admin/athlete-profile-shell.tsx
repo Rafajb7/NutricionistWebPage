@@ -6,13 +6,18 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   ArrowLeft,
+  ArrowDown,
+  ArrowUp,
   Camera,
   ClipboardList,
   FileText,
   LogOut,
+  Map as MapIcon,
   Pencil,
+  Plus,
   Save,
   ShieldAlert,
+  Trash2,
   Utensils,
   WalletCards
 } from "lucide-react";
@@ -30,6 +35,8 @@ import type { StrengthGoal, StrengthMark } from "@/lib/google/achievements";
 import type { FinanceContract, FinancePayment } from "@/lib/finance/types";
 import type {
   AthletePrivateNote,
+  AthleteRoadmapStep,
+  AthleteRoadmapStepStatus,
   NutritionAthleteRestriction,
   NutritionPlanFull
 } from "@/lib/nutrition/types";
@@ -67,6 +74,7 @@ type AthleteProfile = {
     plans: NutritionPlanFull[];
     restrictions: NutritionAthleteRestriction[];
     pdfs: NutritionPdf[];
+    roadmapSteps: AthleteRoadmapStep[];
   };
   tools: {
     routines: RoutineLogRow[];
@@ -181,16 +189,86 @@ function MetricCard({
   );
 }
 
+function getRoadmapStatusLabel(status: AthleteRoadmapStepStatus): string {
+  if (status === "completed") return "Completada";
+  if (status === "current") return "Actual";
+  return "Pendiente";
+}
+
+function getRoadmapStatusClass(status: AthleteRoadmapStepStatus): string {
+  if (status === "completed") return "border-emerald-300/40 bg-emerald-500/10 text-emerald-100";
+  if (status === "current") return "border-brand-accent/45 bg-brand-accent/10 text-brand-text";
+  return "border-white/15 bg-white/5 text-brand-muted";
+}
+
+function createLocalRoadmapStep(position: number): AthleteRoadmapStep {
+  const now = new Date().toISOString();
+  return {
+    id: `local-roadmap-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    athleteUsername: "",
+    title: `Etapa ${position}`,
+    description: "",
+    status: position === 1 ? "current" : "pending",
+    startDate: "",
+    endDate: "",
+    position,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function RoadmapPreview({ steps }: { steps: AthleteRoadmapStep[] }) {
+  const ordered = [...steps].sort((a, b) => a.position - b.position);
+  if (!ordered.length) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+        Sin etapas definidas.
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      {ordered.map((step, index) => (
+        <article key={step.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <div className="flex items-start gap-3">
+            <span
+              className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-bold ${getRoadmapStatusClass(
+                step.status
+              )}`}
+            >
+              {index + 1}
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-brand-text">{step.title}</p>
+              <p className="mt-1 text-xs text-brand-muted">{getRoadmapStatusLabel(step.status)}</p>
+              {step.startDate || step.endDate ? (
+                <p className="mt-1 text-xs text-brand-muted">
+                  {step.startDate ? formatDateLabel(step.startDate) : "Sin inicio"} -{" "}
+                  {step.endDate ? formatDateLabel(step.endDate) : "sin cierre"}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          {step.description ? <p className="mt-3 text-xs text-brand-muted">{step.description}</p> : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShellProps) {
   const router = useRouter();
   const [profile, setProfile] = useState<AthleteProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingUser, setSavingUser] = useState(false);
   const [savingNotes, setSavingNotes] = useState(false);
+  const [savingRoadmap, setSavingRoadmap] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
   const [permissionDraft, setPermissionDraft] = useState<"user" | "admin">("user");
   const [notesDraft, setNotesDraft] = useState("");
+  const [roadmapDraft, setRoadmapDraft] = useState<AthleteRoadmapStep[]>([]);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -218,6 +296,9 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
       setEmailDraft(json.profile.user.email);
       setPermissionDraft(json.profile.user.permission);
       setNotesDraft(json.profile.privateNotes.notes);
+      setRoadmapDraft(
+        [...(json.profile.nutrition.roadmapSteps ?? [])].sort((a, b) => a.position - b.position)
+      );
     } catch (error) {
       console.error(error);
       toast.error("Error cargando la ficha 360.");
@@ -268,7 +349,7 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
   const nutritionPlans = useMemo(
     () =>
       [...(profile?.nutrition.plans ?? [])].sort((a, b) => {
-        const statusOrder = { published: 0, review: 1, draft: 2 } as const;
+        const statusOrder = { published: 0, review: 1 } as const;
         const byStatus = statusOrder[a.status] - statusOrder[b.status];
         if (byStatus !== 0) return byStatus;
         return a.name.localeCompare(b.name, "es");
@@ -338,6 +419,74 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
       toast.error("Error guardando notas privadas.");
     } finally {
       setSavingNotes(false);
+    }
+  }
+
+  function addRoadmapStep() {
+    setRoadmapDraft((current) => [
+      ...current,
+      createLocalRoadmapStep(current.length + 1)
+    ]);
+  }
+
+  function updateRoadmapStep(
+    id: string,
+    updater: (step: AthleteRoadmapStep) => AthleteRoadmapStep
+  ) {
+    setRoadmapDraft((current) =>
+      current.map((step) => (step.id === id ? updater(step) : step)).map((step, index) => ({
+        ...step,
+        position: index + 1
+      }))
+    );
+  }
+
+  function removeRoadmapStep(id: string) {
+    setRoadmapDraft((current) =>
+      current
+        .filter((step) => step.id !== id)
+        .map((step, index) => ({ ...step, position: index + 1 }))
+    );
+  }
+
+  function moveRoadmapStep(id: string, direction: -1 | 1) {
+    setRoadmapDraft((current) => {
+      const index = current.findIndex((step) => step.id === id);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.length) return current;
+      const next = [...current];
+      const currentStep = next[index];
+      const targetStep = next[targetIndex];
+      if (!currentStep || !targetStep) return current;
+      next[index] = targetStep;
+      next[targetIndex] = currentStep;
+      return next.map((step, stepIndex) => ({ ...step, position: stepIndex + 1 }));
+    });
+  }
+
+  async function saveRoadmap() {
+    if (!profile) return;
+    setSavingRoadmap(true);
+    try {
+      const res = await fetch(`/api/admin/athlete-profile/${profile.user.username}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roadmapSteps: roadmapDraft })
+      });
+      const json = (await res.json()) as ProfileResponse;
+      if (!res.ok || !json.profile) {
+        throw new Error(json.error ?? "No se pudo guardar la hoja de ruta.");
+      }
+      setProfile(json.profile);
+      setRoadmapDraft(
+        [...(json.profile.nutrition.roadmapSteps ?? [])].sort((a, b) => a.position - b.position)
+      );
+      toast.success("Hoja de ruta guardada.");
+    } catch (error) {
+      console.error(error);
+      toast.error("Error guardando hoja de ruta.");
+    } finally {
+      setSavingRoadmap(false);
     }
   }
 
@@ -501,6 +650,145 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
                     {savingNotes ? "Guardando..." : "Guardar notas"}
                   </BrandButton>
                 </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <MapIcon className="h-5 w-5 text-brand-accent" />
+                  <SectionTitle eyebrow="Proceso" title="Hoja de ruta" />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={addRoadmapStep}
+                    className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-xs text-brand-text transition hover:bg-white/10"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Añadir etapa
+                  </button>
+                  <BrandButton onClick={saveRoadmap} disabled={savingRoadmap}>
+                    <Save className="mr-2 h-4 w-4" />
+                    {savingRoadmap ? "Guardando..." : "Guardar hoja de ruta"}
+                  </BrandButton>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <RoadmapPreview steps={roadmapDraft} />
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {roadmapDraft.map((step, index) => (
+                  <article key={step.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_160px_150px_150px_auto] lg:items-end">
+                      <label className="block text-sm text-brand-muted">
+                        Etapa
+                        <input
+                          value={step.title}
+                          onChange={(event) =>
+                            updateRoadmapStep(step.id, (current) => ({
+                              ...current,
+                              title: event.target.value
+                            }))
+                          }
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Estado
+                        <select
+                          value={step.status}
+                          onChange={(event) =>
+                            updateRoadmapStep(step.id, (current) => ({
+                              ...current,
+                              status: event.target.value as AthleteRoadmapStepStatus
+                            }))
+                          }
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        >
+                          <option value="completed">Completada</option>
+                          <option value="current">Actual</option>
+                          <option value="pending">Pendiente</option>
+                        </select>
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Inicio
+                        <input
+                          type="date"
+                          value={step.startDate}
+                          onChange={(event) =>
+                            updateRoadmapStep(step.id, (current) => ({
+                              ...current,
+                              startDate: event.target.value
+                            }))
+                          }
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <label className="block text-sm text-brand-muted">
+                        Fin
+                        <input
+                          type="date"
+                          value={step.endDate}
+                          onChange={(event) =>
+                            updateRoadmapStep(step.id, (current) => ({
+                              ...current,
+                              endDate: event.target.value
+                            }))
+                          }
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        />
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => moveRoadmapStep(step.id, -1)}
+                          disabled={index === 0}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="Subir etapa"
+                          title="Subir"
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveRoadmapStep(step.id, 1)}
+                          disabled={index === roadmapDraft.length - 1}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="Bajar etapa"
+                          title="Bajar"
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeRoadmapStep(step.id)}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20"
+                          aria-label="Eliminar etapa"
+                          title="Eliminar"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <label className="mt-3 block text-sm text-brand-muted">
+                      Descripcion
+                      <textarea
+                        value={step.description}
+                        onChange={(event) =>
+                          updateRoadmapStep(step.id, (current) => ({
+                            ...current,
+                            description: event.target.value
+                          }))
+                        }
+                        rows={2}
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      />
+                    </label>
+                  </article>
+                ))}
               </div>
             </section>
 

@@ -29,10 +29,14 @@ export async function GET() {
       athletes,
       contracts: finance.contracts,
       payments: finance.payments,
+      expenses: finance.expenses,
+      invoices: finance.invoices,
+      invoiceSettings: finance.invoiceSettings,
       planOptions: finance.planOptions,
       dashboard: buildFinanceDashboard({
         contracts: finance.contracts,
-        payments: finance.payments
+        payments: finance.payments,
+        expenses: finance.expenses
       })
     });
   } catch (error) {

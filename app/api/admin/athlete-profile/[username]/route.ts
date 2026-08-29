@@ -3,16 +3,19 @@ import { NextResponse } from "next/server";
 import { deleteMemoryCache, getOrSetMemoryCache } from "@/lib/cache/memory-cache";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import { getComputedPaymentStatus, todayIsoDate } from "@/lib/finance/calculations";
+import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
 import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
 import { listCompetitionEventsForUser } from "@/lib/google/calendar";
 import { listNutritionPlanPdfsForUser } from "@/lib/google/drive";
 import { listFinanceRecords } from "@/lib/google/finance";
 import { isGoogleRateLimitError } from "@/lib/google/retry";
 import {
+  getAthleteRoadmapSteps,
   getAthletePrivateNotes,
   listNutritionManagementData,
   listNutritionMealCompletionsForAthlete,
   listNutritionPlansForAthlete,
+  replaceAthleteRoadmapSteps,
   updateAthletePrivateNotes
 } from "@/lib/google/nutrition-management";
 import {
@@ -39,7 +42,23 @@ const patchSchema = z.object({
       permission: z.enum(["user", "admin"]).optional()
     })
     .optional(),
-  privateNotes: z.string().max(6000).optional()
+  privateNotes: z.string().max(6000).optional(),
+  roadmapSteps: z
+    .array(
+      z.object({
+        id: z.string().max(120).optional().default(""),
+        title: z.string().min(1).max(120),
+        description: z.string().max(600).optional().default(""),
+        status: z.enum(["completed", "current", "pending"]).optional().default("pending"),
+        startDate: z.string().max(20).optional().default(""),
+        endDate: z.string().max(20).optional().default(""),
+        position: z.coerce.number().int().min(0).max(1000).optional().default(0),
+        createdAt: z.string().max(80).optional().default(""),
+        updatedAt: z.string().max(80).optional().default("")
+      })
+    )
+    .max(30)
+    .optional()
 });
 
 function decodeRouteValue(value: string): string {
@@ -98,6 +117,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
     nutritionPdfsResult,
     nutritionManagementResult,
     nutritionPlansResult,
+    roadmapStepsResult,
     privateNotesResult,
     mealCompletionsResult,
     financeResult
@@ -110,6 +130,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
     listNutritionPlanPdfsForUser(sourceUsername),
     listNutritionManagementData(),
     listNutritionPlansForAthlete(sourceUsername),
+    getAthleteRoadmapSteps(sourceUsername),
     getAthletePrivateNotes(sourceUsername),
     listNutritionMealCompletionsForAthlete(sourceUsername),
     listFinanceRecords()
@@ -148,6 +169,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
     "gestion nutricional"
   );
   const nutritionPlans = readSettled(nutritionPlansResult, [], "planes nutricionales");
+  const roadmapSteps = readSettled(roadmapStepsResult, [], "hoja de ruta");
   const privateNotes = readSettled(
     privateNotesResult,
     { athleteUsername: targetUsername, notes: "", updatedAt: "" },
@@ -156,7 +178,14 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
   const mealCompletions = readSettled(mealCompletionsResult, [], "adherencia interactiva");
   const finance = readSettled(
     financeResult,
-    { contracts: [], payments: [], planOptions: [] },
+    {
+      contracts: [],
+      payments: [],
+      expenses: [],
+      invoices: [],
+      invoiceSettings: DEFAULT_FINANCE_INVOICE_SETTINGS,
+      planOptions: []
+    },
     "finanzas"
   );
 
@@ -204,6 +233,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
       plans: nutritionPlans,
       currentPlan:
         nutritionPlans.find((plan) => plan.status === "published") ?? nutritionPlans[0] ?? null,
+      roadmapSteps,
       restrictions: nutritionManagement.restrictions.filter(
         (restriction) => restriction.athleteUsername === targetUsername
       ),
@@ -309,13 +339,21 @@ export async function PATCH(req: Request, context: RouteContext) {
       });
     }
 
+    if (parsed.data.roadmapSteps !== undefined) {
+      await replaceAthleteRoadmapSteps({
+        athleteUsername: targetUsername,
+        steps: parsed.data.roadmapSteps
+      });
+    }
+
     deleteMemoryCache(getAthleteProfileCacheKey(targetUsername));
     const profile = await loadAthleteProfile(targetUsername, auth.session.username);
     logInfo("Athlete profile updated", {
       username: auth.session.username,
       targetUsername,
       userUpdated: Boolean(parsed.data.user),
-      notesUpdated: parsed.data.privateNotes !== undefined
+      notesUpdated: parsed.data.privateNotes !== undefined,
+      roadmapUpdated: parsed.data.roadmapSteps !== undefined
     });
 
     return NextResponse.json({ ok: true, profile });

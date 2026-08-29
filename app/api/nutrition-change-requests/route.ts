@@ -3,21 +3,42 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
 import {
   createNutritionChangeRequest,
+  getPublishedNutritionPlanSnapshot,
   listNutritionChangeRequests,
   listNutritionManagementData,
-  listNutritionPlansForAthlete
 } from "@/lib/google/nutrition-management";
 import { calculateEntryTotals } from "@/lib/nutrition/calculations";
+import { getEffectiveQuantityG } from "@/lib/nutrition/quantity-units";
 import { getRestrictionConflict } from "@/lib/nutrition/restrictions";
 import { logError, logInfo } from "@/lib/logger";
+import type { NutritionChangeRequestType } from "@/lib/nutrition/types";
 
 const requestSchema = z.object({
+  requestType: z
+    .enum([
+      "food_swap",
+      "calorie_increase",
+      "calorie_decrease",
+      "meal_add",
+      "meal_remove",
+      "meal_redistribution"
+    ])
+    .optional()
+    .default("food_swap"),
   planId: z.string().min(8).max(120),
-  mealId: z.string().min(8).max(120),
-  entryId: z.string().min(8).max(120),
-  requestedFoodId: z.string().min(2).max(120),
+  mealId: z.string().max(120).optional().default(""),
+  entryId: z.string().max(120).optional().default(""),
+  requestedFoodId: z.string().max(120).optional().default(""),
   athleteNotes: z.string().max(1000).optional()
 });
+
+const GENERAL_REQUEST_LABELS = {
+  calorie_increase: "Aumentar ingesta calorica",
+  calorie_decrease: "Reducir ingesta calorica",
+  meal_add: "Anadir comida/menu",
+  meal_remove: "Eliminar comida/menu",
+  meal_redistribution: "Redistribuir comida"
+} satisfies Record<Exclude<NutritionChangeRequestType, "food_swap">, string>;
 
 function normalizeUsername(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
@@ -66,21 +87,61 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
 
-    const [plans, nutrition] = await Promise.all([
-      listNutritionPlansForAthlete(username),
-      listNutritionManagementData()
-    ]);
-    const plan = plans.find(
-      (item) =>
-        item.id === parsed.data.planId &&
-        (item.status === "published" || Boolean(item.publishedFileId))
-    );
-    const meal = plan?.meals.find((item) => item.id === parsed.data.mealId);
-    const entry = meal?.entries.find((item) => item.id === parsed.data.entryId);
-    if (!plan || !meal || !entry) {
-      return NextResponse.json({ error: "Plan food not found." }, { status: 404 });
+    const publishedPlan = await getPublishedNutritionPlanSnapshot(parsed.data.planId);
+    const plan =
+      publishedPlan?.athleteUsername === username && publishedPlan.status === "published"
+        ? publishedPlan
+        : null;
+    if (!plan) {
+      return NextResponse.json({ error: "Published plan not found." }, { status: 404 });
     }
 
+    if (parsed.data.requestType !== "food_swap") {
+      const meal = parsed.data.mealId
+        ? plan.meals.find((item) => item.id === parsed.data.mealId)
+        : null;
+      if (
+        (parsed.data.requestType === "meal_remove" ||
+          parsed.data.requestType === "meal_redistribution") &&
+        parsed.data.mealId &&
+        !meal
+      ) {
+        return NextResponse.json({ error: "Meal not found." }, { status: 404 });
+      }
+
+      const requestSummary = GENERAL_REQUEST_LABELS[parsed.data.requestType];
+      const changeRequest = await createNutritionChangeRequest({
+        requestType: parsed.data.requestType,
+        athleteUsername: username,
+        athleteName: auth.session.name,
+        planId: plan.id,
+        planName: plan.name,
+        mealId: meal?.id ?? "",
+        mealName: meal?.name ?? "",
+        requestSummary,
+        athleteNotes: parsed.data.athleteNotes
+      });
+
+      logInfo("General nutrition change request created", {
+        username,
+        requestId: changeRequest.id,
+        planId: plan.id,
+        requestType: changeRequest.requestType
+      });
+
+      return NextResponse.json({ ok: true, request: changeRequest });
+    }
+
+    const meal = plan.meals.find((item) => item.id === parsed.data.mealId);
+    const entry = meal?.entries.find((item) => item.id === parsed.data.entryId);
+    if (!meal || !entry) {
+      return NextResponse.json({ error: "Plan food not found." }, { status: 404 });
+    }
+    if (!parsed.data.requestedFoodId) {
+      return NextResponse.json({ error: "Requested food not found." }, { status: 400 });
+    }
+
+    const nutrition = await listNutritionManagementData();
     const requestedFood = nutrition.foods.find(
       (food) => food.id === parsed.data.requestedFoodId && food.active
     );
@@ -108,6 +169,7 @@ export async function POST(req: Request) {
     });
 
     const changeRequest = await createNutritionChangeRequest({
+      requestType: "food_swap",
       athleteUsername: username,
       athleteName: auth.session.name,
       planId: plan.id,
@@ -117,10 +179,11 @@ export async function POST(req: Request) {
       entryId: entry.id,
       originalFoodId: entry.foodId,
       originalFoodName: entry.foodName,
-      originalQuantityG: entry.quantityG,
+      originalQuantityG: getEffectiveQuantityG(entry),
       requestedFoodId: requestedFood.id,
       requestedFoodName: requestedFood.name,
       requestedQuantityG,
+      requestSummary: `Cambio de ${entry.foodName} por ${requestedFood.name}`,
       athleteNotes: parsed.data.athleteNotes
     });
 

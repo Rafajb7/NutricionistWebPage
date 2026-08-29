@@ -3,6 +3,7 @@ import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import {
   buildNutritionPlanPdfFileName,
+  getAthleteRoadmapSteps,
   getNutritionPlanById,
   listNutritionPlansForAthlete,
   markNutritionPlanPublished
@@ -21,7 +22,16 @@ function isValidId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,}$/.test(value);
 }
 
-export async function POST(_req: Request, context: RouteContext) {
+async function parsePdfOptions(req: Request): Promise<{ includeMacros: boolean }> {
+  try {
+    const body = (await req.json()) as { includeMacros?: unknown };
+    return { includeMacros: body.includeMacros !== false };
+  } catch {
+    return { includeMacros: true };
+  }
+}
+
+export async function POST(req: Request, context: RouteContext) {
   const auth = await requireAdminSession();
   if (!auth.session) return auth.response;
 
@@ -34,8 +44,16 @@ export async function POST(_req: Request, context: RouteContext) {
     const plan = await getNutritionPlanById(planId);
     if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
 
-    const comparisonPlans = await listNutritionPlansForAthlete(plan.athleteUsername);
-    const pdf = await renderNutritionPlanPdf(plan, { comparisonPlans });
+    const options = await parsePdfOptions(req);
+    const [comparisonPlans, roadmapSteps] = await Promise.all([
+      listNutritionPlansForAthlete(plan.athleteUsername),
+      getAthleteRoadmapSteps(plan.athleteUsername)
+    ]);
+    const pdf = await renderNutritionPlanPdf(plan, {
+      comparisonPlans,
+      includeMacros: options.includeMacros,
+      roadmapSteps
+    });
     const fileName = buildNutritionPlanPdfFileName(plan);
     const uploaded = await upsertNutritionPlanPdfForUser({
       username: plan.athleteUsername,

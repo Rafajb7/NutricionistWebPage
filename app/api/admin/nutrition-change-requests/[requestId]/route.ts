@@ -5,6 +5,7 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import { upsertNutritionPlanPdfForUser } from "@/lib/google/drive";
 import {
   buildNutritionPlanPdfFileName,
+  getAthleteRoadmapSteps,
   getNutritionPlanById,
   listNutritionChangeRequests,
   listNutritionManagementData,
@@ -15,6 +16,10 @@ import {
 } from "@/lib/google/nutrition-management";
 import { logError, logInfo } from "@/lib/logger";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
+import {
+  getDefaultQuantityUnitForFood,
+  getDefaultUnitWeightGForFood
+} from "@/lib/nutrition/quantity-units";
 import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
 import type {
   NutritionChangeRequest,
@@ -38,14 +43,27 @@ function isValidId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,}$/.test(value);
 }
 
+function normalizeQuantity(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(10000, Math.max(1, Math.round(value)));
+}
+
 function applyChangeRequestToPlan(
   plan: NutritionPlanFull,
   request: NutritionChangeRequest,
   requestedFood: NutritionFood
 ): NutritionPlanFull {
   const now = new Date().toISOString();
+  const quantityUnit = getDefaultQuantityUnitForFood(requestedFood);
+  const unitWeightG = getDefaultUnitWeightGForFood(requestedFood, quantityUnit);
+  const quantityG =
+    quantityUnit === "g"
+      ? normalizeQuantity(request.requestedQuantityG)
+      : normalizeQuantity(request.requestedQuantityG / unitWeightG);
+
   return {
     ...plan,
+    status: "review",
     meals: plan.meals.map((meal) => ({
       ...meal,
       entries: meal.entries.map((entry) => {
@@ -54,7 +72,9 @@ function applyChangeRequestToPlan(
           ...entry,
           foodId: requestedFood.id,
           foodName: requestedFood.name,
-          quantityG: request.requestedQuantityG,
+          quantityG,
+          quantityUnit,
+          unitWeightG,
           proteinPer100g: requestedFood.proteinPer100g,
           carbsPer100g: requestedFood.carbsPer100g,
           fatPer100g: requestedFood.fatPer100g,
@@ -68,8 +88,11 @@ function applyChangeRequestToPlan(
 }
 
 async function publishPlanPdf(plan: NutritionPlanFull) {
-  const comparisonPlans = await listNutritionPlansForAthlete(plan.athleteUsername);
-  const pdf = await renderNutritionPlanPdf(plan, { comparisonPlans });
+  const [comparisonPlans, roadmapSteps] = await Promise.all([
+    listNutritionPlansForAthlete(plan.athleteUsername),
+    getAthleteRoadmapSteps(plan.athleteUsername)
+  ]);
+  const pdf = await renderNutritionPlanPdf(plan, { comparisonPlans, roadmapSteps });
   const fileName = buildNutritionPlanPdfFileName(plan);
   const uploaded = await upsertNutritionPlanPdfForUser({
     username: plan.athleteUsername,
@@ -128,6 +151,13 @@ export async function PATCH(req: Request, context: RouteContext) {
     let planToSave = parsed.data.plan ? (parsed.data.plan as NutritionPlanFull) : null;
     if (planToSave && planToSave.id !== currentRequest.planId) {
       return NextResponse.json({ error: "Plan does not match request." }, { status: 400 });
+    }
+
+    if (!planToSave && currentRequest.requestType !== "food_swap") {
+      return NextResponse.json(
+        { error: "Open the plan, apply the requested adjustments and publish again." },
+        { status: 400 }
+      );
     }
 
     if (!planToSave) {

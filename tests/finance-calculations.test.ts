@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { renderFinanceInvoicePdf } from "@/lib/finance/invoice-pdf";
 import {
   addMonths,
+  calculateFinanceInvoiceTotals,
   buildFinanceDashboard,
   buildFinancePaymentsForContract,
   getComputedPaymentStatus,
@@ -8,7 +10,8 @@ import {
   parseCurrencyToCents,
   splitAmountCents
 } from "@/lib/finance/calculations";
-import type { CreateFinanceContractInput, FinanceContract } from "@/lib/finance/types";
+import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
+import type { CreateFinanceContractInput, FinanceContract, FinanceInvoice } from "@/lib/finance/types";
 
 function baseContractInput(overrides: Partial<CreateFinanceContractInput> = {}): CreateFinanceContractInput {
   return {
@@ -49,6 +52,85 @@ describe("finance calculations", () => {
 
   it("splits cents without losing precision", () => {
     expect(splitAmountCents(10000, 3)).toEqual([3334, 3333, 3333]);
+  });
+
+  it("calculates invoice totals with VAT, discounts and optional IRPF", () => {
+    const totals = calculateFinanceInvoiceTotals(
+      [
+        {
+          id: "line-1",
+          description: "Plan nutricional mensual",
+          quantity: 2,
+          unitPriceCents: 10000,
+          discountPercent: 10,
+          vatRate: 21
+        }
+      ],
+      15
+    );
+
+    expect(totals.subtotalCents).toBe(20000);
+    expect(totals.discountCents).toBe(2000);
+    expect(totals.taxableBaseCents).toBe(18000);
+    expect(totals.vatCents).toBe(3780);
+    expect(totals.irpfCents).toBe(2700);
+    expect(totals.totalCents).toBe(19080);
+  });
+
+  it("renders a finance invoice PDF buffer", async () => {
+    const lineItems = [
+      {
+        id: "line-1",
+        description: "Plan nutricional mensual",
+        quantity: 1,
+        unitPriceCents: 10000,
+        discountPercent: 0,
+        vatRate: 21
+      }
+    ];
+    const invoice: FinanceInvoice = {
+      id: "invoice-1",
+      invoiceNumber: "F-2026-0001",
+      series: "F-2026",
+      sequenceNumber: 1,
+      issueDate: "2026-08-28",
+      operationDate: "2026-08-28",
+      dueDate: "2026-09-05",
+      client: {
+        name: "Cliente Demo",
+        taxId: "11111111H",
+        address: "Avenida Cliente 2",
+        postalCode: "28001",
+        city: "Madrid",
+        province: "Madrid",
+        country: "Espana",
+        email: "cliente@example.com"
+      },
+      issuer: {
+        ...DEFAULT_FINANCE_INVOICE_SETTINGS,
+        businessName: "Nutricionista Demo",
+        taxId: "00000000T",
+        address: "Calle Demo 1",
+        postalCode: "28001",
+        city: "Madrid",
+        province: "Madrid",
+        email: "demo@example.com"
+      },
+      lineItems,
+      irpfRate: 0,
+      totals: calculateFinanceInvoiceTotals(lineItems, 0),
+      currency: "EUR",
+      paymentMethod: "Transferencia bancaria",
+      notes: "",
+      status: "issued",
+      createdAt: "",
+      updatedAt: ""
+    };
+
+    const pdf = await renderFinanceInvoicePdf(invoice);
+
+    expect(pdf.slice(0, 4).toString()).toBe("%PDF");
+    expect(pdf.length).toBeGreaterThan(1000);
   });
 
   it("generates financed payment schedules as persisted payment rows", () => {

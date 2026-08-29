@@ -39,9 +39,7 @@ export async function GET(req: NextRequest) {
   try {
     const nutrition = await listInteractiveNutritionDataForAthlete(username, { date });
 
-    const publishedPlans = nutrition.plans.filter(
-      (plan) => plan.status === "published" || Boolean(plan.publishedFileId)
-    );
+    const publishedPlans = nutrition.plans.filter((plan) => plan.status === "published");
 
     return NextResponse.json({
       date,
@@ -73,7 +71,7 @@ export async function POST(req: Request) {
     const plan = plans.find(
       (item) =>
         item.id === parsed.data.planId &&
-        (item.status === "published" || Boolean(item.publishedFileId))
+        item.status === "published"
     );
     const meal = plan?.meals.find((item) => item.id === parsed.data.mealId);
     if (!plan || !meal) {
