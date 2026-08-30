@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/require-session";
 import { getActiveCompetitionMode } from "@/lib/competition-mode";
 import { getEnv } from "@/lib/env";
+import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { listCompetitionEventsForUser } from "@/lib/google/calendar";
 import {
   listPeakModeDailyLogsForUser,
@@ -254,6 +255,8 @@ export async function POST(req: NextRequest) {
         ...formData
       }
     });
+    deleteMemoryCache(`making-weight:${username.trim().toLowerCase()}`);
+    deleteMemoryCache("admin:making-weight-critical-alerts");
 
     logInfo("Peak mode daily log upserted", {
       username,

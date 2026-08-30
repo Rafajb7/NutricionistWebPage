@@ -169,11 +169,11 @@ export function calculateMakingWeightStatus(input: {
   let weightToCutKg: number | null = null;
   let cutRatioPercent: number | null = null;
   if (hasWeights) {
-    weightToCutKg = Math.max(0, currentWeightKg - targetWeightKg);
+    weightToCutKg = Math.abs(currentWeightKg - targetWeightKg);
     cutRatioPercent = (100 * Math.abs(currentWeightKg - targetWeightKg)) / targetWeightKg;
   }
   let risk: MakingWeightRiskLevel = "none";
-  if (hasWeights && weightToCutKg && cutRatioPercent !== null) {
+  if (hasWeights && cutRatioPercent !== null) {
     if (cutRatioPercent >= thresholds.criticalThresholdPercent) {
       risk = "critical";
     } else if (cutRatioPercent >= thresholds.moderateThresholdPercent) {

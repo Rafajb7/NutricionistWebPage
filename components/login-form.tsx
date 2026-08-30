@@ -8,6 +8,8 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
 
+const ADMIN_MAKING_WEIGHT_ALERTS_SUPPRESSED_KEY = "mat:admin-making-weight-alerts-opened";
+
 export function LoginForm() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -42,6 +44,11 @@ export function LoginForm() {
       }
 
       const json = (await res.json()) as { error?: string; mustChangePassword?: boolean };
+      try {
+        window.localStorage.removeItem(ADMIN_MAKING_WEIGHT_ALERTS_SUPPRESSED_KEY);
+      } catch {
+        // ignore local storage errors
+      }
       toast.success("Sesión iniciada");
       window.location.href = json.mustChangePassword ? "/password/change" : "/dashboard";
     } catch (error) {

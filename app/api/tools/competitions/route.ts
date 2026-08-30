@@ -4,7 +4,8 @@ import { deleteMemoryCache, getOrSetMemoryCache } from "@/lib/cache/memory-cache
 import { requireSession } from "@/lib/auth/require-session";
 import {
   createCompetitionEvent,
-  listCompetitionEventsForUser
+  listCompetitionEventsForUser,
+  updateCompetitionEventForUser
 } from "@/lib/google/calendar";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -16,6 +17,10 @@ const competitionSchema = z.object({
   targetWeightKg: z.coerce.number().min(1).max(800).optional().nullable(),
   location: z.string().min(2).max(180),
   description: z.string().max(1000).optional()
+});
+
+const competitionUpdateSchema = competitionSchema.extend({
+  id: z.string().min(1).max(200)
 });
 
 const COMPETITIONS_CACHE_TTL_MS = 45_000;
@@ -112,6 +117,7 @@ export async function POST(req: NextRequest) {
 
     deleteMemoryCache(getCompetitionsCacheKey(auth.session.username));
     deleteMemoryCache(`making-weight:${auth.session.username.trim().toLowerCase()}`);
+    deleteMemoryCache("admin:making-weight-critical-alerts");
     logInfo("Competition created", {
       username: auth.session.username,
       date: parsed.data.competitionDate,
@@ -121,6 +127,50 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, event });
   } catch (error) {
     logError("Failed to create competition", {
+      username: auth.session.username,
+      error
+    });
+    return NextResponse.json({ error: mapGoogleCalendarError(error) }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  const auth = await requireSession();
+  if (!auth.session) return auth.response;
+
+  try {
+    const json = await req.json();
+    const parsed = competitionUpdateSchema.safeParse(json);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+    }
+
+    const event = await updateCompetitionEventForUser({
+      eventId: parsed.data.id,
+      username: auth.session.username,
+      name: auth.session.name,
+      date: parsed.data.competitionDate,
+      competitionName: parsed.data.competitionName,
+      weighInDate: parsed.data.weighInDate || parsed.data.competitionDate,
+      weighInTime: parsed.data.weighInTime,
+      targetWeightKg: parsed.data.targetWeightKg ?? null,
+      location: parsed.data.location,
+      description: parsed.data.description
+    });
+
+    deleteMemoryCache(getCompetitionsCacheKey(auth.session.username));
+    deleteMemoryCache(`making-weight:${auth.session.username.trim().toLowerCase()}`);
+    deleteMemoryCache("admin:making-weight-critical-alerts");
+    logInfo("Competition updated", {
+      username: auth.session.username,
+      eventId: parsed.data.id,
+      date: parsed.data.competitionDate,
+      name: parsed.data.competitionName
+    });
+
+    return NextResponse.json({ ok: true, event });
+  } catch (error) {
+    logError("Failed to update competition", {
       username: auth.session.username,
       error
     });

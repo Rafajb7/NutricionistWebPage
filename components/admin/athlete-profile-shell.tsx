@@ -135,6 +135,20 @@ function createMakingWeightCompetitionForm(): MakingWeightCompetitionForm {
   };
 }
 
+function toMakingWeightCompetitionForm(
+  competition: CompetitionCalendarEvent
+): MakingWeightCompetitionForm {
+  return {
+    competitionDate: competition.date,
+    weighInDate: competition.weighInDate || competition.date,
+    weighInTime: competition.weighInTime,
+    competitionName: competition.title,
+    targetWeightKg: competition.targetWeightKg === null ? "" : String(competition.targetWeightKg),
+    location: competition.location,
+    description: competition.description
+  };
+}
+
 function formatDateLabel(value: string | null | undefined): string {
   if (!value) return "-";
   const hasTime = value.includes("T");
@@ -174,6 +188,19 @@ function formatSignedDays(value: number | null): string {
   if (value > 0) return `${value} dias`;
   if (value === 0) return "Hoy";
   return `Hace ${Math.abs(value)} dias`;
+}
+
+function formatMakingWeightGapDetail(status: MakingWeightStatus): string {
+  if (status.weightToCutKg === null || status.currentWeightKg === null || status.targetWeightKg === null) {
+    return "Falta peso objetivo o actual";
+  }
+  if (status.currentWeightKg > status.targetWeightKg) {
+    return `${formatNumber(status.weightToCutKg, " kg")} por encima del objetivo`;
+  }
+  if (status.currentWeightKg < status.targetWeightKg) {
+    return `${formatNumber(status.weightToCutKg, " kg")} por debajo del objetivo`;
+  }
+  return "En el peso objetivo";
 }
 
 function getMakingWeightRiskLabel(risk: MakingWeightRiskLevel): string {
@@ -322,6 +349,9 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
   const [roadmapDraft, setRoadmapDraft] = useState<AthleteRoadmapStep[]>([]);
   const [makingWeightForm, setMakingWeightForm] = useState<MakingWeightCompetitionForm>(() =>
     createMakingWeightCompetitionForm()
+  );
+  const [editingMakingWeightCompetitionId, setEditingMakingWeightCompetitionId] = useState<string | null>(
+    null
   );
   const lastMakingWeightToastRef = useRef("");
 
@@ -590,6 +620,16 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
     setMakingWeightForm((current) => ({ ...current, [key]: value }));
   }
 
+  function startEditingMakingWeightCompetition(competition: CompetitionCalendarEvent) {
+    setEditingMakingWeightCompetitionId(competition.id);
+    setMakingWeightForm(toMakingWeightCompetitionForm(competition));
+  }
+
+  function cancelEditingMakingWeightCompetition() {
+    setEditingMakingWeightCompetitionId(null);
+    setMakingWeightForm(createMakingWeightCompetitionForm());
+  }
+
   async function saveMakingWeightCompetition() {
     if (!profile) return;
     if (!makingWeightForm.competitionDate || !makingWeightForm.competitionName.trim()) {
@@ -617,6 +657,7 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           makingWeightCompetition: {
+            id: editingMakingWeightCompetitionId ?? undefined,
             competitionDate: makingWeightForm.competitionDate,
             competitionName: makingWeightForm.competitionName,
             weighInDate: makingWeightForm.weighInDate || makingWeightForm.competitionDate,
@@ -632,8 +673,12 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
         throw new Error(json.error ?? "No se pudo guardar Making Weight.");
       }
       setProfile(json.profile);
-      setMakingWeightForm(createMakingWeightCompetitionForm());
-      toast.success("Making Weight registrado.");
+      cancelEditingMakingWeightCompetition();
+      toast.success(
+        editingMakingWeightCompetitionId
+          ? "Making Weight actualizado."
+          : "Making Weight registrado."
+      );
       window.dispatchEvent(new Event("competition-mode:refresh"));
       window.dispatchEvent(new Event("diablo-mode:refresh"));
     } catch (error) {
@@ -1245,18 +1290,30 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
                   <SectionTitle eyebrow="Pesaje" title="Making Weight" />
                 </div>
                 {primaryMakingWeightStatus ? (
-                  <span
-                    className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${getMakingWeightRiskClass(
-                      primaryMakingWeightStatus.risk
-                    )}`}
-                  >
-                    {primaryMakingWeightStatus.risk === "critical" ? (
-                      <AlertTriangle className="h-4 w-4" />
-                    ) : (
-                      <ShieldAlert className="h-4 w-4" />
-                    )}
-                    {getMakingWeightRiskLabel(primaryMakingWeightStatus.risk)}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <BrandButton
+                      variant="ghost"
+                      className="px-3 py-2 text-xs"
+                      onClick={() =>
+                        startEditingMakingWeightCompetition(primaryMakingWeightStatus.competition)
+                      }
+                    >
+                      <Pencil className="mr-2 h-3.5 w-3.5" />
+                      Editar
+                    </BrandButton>
+                    <span
+                      className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${getMakingWeightRiskClass(
+                        primaryMakingWeightStatus.risk
+                      )}`}
+                    >
+                      {primaryMakingWeightStatus.risk === "critical" ? (
+                        <AlertTriangle className="h-4 w-4" />
+                      ) : (
+                        <ShieldAlert className="h-4 w-4" />
+                      )}
+                      {getMakingWeightRiskLabel(primaryMakingWeightStatus.risk)}
+                    </span>
+                  </div>
                 ) : null}
               </div>
 
@@ -1291,7 +1348,7 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
                     detail={
                       primaryMakingWeightStatus.weightToCutKg === null
                         ? "Falta peso objetivo o actual"
-                        : `${formatNumber(primaryMakingWeightStatus.weightToCutKg, " kg")} por encima del objetivo`
+                        : formatMakingWeightGapDetail(primaryMakingWeightStatus)
                     }
                   />
                   <MetricCard
@@ -1355,7 +1412,7 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
 
               {makingWeightStatuses.length > 1 ? (
                 <div className="mt-4 grid gap-2 md:grid-cols-2">
-                  {makingWeightStatuses.slice(1, 5).map((status) => (
+                  {makingWeightStatuses.slice(1).map((status) => (
                     <div
                       key={status.competition.id}
                       className="rounded-xl border border-white/10 bg-black/20 p-3"
@@ -1370,9 +1427,19 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
                             {formatDateLabel(status.competition.weighInDate || status.competition.date)}
                           </p>
                         </div>
-                        <span className={`rounded-lg border px-2 py-1 text-[11px] ${getMakingWeightRiskClass(status.risk)}`}>
-                          {getMakingWeightRiskLabel(status.risk)}
-                        </span>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <span className={`rounded-lg border px-2 py-1 text-[11px] ${getMakingWeightRiskClass(status.risk)}`}>
+                            {getMakingWeightRiskLabel(status.risk)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => startEditingMakingWeightCompetition(status.competition)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 text-xs text-brand-text transition hover:bg-white/10"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Editar
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1382,7 +1449,9 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
               <div className="mt-5 rounded-xl border border-white/10 bg-black/20 p-3">
                 <div className="flex items-center gap-2">
                   <CalendarDays className="h-4 w-4 text-brand-accent" />
-                  <h3 className="text-sm font-semibold text-brand-text">Registrar competicion</h3>
+                  <h3 className="text-sm font-semibold text-brand-text">
+                    {editingMakingWeightCompetitionId ? "Editar competicion" : "Registrar competicion"}
+                  </h3>
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <label className="block text-sm text-brand-muted">
@@ -1446,10 +1515,23 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
                     />
                   </label>
                 </div>
-                <div className="mt-3 flex justify-end">
+                <div className="mt-3 flex flex-wrap justify-end gap-2">
+                  {editingMakingWeightCompetitionId ? (
+                    <BrandButton
+                      variant="ghost"
+                      onClick={cancelEditingMakingWeightCompetition}
+                      disabled={savingMakingWeight}
+                    >
+                      Cancelar
+                    </BrandButton>
+                  ) : null}
                   <BrandButton onClick={saveMakingWeightCompetition} disabled={savingMakingWeight}>
                     <Save className="mr-2 h-4 w-4" />
-                    {savingMakingWeight ? "Guardando..." : "Guardar Making Weight"}
+                    {savingMakingWeight
+                      ? "Guardando..."
+                      : editingMakingWeightCompetitionId
+                        ? "Actualizar Making Weight"
+                        : "Guardar Making Weight"}
                   </BrandButton>
                 </div>
               </div>

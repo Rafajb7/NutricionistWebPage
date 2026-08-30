@@ -5,7 +5,11 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import { getComputedPaymentStatus, todayIsoDate } from "@/lib/finance/calculations";
 import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
 import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
-import { createCompetitionEvent, listCompetitionEventsForUser } from "@/lib/google/calendar";
+import {
+  createCompetitionEvent,
+  listCompetitionEventsForUser,
+  updateCompetitionEventForUser
+} from "@/lib/google/calendar";
 import { listNutritionPlanPdfsForUser } from "@/lib/google/drive";
 import { listFinanceRecords } from "@/lib/google/finance";
 import { isGoogleRateLimitError } from "@/lib/google/retry";
@@ -61,6 +65,7 @@ const patchSchema = z.object({
     .optional(),
   makingWeightCompetition: z
     .object({
+      id: z.string().min(1).max(200).optional(),
       competitionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       competitionName: z.string().min(2).max(180),
       weighInDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
@@ -358,7 +363,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     }
 
     if (parsed.data.makingWeightCompetition !== undefined) {
-      await createCompetitionEvent({
+      const competitionPayload = {
         username: resolved.sourceUsername,
         name: parsed.data.user?.name ?? resolved.targetUser.name,
         date: parsed.data.makingWeightCompetition.competitionDate,
@@ -370,9 +375,19 @@ export async function PATCH(req: Request, context: RouteContext) {
         targetWeightKg: parsed.data.makingWeightCompetition.targetWeightKg,
         location: parsed.data.makingWeightCompetition.location,
         description: parsed.data.makingWeightCompetition.description
-      });
+      };
+
+      if (parsed.data.makingWeightCompetition.id) {
+        await updateCompetitionEventForUser({
+          ...competitionPayload,
+          eventId: parsed.data.makingWeightCompetition.id
+        });
+      } else {
+        await createCompetitionEvent(competitionPayload);
+      }
       deleteMemoryCache(`competitions:${resolved.sourceUsername.trim().toLowerCase()}`);
       deleteMemoryCache(`making-weight:${resolved.sourceUsername.trim().toLowerCase()}`);
+      deleteMemoryCache("admin:making-weight-critical-alerts");
     }
 
     deleteMemoryCache(getAthleteProfileCacheKey(targetUsername));
@@ -383,7 +398,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       userUpdated: Boolean(parsed.data.user),
       notesUpdated: parsed.data.privateNotes !== undefined,
       roadmapUpdated: parsed.data.roadmapSteps !== undefined,
-      makingWeightCompetitionCreated: parsed.data.makingWeightCompetition !== undefined
+      makingWeightCompetitionChanged: parsed.data.makingWeightCompetition !== undefined
     });
 
     return NextResponse.json({ ok: true, profile });

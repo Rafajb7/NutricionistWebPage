@@ -127,6 +127,16 @@ type CompetitionEvent = {
   createdAt: string;
 };
 
+type CompetitionForm = {
+  competitionDate: string;
+  weighInDate: string;
+  weighInTime: string;
+  targetWeightKg: string;
+  name: string;
+  location: string;
+  description: string;
+};
+
 type CompetitionsResponse = {
   events?: CompetitionEvent[];
   warning?: string;
@@ -170,6 +180,18 @@ type DailyTrackerResponse = {
   entries?: DailyTrackerEntry[];
   error?: string;
 };
+
+function toCompetitionForm(competition: CompetitionEvent): CompetitionForm {
+  return {
+    competitionDate: competition.date,
+    weighInDate: competition.weighInDate || competition.date,
+    weighInTime: competition.weighInTime,
+    targetWeightKg: competition.targetWeightKg === null ? "" : String(competition.targetWeightKg),
+    name: competition.title,
+    location: competition.location,
+    description: competition.description
+  };
+}
 
 const TOOLS_CACHE_TTL_MS = 90 * 1000;
 const TOOLS_CACHE_VERSION = 1;
@@ -662,6 +684,7 @@ export function ToolsShell({ user }: ToolsShellProps) {
   const [competitions, setCompetitions] = useState<CompetitionEvent[]>([]);
   const [competitionsLoading, setCompetitionsLoading] = useState(true);
   const [competitionSaving, setCompetitionSaving] = useState(false);
+  const [editingCompetitionId, setEditingCompetitionId] = useState<string | null>(null);
   const [competitionDate, setCompetitionDate] = useState("");
   const [competitionWeighInDate, setCompetitionWeighInDate] = useState("");
   const [competitionWeighInTime, setCompetitionWeighInTime] = useState("");
@@ -1351,6 +1374,29 @@ export function ToolsShell({ user }: ToolsShellProps) {
     }
   }
 
+  function resetCompetitionForm() {
+    setEditingCompetitionId(null);
+    setCompetitionDate("");
+    setCompetitionWeighInDate("");
+    setCompetitionWeighInTime("");
+    setCompetitionTargetWeightKg("");
+    setCompetitionName("");
+    setCompetitionLocation("");
+    setCompetitionDescription("");
+  }
+
+  function startEditingCompetition(competition: CompetitionEvent) {
+    const form = toCompetitionForm(competition);
+    setEditingCompetitionId(competition.id);
+    setCompetitionDate(form.competitionDate);
+    setCompetitionWeighInDate(form.weighInDate);
+    setCompetitionWeighInTime(form.weighInTime);
+    setCompetitionTargetWeightKg(form.targetWeightKg);
+    setCompetitionName(form.name);
+    setCompetitionLocation(form.location);
+    setCompetitionDescription(form.description);
+  }
+
   async function registerCompetition() {
     if (!competitionDate) {
       toast.error("Debes indicar la fecha de la competición.");
@@ -1379,11 +1425,12 @@ export function ToolsShell({ user }: ToolsShellProps) {
     setCompetitionSaving(true);
     try {
       const res = await fetch("/api/tools/competitions", {
-        method: "POST",
+        method: editingCompetitionId ? "PATCH" : "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          id: editingCompetitionId ?? undefined,
           competitionDate,
           competitionName: competitionName.trim(),
           weighInDate: competitionWeighInDate || competitionDate,
@@ -1401,23 +1448,31 @@ export function ToolsShell({ user }: ToolsShellProps) {
 
       const json = (await res.json()) as { error?: string };
       if (!res.ok) {
-        toast.error(json.error ?? "No se pudo registrar la competición.");
+        toast.error(
+          json.error ??
+            (editingCompetitionId
+              ? "No se pudo actualizar la competición."
+              : "No se pudo registrar la competición.")
+        );
         return;
       }
 
-      toast.success("Competición registrada en el calendario.");
-      setCompetitionWeighInDate("");
-      setCompetitionWeighInTime("");
-      setCompetitionTargetWeightKg("");
-      setCompetitionName("");
-      setCompetitionLocation("");
-      setCompetitionDescription("");
+      toast.success(
+        editingCompetitionId
+          ? "Competición actualizada en el calendario."
+          : "Competición registrada en el calendario."
+      );
+      resetCompetitionForm();
       await reloadCompetitions();
       window.dispatchEvent(new Event("competition-mode:refresh"));
       window.dispatchEvent(new Event("diablo-mode:refresh"));
     } catch (error) {
       console.error(error);
-      toast.error("Error al registrar la competición.");
+      toast.error(
+        editingCompetitionId
+          ? "Error al actualizar la competición."
+          : "Error al registrar la competición."
+      );
     } finally {
       setCompetitionSaving(false);
     }
@@ -2536,7 +2591,9 @@ export function ToolsShell({ user }: ToolsShellProps) {
               className="rounded-3xl border border-brand-accent/20 bg-brand-surface/80 p-6 shadow-glow"
             >
               <p className="text-xs uppercase tracking-[0.24em] text-brand-muted">Herramientas</p>
-              <h1 className="mt-2 text-3xl font-bold text-brand-text">Competiciones</h1>
+              <h1 className="mt-2 text-3xl font-bold text-brand-text">
+                {editingCompetitionId ? "Editar competicion" : "Competiciones"}
+              </h1>
               <p className="mt-3 max-w-3xl text-sm text-brand-muted">
                 Registra tu proxima competicion para que Manuel Angel Trenas tenga visibilidad del
                 evento y pueda ajustar tu plan nutricional con antelacion.
@@ -2632,10 +2689,23 @@ export function ToolsShell({ user }: ToolsShellProps) {
                 </label>
               </div>
 
-              <div className="mt-4">
+              <div className="mt-4 flex flex-wrap gap-2">
+                {editingCompetitionId ? (
+                  <BrandButton
+                    variant="ghost"
+                    onClick={resetCompetitionForm}
+                    disabled={competitionSaving}
+                  >
+                    Cancelar
+                  </BrandButton>
+                ) : null}
                 <BrandButton onClick={registerCompetition} disabled={competitionSaving}>
                   <Save className="mr-1 h-4 w-4" />
-                  {competitionSaving ? "Registrando..." : "Registrar competicion"}
+                  {competitionSaving
+                    ? "Guardando..."
+                    : editingCompetitionId
+                      ? "Actualizar competicion"
+                      : "Registrar competicion"}
                 </BrandButton>
               </div>
             </motion.section>
@@ -2671,11 +2741,21 @@ export function ToolsShell({ user }: ToolsShellProps) {
                         className="rounded-xl border border-white/10 bg-black/20 px-4 py-3"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="font-semibold text-brand-text">{competition.title}</p>
-                          <p className="text-xs text-brand-muted">
-                            {formatDateLabel(competition.date)}
-                            {daysUntil !== null ? ` · ${formatDaysUntilLabel(daysUntil)}` : ""}
-                          </p>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-brand-text">{competition.title}</p>
+                            <p className="text-xs text-brand-muted">
+                              {formatDateLabel(competition.date)}
+                              {daysUntil !== null ? ` · ${formatDaysUntilLabel(daysUntil)}` : ""}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => startEditingCompetition(competition)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 text-xs text-brand-text transition hover:bg-white/10"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Editar
+                          </button>
                         </div>
                         <p className="mt-1 text-sm text-brand-muted">{competition.location}</p>
                         {competition.targetWeightKg ? (

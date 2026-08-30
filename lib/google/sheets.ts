@@ -1269,6 +1269,27 @@ export async function listRevisionRowsForUser(username: string): Promise<Revisio
     .filter((row) => usernameVariants.has(row.usuario.trim()));
 }
 
+export async function listAllRevisionRows(): Promise<RevisionRow[]> {
+  const env = getEnv();
+  const values = await getValuesBySheetName(
+    env.GOOGLE_REVISION_SHEET_NAME,
+    "A2:E",
+    env.GOOGLE_REVISION_WORKSHEET_NAME,
+    {
+      valueRenderOption: "FORMULA",
+      dateTimeRenderOption: "FORMATTED_STRING"
+    }
+  );
+
+  return values.map((row) => ({
+    nombre: String(row[0] ?? ""),
+    fecha: String(row[1] ?? ""),
+    usuario: String(row[2] ?? ""),
+    pregunta: String(row[3] ?? ""),
+    respuesta: String(row[4] ?? "")
+  }));
+}
+
 type RevisionSheetRow = RevisionRow & {
   rowNumber: number;
 };
@@ -1732,6 +1753,86 @@ async function listPeakModeDailySheetRowsForUser(username: string): Promise<Peak
 export async function listPeakModeDailyLogsForUser(username: string): Promise<PeakModeDailyLogRow[]> {
   const rows = await listPeakModeDailySheetRowsForUser(username);
   return rows.map(({ rowNumber: _rowNumber, ...row }) => row);
+}
+
+export async function listAllPeakModeDailyLogs(): Promise<PeakModeDailyLogRow[]> {
+  const peakSheet = await ensurePeakModeSheetReady();
+  const rows = await readPeakModeDailyRows(peakSheet);
+  const parsed: PeakModeDailyLogRow[] = [];
+
+  rows.forEach((row) => {
+    const usuario = String(row[3] ?? "").trim();
+    if (!usuario) return;
+
+    const modo = String(row[4] ?? "").trim().toLowerCase();
+    if (modo !== "titan" && modo !== "diablo") return;
+
+    const fecha = String(row[1] ?? "").trim();
+    if (!fecha) return;
+
+    const pesoAyunasKg = parseNumber(row[5]);
+    const pesoNocturnoKg = parseNumber(row[6]);
+    const pasosDiarios = parseNumber(row[7]);
+    const aguaLitros = parseNumber(row[8]);
+    const frutaPiezas = parseNumber(row[9]);
+    const verduraRaciones = parseNumber(row[10]);
+    const cerealesIntegralesRaciones = parseNumber(row[11]);
+    const hambreEscala = parseNumber(row[12]);
+    const descansoEscala = parseNumber(row[13]);
+    const horasSueno = parseNumber(row[14]);
+    const estresEscala = parseNumber(row[15]);
+    const molestiasDigestivasEscala = parseNumber(row[16]);
+    const cumplimientoPlanEscala = parseNumber(row[17]);
+
+    if (
+      pesoAyunasKg === null ||
+      pesoNocturnoKg === null ||
+      pasosDiarios === null ||
+      aguaLitros === null ||
+      frutaPiezas === null ||
+      verduraRaciones === null ||
+      cerealesIntegralesRaciones === null ||
+      hambreEscala === null ||
+      descansoEscala === null ||
+      horasSueno === null ||
+      estresEscala === null ||
+      molestiasDigestivasEscala === null ||
+      cumplimientoPlanEscala === null
+    ) {
+      return;
+    }
+
+    parsed.push({
+      timestamp: String(row[0] ?? "").trim(),
+      fecha,
+      nombre: String(row[2] ?? "").trim(),
+      usuario,
+      modo,
+      pesoAyunasKg,
+      pesoNocturnoKg,
+      pasosDiarios,
+      aguaLitros,
+      frutaPiezas,
+      verduraRaciones,
+      cerealesIntegralesRaciones,
+      hambreEscala,
+      descansoEscala,
+      horasSueno,
+      estresEscala,
+      molestiasDigestivasEscala,
+      cumplimientoPlanEscala,
+      tuvoEntreno: parseBoolean(row[18]),
+      dobleSesion: parseBoolean(row[19])
+    });
+  });
+
+  return parsed.sort((a, b) => {
+    const byUser = normalizeUsername(a.usuario).localeCompare(normalizeUsername(b.usuario), "es");
+    if (byUser !== 0) return byUser;
+    const byDate = a.fecha.localeCompare(b.fecha);
+    if (byDate !== 0) return byDate;
+    return a.timestamp.localeCompare(b.timestamp);
+  });
 }
 
 export async function upsertPeakModeDailyLogForUser(input: {

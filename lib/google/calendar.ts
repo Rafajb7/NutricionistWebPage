@@ -18,6 +18,11 @@ export type CompetitionCalendarEvent = {
   createdAt: string;
 };
 
+export type AdminCompetitionCalendarEvent = CompetitionCalendarEvent & {
+  username: string;
+  displayName: string;
+};
+
 export type AdminCalendarEvent = {
   id: string;
   title: string;
@@ -29,6 +34,18 @@ export type AdminCalendarEvent = {
   createdAt: string;
   username: string | null;
   displayName: string | null;
+};
+
+type CompetitionEventInput = {
+  username: string;
+  name: string;
+  date: string;
+  competitionName: string;
+  weighInDate?: string;
+  weighInTime: string;
+  targetWeightKg?: number | null;
+  location: string;
+  description?: string;
 };
 
 function normalizeUsername(value: string): string {
@@ -134,6 +151,28 @@ function extractDescriptionValue(description: string, label: string): string {
   return line?.split(":").slice(1).join(":").trim() ?? "";
 }
 
+function extractCompetitionCustomDescription(description: string): string {
+  const lines = description.split(/\r?\n/);
+  const customDescriptionIndex = lines.findIndex((item) =>
+    item
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .toLowerCase()
+      .startsWith("descripcion:")
+  );
+  if (customDescriptionIndex >= 0) {
+    const firstLine = lines[customDescriptionIndex]?.split(":").slice(1).join(":").trim() ?? "";
+    return [firstLine, ...lines.slice(customDescriptionIndex + 1)].join("\n").trim();
+  }
+
+  const looksGenerated =
+    extractDescriptionValue(description, "Fecha del pesaje") ||
+    extractDescriptionValue(description, "Hora del pesaje") ||
+    extractDescriptionValue(description, "Peso objetivo");
+
+  return looksGenerated ? "" : description;
+}
+
 function mapEvent(event: calendar_v3.Schema$Event): CompetitionCalendarEvent | null {
   const id = event.id?.trim();
   const date = extractEventDate({
@@ -159,8 +198,22 @@ function mapEvent(event: calendar_v3.Schema$Event): CompetitionCalendarEvent | n
     weighInTime,
     targetWeightKg,
     location: event.location?.trim() || "",
-    description,
+    description: extractCompetitionCustomDescription(description),
     createdAt: event.created?.trim() || ""
+  };
+}
+
+function mapCompetitionEventForAdmin(event: calendar_v3.Schema$Event): AdminCompetitionCalendarEvent | null {
+  const mapped = mapEvent(event);
+  if (!mapped) return null;
+  const privateProps = event.extendedProperties?.private ?? {};
+  const username = privateProps.matUsername?.trim() ?? "";
+  if (!username) return null;
+
+  return {
+    ...mapped,
+    username,
+    displayName: privateProps.matDisplayName?.trim() || username
   };
 }
 
@@ -194,32 +247,120 @@ async function getCalendarClient() {
   return google.calendar({ version: "v3", auth });
 }
 
-export function getCalendarEmbedUrl(): string {
-  const calendarId = getCalendarId();
-  return `https://calendar.google.com/calendar/embed?src=${encodeURIComponent(calendarId)}&ctz=Europe%2FMadrid`;
-}
-
-export async function createCompetitionEvent(input: {
-  username: string;
-  name: string;
-  date: string;
-  competitionName: string;
-  weighInDate?: string;
-  weighInTime: string;
-  targetWeightKg?: number | null;
-  location: string;
-  description?: string;
-}): Promise<CompetitionCalendarEvent> {
-  const calendar = await getCalendarClient();
-  const calendarId = getCalendarId();
+function normalizeCompetitionEventInput(input: CompetitionEventInput) {
   const normalizedUsername = normalizeUsername(input.username);
   const weighInDate = input.weighInDate?.trim() || input.date;
   const targetWeightKg =
     input.targetWeightKg !== null && input.targetWeightKg !== undefined && Number.isFinite(input.targetWeightKg)
       ? Math.max(0, Number(input.targetWeightKg))
       : null;
-  const competitionEndDate = addDaysToDateString(input.date, 1);
+
+  return {
+    normalizedUsername,
+    weighInDate,
+    targetWeightKg
+  };
+}
+
+function buildCompetitionEventRequestBody(input: CompetitionEventInput): calendar_v3.Schema$Event {
+  const { normalizedUsername, weighInDate, targetWeightKg } = normalizeCompetitionEventInput(input);
+
+  return {
+    summary: input.competitionName.trim(),
+    location: input.location.trim(),
+    description: buildCompetitionDescription({
+      username: input.username,
+      name: input.name,
+      weighInDate,
+      weighInTime: input.weighInTime,
+      targetWeightKg,
+      description: input.description
+    }),
+    start: { date: input.date },
+    end: { date: addDaysToDateString(input.date, 1) },
+    extendedProperties: {
+      private: {
+        matUsername: normalizedUsername,
+        matDisplayName: input.name.trim(),
+        matEventKind: COMPETITION_EVENT_KIND,
+        matWeighInDate: weighInDate,
+        matWeighInTime: input.weighInTime,
+        matTargetWeightKg: targetWeightKg === null ? "" : String(targetWeightKg)
+      }
+    }
+  };
+}
+
+function buildCompetitionPhaseEventRequests(
+  input: CompetitionEventInput,
+  competitionEventId: string
+): calendar_v3.Schema$Event[] {
+  const { normalizedUsername, weighInDate, targetWeightKg } = normalizeCompetitionEventInput(input);
   const periods = buildCompetitionCalendarPeriods(weighInDate);
+  const sharedPrivateProps = {
+    matUsername: normalizedUsername,
+    matDisplayName: input.name.trim(),
+    matCompetitionDate: input.date,
+    matWeighInDate: weighInDate,
+    matTargetWeightKg: targetWeightKg === null ? "" : String(targetWeightKg),
+    matCompetitionName: input.competitionName.trim(),
+    matCompetitionEventId: competitionEventId
+  };
+
+  return [
+    {
+      summary: "Precompetition Weeks",
+      location: input.location.trim(),
+      description: buildCompetitionPhaseDescription({
+        phaseLabel: "Precompetition Weeks",
+        competitionName: input.competitionName,
+        competitionDate: input.date,
+        weighInDate,
+        targetWeightKg,
+        username: input.username,
+        name: input.name
+      }),
+      start: { date: periods.precompetitionWeeks.startDate },
+      end: { date: periods.precompetitionWeeks.endDateExclusive },
+      extendedProperties: {
+        private: {
+          ...sharedPrivateProps,
+          matEventKind: PRECOMPETITION_WEEKS_EVENT_KIND
+        }
+      }
+    },
+    {
+      summary: "Competition Week",
+      location: input.location.trim(),
+      description: buildCompetitionPhaseDescription({
+        phaseLabel: "Competition Week",
+        competitionName: input.competitionName,
+        competitionDate: input.date,
+        weighInDate,
+        targetWeightKg,
+        username: input.username,
+        name: input.name
+      }),
+      start: { date: periods.competitionWeek.startDate },
+      end: { date: periods.competitionWeek.endDateExclusive },
+      extendedProperties: {
+        private: {
+          ...sharedPrivateProps,
+          matEventKind: COMPETITION_WEEK_EVENT_KIND
+        }
+      }
+    }
+  ];
+}
+
+export function getCalendarEmbedUrl(): string {
+  const calendarId = getCalendarId();
+  return `https://calendar.google.com/calendar/embed?src=${encodeURIComponent(calendarId)}&ctz=Europe%2FMadrid`;
+}
+
+export async function createCompetitionEvent(input: CompetitionEventInput): Promise<CompetitionCalendarEvent> {
+  const calendar = await getCalendarClient();
+  const calendarId = getCalendarId();
   const createdEventIds: string[] = [];
 
   let createdCompetitionEvent: calendar_v3.Schema$Event | null = null;
@@ -227,90 +368,14 @@ export async function createCompetitionEvent(input: {
   try {
     const created = await calendar.events.insert({
       calendarId,
-      requestBody: {
-        summary: input.competitionName.trim(),
-        location: input.location.trim(),
-        description: buildCompetitionDescription({
-          username: input.username,
-          name: input.name,
-          weighInDate,
-          weighInTime: input.weighInTime,
-          targetWeightKg,
-          description: input.description
-        }),
-        start: { date: input.date },
-        end: { date: competitionEndDate },
-        extendedProperties: {
-          private: {
-            matUsername: normalizedUsername,
-            matDisplayName: input.name.trim(),
-            matEventKind: COMPETITION_EVENT_KIND,
-            matWeighInDate: weighInDate,
-            matWeighInTime: input.weighInTime,
-            matTargetWeightKg: targetWeightKg === null ? "" : String(targetWeightKg)
-          }
-        }
-      }
+      requestBody: buildCompetitionEventRequestBody(input)
     });
 
     createdCompetitionEvent = created.data;
     const competitionEventId = created.data.id?.trim();
     if (competitionEventId) createdEventIds.push(competitionEventId);
 
-    const sharedPrivateProps = {
-      matUsername: normalizedUsername,
-      matDisplayName: input.name.trim(),
-      matCompetitionDate: input.date,
-      matWeighInDate: weighInDate,
-      matTargetWeightKg: targetWeightKg === null ? "" : String(targetWeightKg),
-      matCompetitionName: input.competitionName.trim(),
-      matCompetitionEventId: competitionEventId ?? ""
-    };
-
-    const phaseEventRequests: calendar_v3.Schema$Event[] = [
-      {
-        summary: "Precompetition Weeks",
-        location: input.location.trim(),
-        description: buildCompetitionPhaseDescription({
-          phaseLabel: "Precompetition Weeks",
-          competitionName: input.competitionName,
-          competitionDate: input.date,
-          weighInDate,
-          targetWeightKg,
-          username: input.username,
-          name: input.name
-        }),
-        start: { date: periods.precompetitionWeeks.startDate },
-        end: { date: periods.precompetitionWeeks.endDateExclusive },
-        extendedProperties: {
-          private: {
-            ...sharedPrivateProps,
-            matEventKind: PRECOMPETITION_WEEKS_EVENT_KIND
-          }
-        }
-      },
-      {
-        summary: "Competition Week",
-        location: input.location.trim(),
-        description: buildCompetitionPhaseDescription({
-          phaseLabel: "Competition Week",
-          competitionName: input.competitionName,
-          competitionDate: input.date,
-          weighInDate,
-          targetWeightKg,
-          username: input.username,
-          name: input.name
-        }),
-        start: { date: periods.competitionWeek.startDate },
-        end: { date: periods.competitionWeek.endDateExclusive },
-        extendedProperties: {
-          private: {
-            ...sharedPrivateProps,
-            matEventKind: COMPETITION_WEEK_EVENT_KIND
-          }
-        }
-      }
-    ];
+    const phaseEventRequests = buildCompetitionPhaseEventRequests(input, competitionEventId ?? "");
 
     for (const requestBody of phaseEventRequests) {
       const phaseCreated = await calendar.events.insert({
@@ -332,6 +397,74 @@ export async function createCompetitionEvent(input: {
   const mapped = createdCompetitionEvent ? mapEvent(createdCompetitionEvent) : null;
   if (!mapped) {
     throw new Error("Could not parse created competition event.");
+  }
+  return mapped;
+}
+
+export async function updateCompetitionEventForUser(
+  input: CompetitionEventInput & { eventId: string }
+): Promise<CompetitionCalendarEvent> {
+  const calendar = await getCalendarClient();
+  const calendarId = getCalendarId();
+  const eventId = input.eventId.trim();
+  if (!eventId) {
+    throw new Error("Competition event ID is missing.");
+  }
+
+  const existing = await calendar.events.get({ calendarId, eventId });
+  const existingUsername = existing.data.extendedProperties?.private?.matUsername?.trim() ?? "";
+  const existingKind = getEventKind(existing.data);
+
+  if (existingKind && existingKind !== COMPETITION_EVENT_KIND) {
+    throw new Error("Competition event not found.");
+  }
+
+  if (normalizeUsername(existingUsername) !== normalizeUsername(input.username)) {
+    throw new Error("Competition event not found.");
+  }
+
+  const updated = await calendar.events.patch({
+    calendarId,
+    eventId,
+    requestBody: buildCompetitionEventRequestBody(input)
+  });
+
+  const phaseEvents = await calendar.events.list({
+    calendarId,
+    singleEvents: true,
+    showDeleted: false,
+    maxResults: 50,
+    privateExtendedProperty: [`matCompetitionEventId=${eventId}`]
+  });
+  const phaseByKind = new Map<string, calendar_v3.Schema$Event>();
+  for (const item of phaseEvents.data.items ?? []) {
+    const itemId = item.id?.trim();
+    const kind = getEventKind(item);
+    if (!itemId || !kind || kind === COMPETITION_EVENT_KIND) continue;
+    phaseByKind.set(kind, item);
+  }
+
+  for (const requestBody of buildCompetitionPhaseEventRequests(input, eventId)) {
+    const kind = requestBody.extendedProperties?.private?.matEventKind ?? "";
+    const phaseEvent = phaseByKind.get(kind);
+    const phaseEventId = phaseEvent?.id?.trim();
+    if (phaseEventId) {
+      await calendar.events.patch({
+        calendarId,
+        eventId: phaseEventId,
+        requestBody
+      });
+    } else {
+      await calendar.events.insert({
+        calendarId,
+        requestBody
+      });
+    }
+  }
+
+  const mapped = mapEvent(updated.data);
+  if (!mapped) {
+    throw new Error("Could not parse updated competition event.");
   }
   return mapped;
 }
@@ -370,6 +503,29 @@ export async function listCompetitionEventsForUser(
     .map((event) => mapEvent(event))
     .filter((event): event is CompetitionCalendarEvent => Boolean(event))
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function listUpcomingCompetitionEventsForAdmin(
+  fromDate: string
+): Promise<AdminCompetitionCalendarEvent[]> {
+  const calendar = await getCalendarClient();
+  const calendarId = getCalendarId();
+  const res = await calendar.events.list({
+    calendarId,
+    singleEvents: true,
+    showDeleted: false,
+    orderBy: "startTime",
+    maxResults: 500,
+    timeMin: `${fromDate}T00:00:00.000Z`
+  });
+
+  return (res.data.items ?? [])
+    .filter((event) => getEventKind(event) === COMPETITION_EVENT_KIND)
+    .map((event) => mapCompetitionEventForAdmin(event))
+    .filter((event): event is AdminCompetitionCalendarEvent => Boolean(event))
+    .sort((a, b) =>
+      (a.weighInDate || a.date).localeCompare(b.weighInDate || b.date)
+    );
 }
 
 export async function listCalendarEventsForAdmin(input?: {

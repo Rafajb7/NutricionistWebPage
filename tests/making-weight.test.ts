@@ -64,6 +64,22 @@ describe("making weight", () => {
     ).toBe("none");
   });
 
+  it("classifies a large absolute weight gap as critical near weigh-in", () => {
+    const status = calculateMakingWeightStatus({
+      competition: competition({
+        date: "2026-09-15",
+        weighInDate: "2026-09-15",
+        targetWeightKg: 75
+      }),
+      currentWeightKg: 52.5,
+      fromDate: "2026-09-04"
+    });
+
+    expect(status.daysUntilWeighIn).toBe(11);
+    expect(status.cutRatioPercent).toBe(30);
+    expect(status.risk).toBe("critical");
+  });
+
   it("prefers the latest revision weight for the current weight", () => {
     const revisions: RevisionEntry[] = [
       {
