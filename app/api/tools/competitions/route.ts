@@ -11,7 +11,9 @@ import { logError, logInfo } from "@/lib/logger";
 const competitionSchema = z.object({
   competitionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   competitionName: z.string().min(2).max(180),
+  weighInDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
   weighInTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+  targetWeightKg: z.coerce.number().min(1).max(800).optional().nullable(),
   location: z.string().min(2).max(180),
   description: z.string().max(1000).optional()
 });
@@ -101,12 +103,15 @@ export async function POST(req: NextRequest) {
       name: auth.session.name,
       date: parsed.data.competitionDate,
       competitionName: parsed.data.competitionName,
+      weighInDate: parsed.data.weighInDate || parsed.data.competitionDate,
       weighInTime: parsed.data.weighInTime,
+      targetWeightKg: parsed.data.targetWeightKg ?? null,
       location: parsed.data.location,
       description: parsed.data.description
     });
 
     deleteMemoryCache(getCompetitionsCacheKey(auth.session.username));
+    deleteMemoryCache(`making-weight:${auth.session.username.trim().toLowerCase()}`);
     logInfo("Competition created", {
       username: auth.session.username,
       date: parsed.data.competitionDate,

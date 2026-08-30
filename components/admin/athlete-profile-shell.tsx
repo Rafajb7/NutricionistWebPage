@@ -1,14 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   ArrowLeft,
   ArrowDown,
   ArrowUp,
+  AlertTriangle,
   Camera,
+  CalendarDays,
   ClipboardList,
   FileText,
   LogOut,
@@ -16,6 +18,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Scale,
   ShieldAlert,
   Trash2,
   Utensils,
@@ -28,6 +31,12 @@ import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { calculatePlanTotals } from "@/lib/nutrition/calculations";
 import { formatCents, getComputedPaymentStatus, todayIsoDate } from "@/lib/finance/calculations";
+import {
+  calculateMakingWeightStatus,
+  getCurrentMakingWeightValue,
+  type MakingWeightRiskLevel,
+  type MakingWeightStatus
+} from "@/lib/making-weight";
 import type { CompetitionCalendarEvent } from "@/lib/google/calendar";
 import type { PeakModeDailyLogRow, RoutineLogRow } from "@/lib/google/sheets";
 import type { RevisionEntry } from "@/lib/google/types";
@@ -104,6 +113,28 @@ type ProfileResponse = {
   error?: string;
 };
 
+type MakingWeightCompetitionForm = {
+  competitionDate: string;
+  weighInDate: string;
+  weighInTime: string;
+  competitionName: string;
+  targetWeightKg: string;
+  location: string;
+  description: string;
+};
+
+function createMakingWeightCompetitionForm(): MakingWeightCompetitionForm {
+  return {
+    competitionDate: "",
+    weighInDate: "",
+    weighInTime: "",
+    competitionName: "",
+    targetWeightKg: "",
+    location: "",
+    description: ""
+  };
+}
+
 function formatDateLabel(value: string | null | undefined): string {
   if (!value) return "-";
   const hasTime = value.includes("T");
@@ -136,6 +167,25 @@ function normalizeUsername(value: string): string {
 function formatNumber(value: number, suffix = ""): string {
   if (!Number.isFinite(value)) return `0${suffix}`;
   return `${new Intl.NumberFormat("es-ES", { maximumFractionDigits: 1 }).format(value)}${suffix}`;
+}
+
+function formatSignedDays(value: number | null): string {
+  if (value === null) return "-";
+  if (value > 0) return `${value} dias`;
+  if (value === 0) return "Hoy";
+  return `Hace ${Math.abs(value)} dias`;
+}
+
+function getMakingWeightRiskLabel(risk: MakingWeightRiskLevel): string {
+  if (risk === "critical") return "Critico";
+  if (risk === "moderate") return "Moderado";
+  return "Sin riesgo";
+}
+
+function getMakingWeightRiskClass(risk: MakingWeightRiskLevel): string {
+  if (risk === "critical") return "border-red-400/45 bg-red-500/15 text-red-100";
+  if (risk === "moderate") return "border-amber-400/45 bg-amber-500/15 text-amber-100";
+  return "border-emerald-400/35 bg-emerald-500/10 text-emerald-100";
 }
 
 function getRevisionQuestionValue(entries: RevisionEntry[], terms: string[]): string {
@@ -264,11 +314,16 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
   const [savingUser, setSavingUser] = useState(false);
   const [savingNotes, setSavingNotes] = useState(false);
   const [savingRoadmap, setSavingRoadmap] = useState(false);
+  const [savingMakingWeight, setSavingMakingWeight] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
   const [permissionDraft, setPermissionDraft] = useState<"user" | "admin">("user");
   const [notesDraft, setNotesDraft] = useState("");
   const [roadmapDraft, setRoadmapDraft] = useState<AthleteRoadmapStep[]>([]);
+  const [makingWeightForm, setMakingWeightForm] = useState<MakingWeightCompetitionForm>(() =>
+    createMakingWeightCompetitionForm()
+  );
+  const lastMakingWeightToastRef = useRef("");
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -342,10 +397,48 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
   const nextCompetition = useMemo(
     () =>
       [...(profile?.tools.competitions ?? [])]
-        .filter((item) => item.date >= today)
-        .sort((a, b) => a.date.localeCompare(b.date))[0] ?? null,
+        .filter((item) => (item.weighInDate || item.date) >= today)
+        .sort((a, b) => (a.weighInDate || a.date).localeCompare(b.weighInDate || b.date))[0] ?? null,
     [profile?.tools.competitions, today]
   );
+  const currentMakingWeight = useMemo(
+    () =>
+      getCurrentMakingWeightValue({
+        revisions: profile?.dashboard.revisions ?? [],
+        peakModeLogs: profile?.tools.peakModeLogs ?? []
+      }),
+    [profile?.dashboard.revisions, profile?.tools.peakModeLogs]
+  );
+  const makingWeightStatuses = useMemo<MakingWeightStatus[]>(
+    () =>
+      [...(profile?.tools.competitions ?? [])]
+        .filter((item) => (item.weighInDate || item.date) >= today)
+        .sort((a, b) => (a.weighInDate || a.date).localeCompare(b.weighInDate || b.date))
+        .map((competition) =>
+          calculateMakingWeightStatus({
+            competition,
+            currentWeightKg: currentMakingWeight?.weightKg ?? null,
+            currentWeightDate: currentMakingWeight?.date ?? null,
+            currentWeightSource: currentMakingWeight?.source ?? null,
+            fromDate: today
+          })
+        ),
+    [currentMakingWeight, profile?.tools.competitions, today]
+  );
+  const primaryMakingWeightStatus = makingWeightStatuses[0] ?? null;
+
+  useEffect(() => {
+    if (!primaryMakingWeightStatus || primaryMakingWeightStatus.risk === "none") return;
+    const key = `${profile?.user.username ?? ""}:${primaryMakingWeightStatus.competition.id}:${primaryMakingWeightStatus.risk}:${primaryMakingWeightStatus.cutRatioPercent ?? 0}`;
+    if (lastMakingWeightToastRef.current === key) return;
+    lastMakingWeightToastRef.current = key;
+    const message = `Making Weight: ${getMakingWeightRiskLabel(primaryMakingWeightStatus.risk)} para ${primaryMakingWeightStatus.competition.title} (${formatNumber(primaryMakingWeightStatus.cutRatioPercent ?? 0, "%")} de corte).`;
+    if (primaryMakingWeightStatus.risk === "critical") {
+      toast.error(message);
+    } else {
+      toast.warning(message);
+    }
+  }, [primaryMakingWeightStatus, profile?.user.username]);
   const nutritionPlans = useMemo(
     () =>
       [...(profile?.nutrition.plans ?? [])].sort((a, b) => {
@@ -487,6 +580,67 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
       toast.error("Error guardando hoja de ruta.");
     } finally {
       setSavingRoadmap(false);
+    }
+  }
+
+  function updateMakingWeightForm<K extends keyof MakingWeightCompetitionForm>(
+    key: K,
+    value: MakingWeightCompetitionForm[K]
+  ) {
+    setMakingWeightForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveMakingWeightCompetition() {
+    if (!profile) return;
+    if (!makingWeightForm.competitionDate || !makingWeightForm.competitionName.trim()) {
+      toast.error("Indica dia y nombre de la competicion.");
+      return;
+    }
+    if (!makingWeightForm.weighInTime) {
+      toast.error("Indica la hora de pesaje.");
+      return;
+    }
+    if (!makingWeightForm.location.trim()) {
+      toast.error("Indica la ubicacion.");
+      return;
+    }
+    const targetWeightKg = Number(makingWeightForm.targetWeightKg.replace(",", "."));
+    if (!Number.isFinite(targetWeightKg) || targetWeightKg <= 0 || targetWeightKg > 800) {
+      toast.error("Introduce un peso objetivo valido.");
+      return;
+    }
+
+    setSavingMakingWeight(true);
+    try {
+      const res = await fetch(`/api/admin/athlete-profile/${profile.user.username}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          makingWeightCompetition: {
+            competitionDate: makingWeightForm.competitionDate,
+            competitionName: makingWeightForm.competitionName,
+            weighInDate: makingWeightForm.weighInDate || makingWeightForm.competitionDate,
+            weighInTime: makingWeightForm.weighInTime,
+            targetWeightKg,
+            location: makingWeightForm.location,
+            description: makingWeightForm.description
+          }
+        })
+      });
+      const json = (await res.json()) as ProfileResponse;
+      if (!res.ok || !json.profile) {
+        throw new Error(json.error ?? "No se pudo guardar Making Weight.");
+      }
+      setProfile(json.profile);
+      setMakingWeightForm(createMakingWeightCompetitionForm());
+      toast.success("Making Weight registrado.");
+      window.dispatchEvent(new Event("competition-mode:refresh"));
+      window.dispatchEvent(new Event("diablo-mode:refresh"));
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Error guardando Making Weight.");
+    } finally {
+      setSavingMakingWeight(false);
     }
   }
 
@@ -1079,6 +1233,224 @@ export function AthleteProfileShell({ user, athleteUsername }: AthleteProfileShe
                       </div>
                     </a>
                   ))}
+                </div>
+              </div>
+            </section>
+
+
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <Scale className="h-5 w-5 text-brand-accent" />
+                  <SectionTitle eyebrow="Pesaje" title="Making Weight" />
+                </div>
+                {primaryMakingWeightStatus ? (
+                  <span
+                    className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${getMakingWeightRiskClass(
+                      primaryMakingWeightStatus.risk
+                    )}`}
+                  >
+                    {primaryMakingWeightStatus.risk === "critical" ? (
+                      <AlertTriangle className="h-4 w-4" />
+                    ) : (
+                      <ShieldAlert className="h-4 w-4" />
+                    )}
+                    {getMakingWeightRiskLabel(primaryMakingWeightStatus.risk)}
+                  </span>
+                ) : null}
+              </div>
+
+              {primaryMakingWeightStatus ? (
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <MetricCard
+                    label="Dia competicion"
+                    value={formatDateLabel(primaryMakingWeightStatus.competition.date)}
+                    detail={primaryMakingWeightStatus.competition.title}
+                  />
+                  <MetricCard
+                    label="Dias hasta pesaje"
+                    value={formatSignedDays(primaryMakingWeightStatus.daysUntilWeighIn)}
+                    detail={
+                      primaryMakingWeightStatus.competition.weighInTime
+                        ? `Hora ${primaryMakingWeightStatus.competition.weighInTime}`
+                        : formatDateLabel(primaryMakingWeightStatus.competition.weighInDate)
+                    }
+                  />
+                  <MetricCard
+                    label="Semana competicion"
+                    value={formatSignedDays(primaryMakingWeightStatus.daysUntilCompetitionWeek)}
+                    detail="7 dias antes del pesaje"
+                  />
+                  <MetricCard
+                    label="Ratio corte"
+                    value={
+                      primaryMakingWeightStatus.cutRatioPercent === null
+                        ? "-"
+                        : formatNumber(primaryMakingWeightStatus.cutRatioPercent, "%")
+                    }
+                    detail={
+                      primaryMakingWeightStatus.weightToCutKg === null
+                        ? "Falta peso objetivo o actual"
+                        : `${formatNumber(primaryMakingWeightStatus.weightToCutKg, " kg")} por encima del objetivo`
+                    }
+                  />
+                  <MetricCard
+                    label="Peligro corte"
+                    value={getMakingWeightRiskLabel(primaryMakingWeightStatus.risk)}
+                    detail={
+                      primaryMakingWeightStatus.risk === "critical"
+                        ? "Intervencion prioritaria"
+                        : primaryMakingWeightStatus.risk === "moderate"
+                          ? "Seguimiento cercano"
+                          : "Dentro de margen"
+                    }
+                  />
+                </div>
+              ) : (
+                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                  Sin competiciones futuras registradas para monitorizar el pesaje.
+                </div>
+              )}
+
+              {primaryMakingWeightStatus ? (
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <MetricCard
+                    label="Peso actual"
+                    value={
+                      primaryMakingWeightStatus.currentWeightKg === null
+                        ? "-"
+                        : formatNumber(primaryMakingWeightStatus.currentWeightKg, " kg")
+                    }
+                    detail={
+                      primaryMakingWeightStatus.currentWeightDate
+                        ? `${formatDateLabel(primaryMakingWeightStatus.currentWeightDate)} · ${
+                            primaryMakingWeightStatus.currentWeightSource === "peak-mode"
+                              ? "modo pico"
+                              : "revision"
+                          }`
+                        : "Sin peso registrado"
+                    }
+                  />
+                  <MetricCard
+                    label="Peso objetivo"
+                    value={
+                      primaryMakingWeightStatus.targetWeightKg === null
+                        ? "-"
+                        : formatNumber(primaryMakingWeightStatus.targetWeightKg, " kg")
+                    }
+                    detail="Categoria / limite de pesaje"
+                  />
+                  <MetricCard
+                    label="Critico desde"
+                    value={formatNumber(primaryMakingWeightStatus.criticalThresholdPercent, "%")}
+                    detail="Umbral dinamico"
+                  />
+                  <MetricCard
+                    label="Moderado desde"
+                    value={formatNumber(primaryMakingWeightStatus.moderateThresholdPercent, "%")}
+                    detail="Umbral dinamico"
+                  />
+                </div>
+              ) : null}
+
+              {makingWeightStatuses.length > 1 ? (
+                <div className="mt-4 grid gap-2 md:grid-cols-2">
+                  {makingWeightStatuses.slice(1, 5).map((status) => (
+                    <div
+                      key={status.competition.id}
+                      className="rounded-xl border border-white/10 bg-black/20 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-brand-text">
+                            {status.competition.title}
+                          </p>
+                          <p className="mt-1 text-xs text-brand-muted">
+                            {formatDateLabel(status.competition.date)} · pesaje{" "}
+                            {formatDateLabel(status.competition.weighInDate || status.competition.date)}
+                          </p>
+                        </div>
+                        <span className={`rounded-lg border px-2 py-1 text-[11px] ${getMakingWeightRiskClass(status.risk)}`}>
+                          {getMakingWeightRiskLabel(status.risk)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="mt-5 rounded-xl border border-white/10 bg-black/20 p-3">
+                <div className="flex items-center gap-2">
+                  <CalendarDays className="h-4 w-4 text-brand-accent" />
+                  <h3 className="text-sm font-semibold text-brand-text">Registrar competicion</h3>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="block text-sm text-brand-muted">
+                    Dia competicion
+                    <input
+                      type="date"
+                      value={makingWeightForm.competitionDate}
+                      onChange={(event) => updateMakingWeightForm("competitionDate", event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Dia pesaje
+                    <input
+                      type="date"
+                      value={makingWeightForm.weighInDate}
+                      onChange={(event) => updateMakingWeightForm("weighInDate", event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Hora pesaje
+                    <input
+                      type="time"
+                      value={makingWeightForm.weighInTime}
+                      onChange={(event) => updateMakingWeightForm("weighInTime", event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Peso objetivo (kg)
+                    <input
+                      value={makingWeightForm.targetWeightKg}
+                      onChange={(event) => updateMakingWeightForm("targetWeightKg", event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted md:col-span-2">
+                    Nombre competicion
+                    <input
+                      value={makingWeightForm.competitionName}
+                      onChange={(event) => updateMakingWeightForm("competitionName", event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted md:col-span-2">
+                    Ubicacion
+                    <input
+                      value={makingWeightForm.location}
+                      onChange={(event) => updateMakingWeightForm("location", event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted xl:col-span-4">
+                    Observaciones
+                    <textarea
+                      value={makingWeightForm.description}
+                      onChange={(event) => updateMakingWeightForm("description", event.target.value)}
+                      rows={2}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                </div>
+                <div className="mt-3 flex justify-end">
+                  <BrandButton onClick={saveMakingWeightCompetition} disabled={savingMakingWeight}>
+                    <Save className="mr-2 h-4 w-4" />
+                    {savingMakingWeight ? "Guardando..." : "Guardar Making Weight"}
+                  </BrandButton>
                 </div>
               </div>
             </section>

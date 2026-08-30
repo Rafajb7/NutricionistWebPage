@@ -10,6 +10,9 @@ export type CompetitionCalendarEvent = {
   id: string;
   title: string;
   date: string;
+  weighInDate: string;
+  weighInTime: string;
+  targetWeightKg: number | null;
   location: string;
   description: string;
   createdAt: string;
@@ -40,12 +43,18 @@ function toDisplayUsername(value: string): string {
 function buildCompetitionDescription(input: {
   username: string;
   name: string;
+  weighInDate: string;
   weighInTime: string;
+  targetWeightKg?: number | null;
   description?: string;
 }): string {
   const lines: string[] = [];
   lines.push(`Usuario: ${input.name.trim()} (${toDisplayUsername(input.username)})`);
+  lines.push(`Fecha del pesaje: ${input.weighInDate}`);
   lines.push(`Hora del pesaje: ${input.weighInTime}`);
+  if (input.targetWeightKg !== null && input.targetWeightKg !== undefined) {
+    lines.push(`Peso objetivo: ${input.targetWeightKg} kg`);
+  }
 
   const customDescription = input.description?.trim();
   if (customDescription) {
@@ -68,14 +77,21 @@ function buildCompetitionPhaseDescription(input: {
   phaseLabel: "Competition Week" | "Precompetition Weeks";
   competitionName: string;
   competitionDate: string;
+  weighInDate: string;
+  targetWeightKg?: number | null;
   username: string;
   name: string;
 }): string {
-  return [
+  const lines = [
     `${input.phaseLabel} - ${input.competitionName.trim()}`,
     `Competicion: ${input.competitionDate}`,
+    `Pesaje: ${input.weighInDate}`,
     `Usuario: ${input.name.trim()} (${toDisplayUsername(input.username)})`
-  ].join("\n");
+  ];
+  if (input.targetWeightKg !== null && input.targetWeightKg !== undefined) {
+    lines.push(`Peso objetivo: ${input.targetWeightKg} kg`);
+  }
+  return lines.join("\n");
 }
 
 function extractEventDate(input: { date?: string | null; dateTime?: string | null }): string {
@@ -94,6 +110,30 @@ function getCalendarId(): string {
   return calendarId;
 }
 
+function parseNumberFromText(value: string): number | null {
+  const match = value.replace(",", ".").match(/\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractDescriptionValue(description: string, label: string): string {
+  const normalizedLabel = label
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+  const line = description
+    .split(/\r?\n/)
+    .find((item) =>
+      item
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .toLowerCase()
+        .startsWith(`${normalizedLabel}:`)
+    );
+  return line?.split(":").slice(1).join(":").trim() ?? "";
+}
+
 function mapEvent(event: calendar_v3.Schema$Event): CompetitionCalendarEvent | null {
   const id = event.id?.trim();
   const date = extractEventDate({
@@ -101,13 +141,25 @@ function mapEvent(event: calendar_v3.Schema$Event): CompetitionCalendarEvent | n
     dateTime: event.start?.dateTime
   });
   if (!id || !date) return null;
+  const description = event.description?.trim() || "";
+  const privateProps = event.extendedProperties?.private ?? {};
+  const weighInDate =
+    privateProps.matWeighInDate?.trim() || extractDescriptionValue(description, "Fecha del pesaje") || date;
+  const weighInTime =
+    privateProps.matWeighInTime?.trim() || extractDescriptionValue(description, "Hora del pesaje") || "";
+  const targetWeightRaw =
+    privateProps.matTargetWeightKg?.trim() || extractDescriptionValue(description, "Peso objetivo");
+  const targetWeightKg = targetWeightRaw ? parseNumberFromText(targetWeightRaw) : null;
 
   return {
     id,
     title: event.summary?.trim() || "Competicion",
     date,
+    weighInDate,
+    weighInTime,
+    targetWeightKg,
     location: event.location?.trim() || "",
-    description: event.description?.trim() || "",
+    description,
     createdAt: event.created?.trim() || ""
   };
 }
@@ -152,15 +204,22 @@ export async function createCompetitionEvent(input: {
   name: string;
   date: string;
   competitionName: string;
+  weighInDate?: string;
   weighInTime: string;
+  targetWeightKg?: number | null;
   location: string;
   description?: string;
 }): Promise<CompetitionCalendarEvent> {
   const calendar = await getCalendarClient();
   const calendarId = getCalendarId();
   const normalizedUsername = normalizeUsername(input.username);
+  const weighInDate = input.weighInDate?.trim() || input.date;
+  const targetWeightKg =
+    input.targetWeightKg !== null && input.targetWeightKg !== undefined && Number.isFinite(input.targetWeightKg)
+      ? Math.max(0, Number(input.targetWeightKg))
+      : null;
   const competitionEndDate = addDaysToDateString(input.date, 1);
-  const periods = buildCompetitionCalendarPeriods(input.date);
+  const periods = buildCompetitionCalendarPeriods(weighInDate);
   const createdEventIds: string[] = [];
 
   let createdCompetitionEvent: calendar_v3.Schema$Event | null = null;
@@ -174,7 +233,9 @@ export async function createCompetitionEvent(input: {
         description: buildCompetitionDescription({
           username: input.username,
           name: input.name,
+          weighInDate,
           weighInTime: input.weighInTime,
+          targetWeightKg,
           description: input.description
         }),
         start: { date: input.date },
@@ -183,7 +244,10 @@ export async function createCompetitionEvent(input: {
           private: {
             matUsername: normalizedUsername,
             matDisplayName: input.name.trim(),
-            matEventKind: COMPETITION_EVENT_KIND
+            matEventKind: COMPETITION_EVENT_KIND,
+            matWeighInDate: weighInDate,
+            matWeighInTime: input.weighInTime,
+            matTargetWeightKg: targetWeightKg === null ? "" : String(targetWeightKg)
           }
         }
       }
@@ -197,6 +261,8 @@ export async function createCompetitionEvent(input: {
       matUsername: normalizedUsername,
       matDisplayName: input.name.trim(),
       matCompetitionDate: input.date,
+      matWeighInDate: weighInDate,
+      matTargetWeightKg: targetWeightKg === null ? "" : String(targetWeightKg),
       matCompetitionName: input.competitionName.trim(),
       matCompetitionEventId: competitionEventId ?? ""
     };
@@ -209,6 +275,8 @@ export async function createCompetitionEvent(input: {
           phaseLabel: "Precompetition Weeks",
           competitionName: input.competitionName,
           competitionDate: input.date,
+          weighInDate,
+          targetWeightKg,
           username: input.username,
           name: input.name
         }),
@@ -228,6 +296,8 @@ export async function createCompetitionEvent(input: {
           phaseLabel: "Competition Week",
           competitionName: input.competitionName,
           competitionDate: input.date,
+          weighInDate,
+          targetWeightKg,
           username: input.username,
           name: input.name
         }),

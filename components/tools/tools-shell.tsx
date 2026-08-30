@@ -119,6 +119,9 @@ type CompetitionEvent = {
   id: string;
   title: string;
   date: string;
+  weighInDate: string;
+  weighInTime: string;
+  targetWeightKg: number | null;
   location: string;
   description: string;
   createdAt: string;
@@ -660,7 +663,9 @@ export function ToolsShell({ user }: ToolsShellProps) {
   const [competitionsLoading, setCompetitionsLoading] = useState(true);
   const [competitionSaving, setCompetitionSaving] = useState(false);
   const [competitionDate, setCompetitionDate] = useState("");
+  const [competitionWeighInDate, setCompetitionWeighInDate] = useState("");
   const [competitionWeighInTime, setCompetitionWeighInTime] = useState("");
+  const [competitionTargetWeightKg, setCompetitionTargetWeightKg] = useState("");
   const [competitionName, setCompetitionName] = useState("");
   const [competitionLocation, setCompetitionLocation] = useState("");
   const [competitionDescription, setCompetitionDescription] = useState("");
@@ -1363,6 +1368,13 @@ export function ToolsShell({ user }: ToolsShellProps) {
       toast.error("Debes indicar la ubicación.");
       return;
     }
+    const targetWeightKg = competitionTargetWeightKg.trim()
+      ? Number(competitionTargetWeightKg.replace(",", "."))
+      : null;
+    if (targetWeightKg !== null && (!Number.isFinite(targetWeightKg) || targetWeightKg <= 0 || targetWeightKg > 800)) {
+      toast.error("Introduce un peso objetivo valido.");
+      return;
+    }
 
     setCompetitionSaving(true);
     try {
@@ -1374,7 +1386,9 @@ export function ToolsShell({ user }: ToolsShellProps) {
         body: JSON.stringify({
           competitionDate,
           competitionName: competitionName.trim(),
+          weighInDate: competitionWeighInDate || competitionDate,
           weighInTime: competitionWeighInTime,
+          targetWeightKg,
           location: competitionLocation.trim(),
           description: competitionDescription.trim()
         })
@@ -1392,7 +1406,9 @@ export function ToolsShell({ user }: ToolsShellProps) {
       }
 
       toast.success("Competición registrada en el calendario.");
+      setCompetitionWeighInDate("");
       setCompetitionWeighInTime("");
+      setCompetitionTargetWeightKg("");
       setCompetitionName("");
       setCompetitionLocation("");
       setCompetitionDescription("");
@@ -2540,13 +2556,26 @@ export function ToolsShell({ user }: ToolsShellProps) {
 
               <div className="mt-5 grid gap-3 md:grid-cols-2">
                 <label className="min-w-0 text-sm text-brand-muted">
-                  Fecha de inicio
+                  Dia de la competicion
                   <div className="relative mt-2 min-w-0">
                     <Calendar className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
                     <input
                       type="date"
                       value={competitionDate}
                       onChange={(event) => setCompetitionDate(event.target.value)}
+                      className="date-input-responsive block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </div>
+                </label>
+
+                <label className="min-w-0 text-sm text-brand-muted">
+                  Dia de pesaje
+                  <div className="relative mt-2 min-w-0">
+                    <Calendar className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-brand-muted" />
+                    <input
+                      type="date"
+                      value={competitionWeighInDate}
+                      onChange={(event) => setCompetitionWeighInDate(event.target.value)}
                       className="date-input-responsive block min-w-0 w-full max-w-full [min-inline-size:0] rounded-xl border border-white/10 bg-black/20 py-3 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
                   </div>
@@ -2569,6 +2598,16 @@ export function ToolsShell({ user }: ToolsShellProps) {
                     value={competitionWeighInTime}
                     onChange={(event) => setCompetitionWeighInTime(event.target.value)}
                     className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  />
+                </label>
+
+                <label className="min-w-0 text-sm text-brand-muted">
+                  Peso objetivo (kg)
+                  <input
+                    value={competitionTargetWeightKg}
+                    onChange={(event) => setCompetitionTargetWeightKg(event.target.value)}
+                    className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    placeholder="Ejemplo: 75"
                   />
                 </label>
 
@@ -2639,6 +2678,12 @@ export function ToolsShell({ user }: ToolsShellProps) {
                           </p>
                         </div>
                         <p className="mt-1 text-sm text-brand-muted">{competition.location}</p>
+                        {competition.targetWeightKg ? (
+                          <p className="mt-1 text-sm text-brand-muted">
+                            Peso objetivo: {competition.targetWeightKg} kg
+                            {competition.weighInDate ? ` · Pesaje: ${formatDateLabel(competition.weighInDate)}` : ""}
+                          </p>
+                        ) : null}
                         {competition.description ? (
                           <p className="mt-2 text-sm text-brand-muted">{competition.description}</p>
                         ) : null}

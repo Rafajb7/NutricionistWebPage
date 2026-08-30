@@ -5,7 +5,7 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import { getComputedPaymentStatus, todayIsoDate } from "@/lib/finance/calculations";
 import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
 import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
-import { listCompetitionEventsForUser } from "@/lib/google/calendar";
+import { createCompetitionEvent, listCompetitionEventsForUser } from "@/lib/google/calendar";
 import { listNutritionPlanPdfsForUser } from "@/lib/google/drive";
 import { listFinanceRecords } from "@/lib/google/finance";
 import { isGoogleRateLimitError } from "@/lib/google/retry";
@@ -58,6 +58,17 @@ const patchSchema = z.object({
       })
     )
     .max(30)
+    .optional(),
+  makingWeightCompetition: z
+    .object({
+      competitionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      competitionName: z.string().min(2).max(180),
+      weighInDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+      weighInTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+      targetWeightKg: z.coerce.number().min(1).max(800),
+      location: z.string().min(2).max(180),
+      description: z.string().max(1000).optional()
+    })
     .optional()
 });
 
@@ -346,6 +357,24 @@ export async function PATCH(req: Request, context: RouteContext) {
       });
     }
 
+    if (parsed.data.makingWeightCompetition !== undefined) {
+      await createCompetitionEvent({
+        username: resolved.sourceUsername,
+        name: parsed.data.user?.name ?? resolved.targetUser.name,
+        date: parsed.data.makingWeightCompetition.competitionDate,
+        competitionName: parsed.data.makingWeightCompetition.competitionName,
+        weighInDate:
+          parsed.data.makingWeightCompetition.weighInDate ||
+          parsed.data.makingWeightCompetition.competitionDate,
+        weighInTime: parsed.data.makingWeightCompetition.weighInTime,
+        targetWeightKg: parsed.data.makingWeightCompetition.targetWeightKg,
+        location: parsed.data.makingWeightCompetition.location,
+        description: parsed.data.makingWeightCompetition.description
+      });
+      deleteMemoryCache(`competitions:${resolved.sourceUsername.trim().toLowerCase()}`);
+      deleteMemoryCache(`making-weight:${resolved.sourceUsername.trim().toLowerCase()}`);
+    }
+
     deleteMemoryCache(getAthleteProfileCacheKey(targetUsername));
     const profile = await loadAthleteProfile(targetUsername, auth.session.username);
     logInfo("Athlete profile updated", {
@@ -353,7 +382,8 @@ export async function PATCH(req: Request, context: RouteContext) {
       targetUsername,
       userUpdated: Boolean(parsed.data.user),
       notesUpdated: parsed.data.privateNotes !== undefined,
-      roadmapUpdated: parsed.data.roadmapSteps !== undefined
+      roadmapUpdated: parsed.data.roadmapSteps !== undefined,
+      makingWeightCompetitionCreated: parsed.data.makingWeightCompetition !== undefined
     });
 
     return NextResponse.json({ ok: true, profile });

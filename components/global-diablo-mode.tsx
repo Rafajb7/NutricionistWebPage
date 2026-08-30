@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Flame, Shield } from "lucide-react";
+import { toast } from "sonner";
 import { getCompetitionMode, type CompetitionMode } from "@/lib/competition-mode";
 
 type CompetitionEvent = {
@@ -13,9 +14,26 @@ type CompetitionsResponse = {
   events?: CompetitionEvent[];
 };
 
+type MakingWeightResponse = {
+  status?: {
+    risk: "critical" | "moderate" | "none";
+    cutRatioPercent: number | null;
+    competition: {
+      id: string;
+      title: string;
+    };
+  } | null;
+};
+
+function formatPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "-";
+  return `${new Intl.NumberFormat("es-ES", { maximumFractionDigits: 1 }).format(value)}%`;
+}
+
 export function GlobalDiabloMode() {
   const pathname = usePathname();
   const [mode, setMode] = useState<CompetitionMode>("none");
+  const [lastMakingWeightToastKey, setLastMakingWeightToastKey] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -36,6 +54,36 @@ export function GlobalDiabloMode() {
   useEffect(() => {
     void refresh();
   }, [refresh, pathname]);
+
+  useEffect(() => {
+    let active = true;
+    async function refreshMakingWeight() {
+      try {
+        const res = await fetch("/api/tools/making-weight", { cache: "no-store" });
+        if (!res.ok) return;
+        const json = (await res.json()) as MakingWeightResponse;
+        const status = json.status;
+        if (!active || !status || status.risk === "none") return;
+        const key = `${pathname}:${status.competition.id}:${status.risk}:${status.cutRatioPercent ?? 0}`;
+        if (key === lastMakingWeightToastKey) return;
+        setLastMakingWeightToastKey(key);
+        const message = `Making Weight: ${
+          status.risk === "critical" ? "riesgo critico" : "riesgo moderado"
+        } para ${status.competition.title} (${formatPercent(status.cutRatioPercent)} de corte).`;
+        if (status.risk === "critical") {
+          toast.error(message);
+        } else {
+          toast.warning(message);
+        }
+      } catch {
+        // The visual competition mode should remain independent from this advisory alert.
+      }
+    }
+    void refreshMakingWeight();
+    return () => {
+      active = false;
+    };
+  }, [lastMakingWeightToastKey, pathname]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
