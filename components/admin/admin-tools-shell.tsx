@@ -13,7 +13,7 @@ import {
   Trash2,
   Utensils,
   UsersRound,
-  WalletCards
+  WalletCards,
 } from "lucide-react";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
@@ -68,11 +68,24 @@ const CHANGE_REQUEST_TYPE_LABELS = {
   calorie_decrease: "Reducir calorias",
   meal_add: "Anadir comida",
   meal_remove: "Eliminar comida",
-  meal_redistribution: "Redistribuir comida"
+  meal_redistribution: "Redistribuir comida",
 } satisfies Record<NutritionChangeRequest["requestType"], string>;
 
+function createClientId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  return `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function getChangeRequestTypeLabel(request: NutritionChangeRequest): string {
-  return CHANGE_REQUEST_TYPE_LABELS[request.requestType] ?? CHANGE_REQUEST_TYPE_LABELS.food_swap;
+  return (
+    CHANGE_REQUEST_TYPE_LABELS[request.requestType] ??
+    CHANGE_REQUEST_TYPE_LABELS.food_swap
+  );
 }
 
 function formatEventDate(value: string): string {
@@ -88,12 +101,12 @@ function formatEventDate(value: string): string {
         month: "2-digit",
         year: "numeric",
         hour: "2-digit",
-        minute: "2-digit"
+        minute: "2-digit",
       })
     : parsed.toLocaleDateString("es-ES", {
         day: "2-digit",
         month: "2-digit",
-        year: "numeric"
+        year: "numeric",
       });
 }
 
@@ -118,23 +131,36 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   const [newUserUsername, setNewUserUsername] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
-  const [newUserPermission, setNewUserPermission] = useState<"user" | "admin">("user");
+  const [newUserPermission, setNewUserPermission] = useState<"user" | "admin">(
+    "user",
+  );
   const [newUserFinanceEnabled, setNewUserFinanceEnabled] = useState(false);
   const [newUserFinancePlanKey, setNewUserFinancePlanKey] = useState("monthly");
-  const [newUserFinanceTotalAmount, setNewUserFinanceTotalAmount] = useState("");
-  const [newUserFinanceStartDate, setNewUserFinanceStartDate] = useState(toDefaultDate);
-  const [newUserFinanceFirstPaymentDate, setNewUserFinanceFirstPaymentDate] = useState(toDefaultDate);
+  const [newUserFinanceTotalAmount, setNewUserFinanceTotalAmount] =
+    useState("");
+  const [newUserFinanceStartDate, setNewUserFinanceStartDate] =
+    useState(toDefaultDate);
+  const [newUserFinanceFirstPaymentDate, setNewUserFinanceFirstPaymentDate] =
+    useState(toDefaultDate);
   const [newUserFinanceFinanced, setNewUserFinanceFinanced] = useState(false);
-  const [newUserFinancePaymentCount, setNewUserFinancePaymentCount] = useState("1");
-  const [newUserFinancePaymentAmount, setNewUserFinancePaymentAmount] = useState("");
-  const [newUserFinancePaymentIntervalMonths, setNewUserFinancePaymentIntervalMonths] = useState("1");
+  const [newUserFinancePaymentCount, setNewUserFinancePaymentCount] =
+    useState("1");
+  const [newUserFinancePaymentAmount, setNewUserFinancePaymentAmount] =
+    useState("");
+  const [
+    newUserFinancePaymentIntervalMonths,
+    setNewUserFinancePaymentIntervalMonths,
+  ] = useState("1");
   const [newUserFinanceNotes, setNewUserFinanceNotes] = useState("");
 
   const [calendarLoading, setCalendarLoading] = useState(true);
-  const [calendarEvents, setCalendarEvents] = useState<AdminCalendarEvent[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<AdminCalendarEvent[]>(
+    [],
+  );
   const [calendarEmbedUrl, setCalendarEmbedUrl] = useState("");
   const [creatingEvent, setCreatingEvent] = useState(false);
-  const [pendingNutritionChangeRequests, setPendingNutritionChangeRequests] = useState<NutritionChangeRequest[]>([]);
+  const [pendingNutritionChangeRequests, setPendingNutritionChangeRequests] =
+    useState<NutritionChangeRequest[]>([]);
   const [changeRequestModalOpen, setChangeRequestModalOpen] = useState(false);
   const notifiedNutritionRequestIdsRef = useRef<Set<string>>(new Set());
   const lastNutritionChangeRequestRefreshAtRef = useRef(0);
@@ -153,7 +179,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       (item) =>
         item.name.toLowerCase().includes(q) ||
         item.username.toLowerCase().includes(q) ||
-        item.email.toLowerCase().includes(q)
+        item.email.toLowerCase().includes(q),
     );
   }, [users, usersFilter]);
 
@@ -168,7 +194,13 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   const pendingNutritionChangeGroups = useMemo(() => {
     const groups = new Map<
       string,
-      { username: string; name: string; count: number; firstRequestId: string; typeLabels: Set<string> }
+      {
+        username: string;
+        name: string;
+        count: number;
+        firstRequestId: string;
+        typeLabels: Set<string>;
+      }
     >();
     for (const request of pendingNutritionChangeRequests) {
       const current = groups.get(request.athleteUsername);
@@ -181,14 +213,14 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
           name: request.athleteName || request.athleteUsername,
           count: 1,
           firstRequestId: request.id,
-          typeLabels: new Set([getChangeRequestTypeLabel(request)])
+          typeLabels: new Set([getChangeRequestTypeLabel(request)]),
         });
       }
     }
     return Array.from(groups.values())
       .map((group) => ({
         ...group,
-        typeSummary: Array.from(group.typeLabels).join(", ")
+        typeSummary: Array.from(group.typeLabels).join(", "),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [pendingNutritionChangeRequests]);
@@ -206,8 +238,12 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
         return;
       }
 
-      const json = (await res.json()) as { users?: AdminUser[]; error?: string };
-      if (!res.ok) throw new Error(json.error ?? "No se pudieron cargar usuarios.");
+      const json = (await res.json()) as {
+        users?: AdminUser[];
+        error?: string;
+      };
+      if (!res.ok)
+        throw new Error(json.error ?? "No se pudieron cargar usuarios.");
       setUsers(json.users ?? []);
     } catch (error) {
       console.error(error);
@@ -235,7 +271,8 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
         embedUrl?: string;
         error?: string;
       };
-      if (!res.ok) throw new Error(json.error ?? "No se pudo cargar el calendario.");
+      if (!res.ok)
+        throw new Error(json.error ?? "No se pudo cargar el calendario.");
       setCalendarEvents(json.events ?? []);
       setCalendarEmbedUrl(json.embedUrl ?? "");
     } catch (error) {
@@ -246,27 +283,40 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
     }
   }
 
-  const loadNutritionChangeRequests = useCallback(async (options?: { forceModal?: boolean }) => {
-    lastNutritionChangeRequestRefreshAtRef.current = Date.now();
-    try {
-      const res = await fetch("/api/admin/nutrition-change-requests", { cache: "no-store" });
-      if (!res.ok) return;
-      const json = (await res.json()) as ChangeRequestsResponse;
-      const requests = json.requests ?? [];
-      const previousIds = notifiedNutritionRequestIdsRef.current;
-      const hasNewRequest = requests.some((request) => !previousIds.has(request.id));
-      setPendingNutritionChangeRequests(requests);
-      if (requests.length && (options?.forceModal || hasNewRequest)) {
-        setChangeRequestModalOpen(true);
+  const loadNutritionChangeRequests = useCallback(
+    async (options?: { forceModal?: boolean }) => {
+      lastNutritionChangeRequestRefreshAtRef.current = Date.now();
+      try {
+        const res = await fetch("/api/admin/nutrition-change-requests", {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as ChangeRequestsResponse;
+        const requests = json.requests ?? [];
+        const previousIds = notifiedNutritionRequestIdsRef.current;
+        const hasNewRequest = requests.some(
+          (request) => !previousIds.has(request.id),
+        );
+        setPendingNutritionChangeRequests(requests);
+        if (requests.length && (options?.forceModal || hasNewRequest)) {
+          setChangeRequestModalOpen(true);
+        }
+        notifiedNutritionRequestIdsRef.current = new Set(
+          requests.map((request) => request.id),
+        );
+      } catch (error) {
+        console.error(error);
       }
-      notifiedNutritionRequestIdsRef.current = new Set(requests.map((request) => request.id));
-    } catch (error) {
-      console.error(error);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
-    void Promise.all([loadUsers(), loadCalendar(), loadNutritionChangeRequests({ forceModal: true })]);
+    void Promise.all([
+      loadUsers(),
+      loadCalendar(),
+      loadNutritionChangeRequests({ forceModal: true }),
+    ]);
 
     const refreshPendingRequests = () => {
       const now = Date.now();
@@ -278,7 +328,10 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       }
       void loadNutritionChangeRequests();
     };
-    const intervalId = window.setInterval(refreshPendingRequests, CHANGE_REQUEST_POLL_INTERVAL_MS);
+    const intervalId = window.setInterval(
+      refreshPendingRequests,
+      CHANGE_REQUEST_POLL_INTERVAL_MS,
+    );
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") refreshPendingRequests();
     };
@@ -303,7 +356,11 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   }
 
   async function handleCreateUser() {
-    if (!newUserName.trim() || !newUserUsername.trim() || !newUserPassword.trim()) {
+    if (
+      !newUserName.trim() ||
+      !newUserUsername.trim() ||
+      !newUserPassword.trim()
+    ) {
       toast.error("Nombre, usuario y contraseña son obligatorios.");
       return;
     }
@@ -338,12 +395,14 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 financed: newUserFinanceFinanced,
                 paymentCount: Number(newUserFinancePaymentCount || 1),
                 paymentAmount: newUserFinancePaymentAmount || undefined,
-                paymentIntervalMonths: Number(newUserFinancePaymentIntervalMonths || 1),
-                idempotencyKey: crypto.randomUUID(),
-                notes: newUserFinanceNotes
+                paymentIntervalMonths: Number(
+                  newUserFinancePaymentIntervalMonths || 1,
+                ),
+                idempotencyKey: createClientId(),
+                notes: newUserFinanceNotes,
               }
-            : undefined
-        })
+            : undefined,
+        }),
       });
 
       if (res.status === 401) {
@@ -355,7 +414,10 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
         return;
       }
 
-      const json = (await res.json()) as { error?: string; financeWarning?: string };
+      const json = (await res.json()) as {
+        error?: string;
+        financeWarning?: string;
+      };
       if (!res.ok) {
         toast.error(json.error ?? "No se pudo crear el usuario.");
         return;
@@ -364,7 +426,11 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       if (json.financeWarning) {
         toast.warning("Usuario creado, pero no se pudo guardar Finanzas.");
       } else {
-        toast.success(newUserFinanceEnabled ? "Usuario y Finanzas creados." : "Usuario creado.");
+        toast.success(
+          newUserFinanceEnabled
+            ? "Usuario y Finanzas creados."
+            : "Usuario creado.",
+        );
       }
       setNewUserName("");
       setNewUserUsername("");
@@ -392,7 +458,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
 
   async function handleDeleteUser(username: string) {
     const confirmed = window.confirm(
-      `¿Seguro que quieres eliminar al usuario "${username}"? Esta accion no se puede deshacer.`
+      `¿Seguro que quieres eliminar al usuario "${username}"? Esta accion no se puede deshacer.`,
     );
     if (!confirmed) return;
 
@@ -401,7 +467,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       const res = await fetch("/api/admin/users", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username })
+        body: JSON.stringify({ username }),
       });
 
       if (res.status === 401) {
@@ -437,7 +503,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
 
     setCreatingEvent(true);
     try {
-      const selectedUser = eventUsername ? usersByUsername.get(eventUsername) : null;
+      const selectedUser = eventUsername
+        ? usersByUsername.get(eventUsername)
+        : null;
       const res = await fetch("/api/admin/calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -448,8 +516,8 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
           location: eventLocation || undefined,
           description: eventDescription || undefined,
           username: selectedUser?.username || undefined,
-          displayName: selectedUser?.name || undefined
-        })
+          displayName: selectedUser?.name || undefined,
+        }),
       });
 
       if (res.status === 401) {
@@ -491,7 +559,10 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
               <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                 <Link href="/dashboard">
-                  <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
+                  <BrandButton
+                    variant="ghost"
+                    className="w-full justify-center px-4 py-2 sm:w-auto"
+                  >
                     Dashboard
                   </BrandButton>
                 </Link>
@@ -502,7 +573,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 </Link>
               </div>
               <div className="text-left sm:text-right">
-                <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">Administrador</p>
+                <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                  Administrador
+                </p>
                 <p className="font-semibold text-brand-text">{user.name}</p>
               </div>
               <BrandButton
@@ -573,7 +646,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
             <div className="grid gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(300px,2fr)]">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <h2 className="text-lg font-semibold text-brand-text">Usuarios</h2>
+                  <h2 className="text-lg font-semibold text-brand-text">
+                    Usuarios
+                  </h2>
                   <label className="relative min-w-0 w-full max-w-sm">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-muted" />
                     <input
@@ -592,7 +667,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     ))}
                   </div>
                 ) : filteredUsers.length === 0 ? (
-                  <p className="mt-4 text-sm text-brand-muted">No hay usuarios para este filtro.</p>
+                  <p className="mt-4 text-sm text-brand-muted">
+                    No hay usuarios para este filtro.
+                  </p>
                 ) : (
                   <div className="mt-4 rounded-xl border border-white/10">
                     <table className="w-full table-fixed text-sm">
@@ -616,17 +693,31 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                       </thead>
                       <tbody>
                         {filteredUsers.map((item) => (
-                          <tr key={item.username} className="border-t border-white/10">
-                            <td className="truncate px-3 py-2 text-brand-text" title={item.name}>
+                          <tr
+                            key={item.username}
+                            className="border-t border-white/10"
+                          >
+                            <td
+                              className="truncate px-3 py-2 text-brand-text"
+                              title={item.name}
+                            >
                               {item.name}
                             </td>
-                            <td className="truncate px-3 py-2 text-brand-text" title={item.username}>
+                            <td
+                              className="truncate px-3 py-2 text-brand-text"
+                              title={item.username}
+                            >
                               {item.username}
                             </td>
-                            <td className="truncate px-3 py-2 text-brand-muted" title={item.email || "-"}>
+                            <td
+                              className="truncate px-3 py-2 text-brand-muted"
+                              title={item.email || "-"}
+                            >
                               {item.email || "-"}
                             </td>
-                            <td className="px-3 py-2 text-brand-text">{item.permission}</td>
+                            <td className="px-3 py-2 text-brand-text">
+                              {item.permission}
+                            </td>
                             <td className="px-3 py-2">
                               <Link
                                 href={`/tools/athlete-profile/${encodeURIComponent(item.username)}`}
@@ -642,12 +733,19 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                                 type="button"
                                 onClick={() => handleDeleteUser(item.username)}
                                 disabled={
-                                  deletingUsername === item.username || item.username === user.username
+                                  deletingUsername === item.username ||
+                                  item.username === user.username
                                 }
-                                className="inline-flex w-full max-w-[110px] items-center justify-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-2 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                className="inline-flex h-9 w-9 items-center justify-center gap-1 rounded-lg border border-red-400/40 bg-red-500/10 px-2 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60 sm:w-full sm:max-w-[110px]"
+                                aria-label={`Eliminar usuario ${item.name}`}
+                                title="Eliminar usuario"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
-                                {deletingUsername === item.username ? "Eliminando..." : "Eliminar"}
+                                <span className="hidden sm:inline">
+                                  {deletingUsername === item.username
+                                    ? "Eliminando..."
+                                    : "Eliminar"}
+                                </span>
                               </button>
                             </td>
                           </tr>
@@ -659,7 +757,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h2 className="text-lg font-semibold text-brand-text">Nuevo usuario</h2>
+                <h2 className="text-lg font-semibold text-brand-text">
+                  Nuevo usuario
+                </h2>
                 <div className="mt-3 space-y-3">
                   <label className="block text-sm text-brand-muted">
                     Nombre
@@ -673,7 +773,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     Usuario
                     <input
                       value={newUserUsername}
-                      onChange={(event) => setNewUserUsername(event.target.value)}
+                      onChange={(event) =>
+                        setNewUserUsername(event.target.value)
+                      }
                       placeholder="ejemplo: manolohm"
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
@@ -691,7 +793,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     Contraseña inicial
                     <input
                       value={newUserPassword}
-                      onChange={(event) => setNewUserPassword(event.target.value)}
+                      onChange={(event) =>
+                        setNewUserPassword(event.target.value)
+                      }
                       type="password"
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
@@ -701,9 +805,11 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     <select
                       value={newUserPermission}
                       onChange={(event) => {
-                        const permission = event.target.value as "user" | "admin";
+                        const permission = event.target.value as
+                          "user" | "admin";
                         setNewUserPermission(permission);
-                        if (permission !== "user") setNewUserFinanceEnabled(false);
+                        if (permission !== "user")
+                          setNewUserFinanceEnabled(false);
                       }}
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     >
@@ -717,13 +823,18 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                         type="checkbox"
                         checked={newUserFinanceEnabled}
                         disabled={newUserPermission !== "user"}
-                        onChange={(event) => setNewUserFinanceEnabled(event.target.checked)}
+                        onChange={(event) =>
+                          setNewUserFinanceEnabled(event.target.checked)
+                        }
                         className="mt-1 h-4 w-4 rounded border-white/20 bg-black/30"
                       />
                       <span>
-                        <span className="block font-semibold text-brand-text">Crear informacion financiera</span>
+                        <span className="block font-semibold text-brand-text">
+                          Crear informacion financiera
+                        </span>
                         <span className="mt-1 block text-xs">
-                          Genera contrato y calendario de pagos para este atleta.
+                          Genera contrato y calendario de pagos para este
+                          atleta.
                         </span>
                       </span>
                     </label>
@@ -734,7 +845,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                           Plan contratado
                           <select
                             value={newUserFinancePlanKey}
-                            onChange={(event) => setNewUserFinancePlanKey(event.target.value)}
+                            onChange={(event) =>
+                              setNewUserFinancePlanKey(event.target.value)
+                            }
                             className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                           >
                             {DEFAULT_FINANCE_PLAN_OPTIONS.map((option) => (
@@ -748,7 +861,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                           Precio total / cuota
                           <input
                             value={newUserFinanceTotalAmount}
-                            onChange={(event) => setNewUserFinanceTotalAmount(event.target.value)}
+                            onChange={(event) =>
+                              setNewUserFinanceTotalAmount(event.target.value)
+                            }
                             placeholder="220,00"
                             className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                           />
@@ -759,7 +874,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                             <input
                               type="date"
                               value={newUserFinanceStartDate}
-                              onChange={(event) => setNewUserFinanceStartDate(event.target.value)}
+                              onChange={(event) =>
+                                setNewUserFinanceStartDate(event.target.value)
+                              }
                               className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                             />
                           </label>
@@ -769,7 +886,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                               type="date"
                               value={newUserFinanceFirstPaymentDate}
                               onChange={(event) =>
-                                setNewUserFinanceFirstPaymentDate(event.target.value)
+                                setNewUserFinanceFirstPaymentDate(
+                                  event.target.value,
+                                )
                               }
                               className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                             />
@@ -779,7 +898,11 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                           Pago fraccionado
                           <select
                             value={newUserFinanceFinanced ? "yes" : "no"}
-                            onChange={(event) => setNewUserFinanceFinanced(event.target.value === "yes")}
+                            onChange={(event) =>
+                              setNewUserFinanceFinanced(
+                                event.target.value === "yes",
+                              )
+                            }
                             className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                           >
                             <option value="no">No</option>
@@ -795,7 +918,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                                 min={1}
                                 value={newUserFinancePaymentCount}
                                 onChange={(event) =>
-                                  setNewUserFinancePaymentCount(event.target.value)
+                                  setNewUserFinancePaymentCount(
+                                    event.target.value,
+                                  )
                                 }
                                 className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                               />
@@ -805,7 +930,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                               <input
                                 value={newUserFinancePaymentAmount}
                                 onChange={(event) =>
-                                  setNewUserFinancePaymentAmount(event.target.value)
+                                  setNewUserFinancePaymentAmount(
+                                    event.target.value,
+                                  )
                                 }
                                 placeholder="Auto"
                                 className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
@@ -818,7 +945,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                                 min={1}
                                 value={newUserFinancePaymentIntervalMonths}
                                 onChange={(event) =>
-                                  setNewUserFinancePaymentIntervalMonths(event.target.value)
+                                  setNewUserFinancePaymentIntervalMonths(
+                                    event.target.value,
+                                  )
                                 }
                                 className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                               />
@@ -829,7 +958,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                           Notas financieras
                           <textarea
                             value={newUserFinanceNotes}
-                            onChange={(event) => setNewUserFinanceNotes(event.target.value)}
+                            onChange={(event) =>
+                              setNewUserFinanceNotes(event.target.value)
+                            }
                             rows={2}
                             className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                           />
@@ -837,7 +968,11 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                       </div>
                     ) : null}
                   </div>
-                  <BrandButton onClick={handleCreateUser} disabled={creatingUser} className="w-full">
+                  <BrandButton
+                    onClick={handleCreateUser}
+                    disabled={creatingUser}
+                    className="w-full"
+                  >
                     <Plus className="mr-2 h-4 w-4" />
                     {creatingUser ? "Creando..." : "Crear usuario"}
                   </BrandButton>
@@ -848,7 +983,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
         ) : (
           <section className="space-y-4">
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-              <h2 className="text-lg font-semibold text-brand-text">Registrar evento</h2>
+              <h2 className="text-lg font-semibold text-brand-text">
+                Registrar evento
+              </h2>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <label className="block text-sm text-brand-muted">
                   Titulo
@@ -903,23 +1040,32 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                   Descripcion (opcional)
                   <textarea
                     value={eventDescription}
-                    onChange={(event) => setEventDescription(event.target.value)}
+                    onChange={(event) =>
+                      setEventDescription(event.target.value)
+                    }
                     rows={3}
                     className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                   />
                 </label>
               </div>
               <div className="mt-3">
-                <BrandButton onClick={handleCreateEvent} disabled={creatingEvent}>
+                <BrandButton
+                  onClick={handleCreateEvent}
+                  disabled={creatingEvent}
+                >
                   <Plus className="mr-2 h-4 w-4" />
-                  {creatingEvent ? "Creando evento..." : "Crear evento en Google Calendar"}
+                  {creatingEvent
+                    ? "Creando evento..."
+                    : "Crear evento en Google Calendar"}
                 </BrandButton>
               </div>
             </div>
 
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h2 className="text-lg font-semibold text-brand-text">Calendario actual</h2>
+                <h2 className="text-lg font-semibold text-brand-text">
+                  Calendario actual
+                </h2>
                 {calendarLoading ? (
                   <div className="mt-4">
                     <Skeleton className="h-[520px] w-full rounded-xl" />
@@ -938,7 +1084,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h2 className="text-lg font-semibold text-brand-text">Eventos registrados</h2>
+                <h2 className="text-lg font-semibold text-brand-text">
+                  Eventos registrados
+                </h2>
                 {calendarLoading ? (
                   <div className="mt-3 space-y-2">
                     {Array.from({ length: 6 }).map((_, index) => (
@@ -946,20 +1094,32 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     ))}
                   </div>
                 ) : calendarEvents.length === 0 ? (
-                  <p className="mt-3 text-sm text-brand-muted">No hay eventos para el rango actual.</p>
+                  <p className="mt-3 text-sm text-brand-muted">
+                    No hay eventos para el rango actual.
+                  </p>
                 ) : (
                   <div className="mt-3 max-h-[520px] space-y-2 overflow-auto pr-1">
                     {calendarEvents.map((event) => (
-                      <article key={event.id} className="rounded-lg border border-white/10 bg-black/25 p-3">
-                        <p className="text-sm font-semibold text-brand-text">{event.title}</p>
-                        <p className="mt-1 text-xs text-brand-muted">{formatEventDate(event.start)}</p>
+                      <article
+                        key={event.id}
+                        className="rounded-lg border border-white/10 bg-black/25 p-3"
+                      >
+                        <p className="text-sm font-semibold text-brand-text">
+                          {event.title}
+                        </p>
+                        <p className="mt-1 text-xs text-brand-muted">
+                          {formatEventDate(event.start)}
+                        </p>
                         {event.username ? (
                           <p className="mt-1 text-xs text-brand-muted">
-                            Cliente: {event.displayName ?? event.username} ({event.username})
+                            Cliente: {event.displayName ?? event.username} (
+                            {event.username})
                           </p>
                         ) : null}
                         {event.location ? (
-                          <p className="mt-1 text-xs text-brand-muted">Ubicacion: {event.location}</p>
+                          <p className="mt-1 text-xs text-brand-muted">
+                            Ubicacion: {event.location}
+                          </p>
                         ) : null}
                       </article>
                     ))}
@@ -980,7 +1140,8 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 Hay cambios de dieta pendientes
               </h2>
               <p className="mt-2 text-sm text-brand-muted">
-                Revisa las propuestas enviadas por los atletas antes de publicar nuevos PDFs.
+                Revisa las propuestas enviadas por los atletas antes de publicar
+                nuevos PDFs.
               </p>
               <div className="mt-4 space-y-2">
                 {pendingNutritionChangeGroups.map((group) => (
@@ -990,8 +1151,12 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                     className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/25 px-3 py-3 text-sm transition hover:bg-white/10"
                   >
                     <span className="min-w-0">
-                      <span className="block font-semibold text-brand-text">{group.name}</span>
-                      <span className="mt-1 block truncate text-xs text-brand-muted">{group.typeSummary}</span>
+                      <span className="block font-semibold text-brand-text">
+                        {group.name}
+                      </span>
+                      <span className="mt-1 block truncate text-xs text-brand-muted">
+                        {group.typeSummary}
+                      </span>
                     </span>
                     <span className="rounded-full bg-brand-accent px-2 py-1 text-xs font-semibold text-black">
                       {group.count}
@@ -1000,7 +1165,10 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 ))}
               </div>
               <div className="mt-5 flex flex-wrap justify-end gap-2">
-                <BrandButton variant="ghost" onClick={() => setChangeRequestModalOpen(false)}>
+                <BrandButton
+                  variant="ghost"
+                  onClick={() => setChangeRequestModalOpen(false)}
+                >
                   Cerrar
                 </BrandButton>
                 <Link
@@ -1016,4 +1184,3 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
     </MotionPage>
   );
 }
-
