@@ -17,12 +17,8 @@ type UploadNutritionPlanInput = {
   buffer: Buffer;
 };
 
-type UploadCommunityAttachmentInput = {
-  username: string;
-  postId: string;
-  originalFileName: string;
-  mimeType: string;
-  buffer: Buffer;
+type UpsertNutritionPlanInput = UploadNutritionPlanInput & {
+  existingFileId?: string | null;
 };
 
 export type NutritionPlanFile = {
@@ -32,25 +28,6 @@ export type NutritionPlanFile = {
   createdTime: string | null;
   modifiedTime: string | null;
   sizeBytes: number | null;
-};
-
-export type CommunityAttachmentFile = {
-  id: string;
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  kind: "image" | "pdf";
-  createdTime: string | null;
-};
-
-export type CommunityAttachmentMetadata = {
-  id: string;
-  name: string;
-  mimeType: string;
-  postId: string;
-  ownerUsername: string;
-  fileType: string;
-  trashed: boolean;
 };
 
 function escapeDriveQuery(value: string): string {
@@ -200,101 +177,98 @@ function sanitizeDriveFileName(value: string): string {
   return value.replace(/[^\w.\- ]+/g, "_").trim() || "plan.pdf";
 }
 
-function toCommunityAttachmentKind(mimeType: string): "image" | "pdf" {
-  if (mimeType === "application/pdf") return "pdf";
-  return "image";
+function toNutritionPlanFile(
+  file: {
+    id?: string | null;
+    name?: string | null;
+    mimeType?: string | null;
+    createdTime?: string | null;
+    modifiedTime?: string | null;
+    size?: string | number | null;
+  },
+  fallbackName: string
+): NutritionPlanFile {
+  return {
+    id: String(file.id ?? ""),
+    name: String(file.name ?? fallbackName),
+    mimeType: String(file.mimeType ?? "application/pdf"),
+    createdTime: file.createdTime ?? null,
+    modifiedTime: file.modifiedTime ?? null,
+    sizeBytes: file.size ? Number(file.size) : null
+  };
 }
 
-async function resolveCommunityRootFolderId(
-  drive: Awaited<ReturnType<typeof getDriveClient>>
-): Promise<string> {
-  const env = getEnv();
-  const configuredId = env.GOOGLE_COMMUNITY_DRIVE_FOLDER_ID?.trim();
-  if (configuredId) return configuredId;
-  return ensureDriveFolder(drive, env.GOOGLE_DRIVE_ROOT_FOLDER_ID, "Comunidad");
-}
-
-export async function uploadCommunityAttachmentToDrive(
-  input: UploadCommunityAttachmentInput
-): Promise<CommunityAttachmentFile> {
-  const drive = await getDriveClient();
-  const rootFolderId = await resolveCommunityRootFolderId(drive);
-  const attachmentsFolderId = await ensureDriveFolder(drive, rootFolderId, "Adjuntos");
-  const normalizedUsername = normalizeUserFolderKey(input.username);
-  if (!normalizedUsername) {
-    throw new Error("Invalid username for community attachment upload.");
-  }
-  const userFolderId = await ensureDriveFolder(drive, attachmentsFolderId, normalizedUsername);
-
-  const now = Date.now();
-  const safeName = sanitizeDriveFileName(input.originalFileName);
-  const fileName = `${now}_${safeName}`;
-  const created = await drive.files.create({
-    requestBody: {
-      name: fileName,
-      parents: [userFolderId],
-      appProperties: {
-        matFileType: "community-attachment",
-        matPostId: input.postId,
-        matUsername: normalizedUsername
-      }
-    },
-    media: {
-      mimeType: input.mimeType,
-      body: Readable.from(input.buffer)
-    },
-    fields: "id,name,mimeType,size,createdTime",
+async function listNutritionPlanPdfFilesByName(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  userFolderId: string,
+  fileName: string
+): Promise<NutritionPlanFile[]> {
+  const list = await drive.files.list({
+    q: [
+      `'${userFolderId}' in parents`,
+      `name='${escapeDriveQuery(fileName)}'`,
+      "trashed=false"
+    ].join(" and "),
+    fields: "files(id,name,mimeType,createdTime,modifiedTime,size)",
+    orderBy: "modifiedTime desc",
+    pageSize: 20,
+    includeItemsFromAllDrives: true,
     supportsAllDrives: true
   });
 
-  const fileId = created.data.id;
-  if (!fileId) {
-    throw new Error("Community attachment upload failed: missing file id.");
+  return (list.data.files ?? [])
+    .filter((file) => file.id)
+    .map((file) => toNutritionPlanFile(file, fileName));
+}
+
+async function updateNutritionPlanPdfFile(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  fileId: string,
+  driveFileName: string,
+  input: UploadNutritionPlanInput
+): Promise<NutritionPlanFile | null> {
+  try {
+    const updated = await drive.files.update({
+      fileId,
+      requestBody: {
+        name: driveFileName
+      },
+      media: {
+        mimeType: input.mimeType || "application/pdf",
+        body: Readable.from(input.buffer)
+      },
+      fields: "id,name,mimeType,createdTime,modifiedTime,size",
+      supportsAllDrives: true
+    });
+
+    if (!updated.data.id) return null;
+    return toNutritionPlanFile(updated.data, driveFileName);
+  } catch {
+    return null;
   }
+}
 
-  const sizeBytes =
-    typeof created.data.size === "string" && created.data.size.trim()
-      ? Number(created.data.size)
-      : input.buffer.length;
-
-  return {
-    id: String(fileId),
-    name: String(created.data.name ?? fileName),
-    mimeType: String(created.data.mimeType ?? input.mimeType),
-    sizeBytes: Number.isFinite(sizeBytes) ? Math.max(0, Math.trunc(sizeBytes)) : input.buffer.length,
-    kind: toCommunityAttachmentKind(String(created.data.mimeType ?? input.mimeType)),
-    createdTime: created.data.createdTime ?? null
-  };
+async function cleanupDuplicateNutritionPlanPdfsByName(
+  drive: Awaited<ReturnType<typeof getDriveClient>>,
+  userFolderId: string,
+  fileName: string,
+  keepFileId: string
+): Promise<void> {
+  const matches = await listNutritionPlanPdfFilesByName(drive, userFolderId, fileName);
+  const duplicates = matches.filter((file) => file.id && file.id !== keepFileId);
+  await Promise.allSettled(
+    duplicates.map((file) =>
+      drive.files.delete({
+        fileId: file.id,
+        supportsAllDrives: true
+      })
+    )
+  );
 }
 
 export async function deleteDriveFileById(fileId: string): Promise<void> {
   const drive = await getDriveClient();
   await drive.files.delete({ fileId, supportsAllDrives: true });
-}
-
-export async function getCommunityAttachmentMetadata(
-  fileId: string
-): Promise<CommunityAttachmentMetadata | null> {
-  const drive = await getDriveReadOnlyClient();
-  try {
-    const response = await drive.files.get({
-      fileId,
-      fields: "id,name,mimeType,appProperties,trashed",
-      supportsAllDrives: true
-    });
-    const appProperties = response.data.appProperties ?? {};
-    return {
-      id: String(response.data.id ?? fileId),
-      name: String(response.data.name ?? ""),
-      mimeType: String(response.data.mimeType ?? "application/octet-stream"),
-      postId: String(appProperties.matPostId ?? "").trim(),
-      ownerUsername: normalizeUserFolderKey(String(appProperties.matUsername ?? "")),
-      fileType: String(appProperties.matFileType ?? "").trim(),
-      trashed: Boolean(response.data.trashed)
-    };
-  } catch {
-    return null;
-  }
 }
 
 export async function listNutritionPlanPdfsForUser(username: string): Promise<NutritionPlanFile[]> {
@@ -391,6 +365,57 @@ export async function uploadNutritionPlanPdfForUser(
     modifiedTime: created.data.modifiedTime ?? null,
     sizeBytes: created.data.size ? Number(created.data.size) : null
   };
+}
+
+export async function upsertNutritionPlanPdfForUser(
+  input: UpsertNutritionPlanInput
+): Promise<NutritionPlanFile> {
+  const env = getEnv();
+  const drive = await getDriveClient();
+  const userFolderId = await ensureUserFolderInRoot(
+    drive,
+    env.GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID,
+    input.username
+  );
+
+  const safeOriginal = sanitizeDriveFileName(input.originalFileName);
+  const hasPdfExtension = /\.pdf$/i.test(safeOriginal);
+  const driveFileName = hasPdfExtension ? safeOriginal : `${safeOriginal}.pdf`;
+
+  const sameDayFiles = await listNutritionPlanPdfFilesByName(drive, userFolderId, driveFileName);
+  const orderedSameDayFiles = [
+    ...sameDayFiles.filter((file) => input.existingFileId && file.id === input.existingFileId),
+    ...sameDayFiles.filter((file) => !input.existingFileId || file.id !== input.existingFileId)
+  ];
+
+  for (const file of orderedSameDayFiles) {
+    const updatedFile = await updateNutritionPlanPdfFile(drive, file.id, driveFileName, input);
+    if (updatedFile?.id) {
+      await cleanupDuplicateNutritionPlanPdfsByName(drive, userFolderId, driveFileName, updatedFile.id);
+      return updatedFile;
+    }
+  }
+
+  const created = await drive.files.create({
+    requestBody: {
+      name: driveFileName,
+      parents: [userFolderId]
+    },
+    media: {
+      mimeType: input.mimeType || "application/pdf",
+      body: Readable.from(input.buffer)
+    },
+    fields: "id,name,mimeType,createdTime,modifiedTime,size",
+    supportsAllDrives: true
+  });
+
+  if (!created.data.id) {
+    throw new Error("Nutrition plan upload failed: missing file id.");
+  }
+
+  const file = toNutritionPlanFile(created.data, driveFileName);
+  await cleanupDuplicateNutritionPlanPdfsByName(drive, userFolderId, driveFileName, file.id);
+  return file;
 }
 
 export async function downloadDriveFile(fileId: string): Promise<{

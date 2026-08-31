@@ -11,7 +11,8 @@ import {
   Download,
   Eye,
   FileText,
-  LogOut
+  LogOut,
+  Utensils
 } from "lucide-react";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
@@ -139,7 +140,7 @@ export function NutritionPlansShell({ user }: NutritionPlansShellProps) {
   useEffect(() => {
     router.prefetch("/dashboard");
     router.prefetch("/tools");
-    router.prefetch("/community");
+    router.prefetch("/nutrition");
   }, [router]);
 
   const orderedPlans = useMemo(() => {
@@ -265,9 +266,10 @@ export function NutritionPlansShell({ user }: NutritionPlansShellProps) {
                   Planes nutricionales
                 </BrandButton>
               </Link>
-              <Link href="/community">
+              <Link href="/nutrition">
                 <BrandButton variant="ghost" className="w-full justify-center px-4 py-2 sm:w-auto">
-                  Comunidad
+                  <Utensils className="mr-2 h-4 w-4" />
+                  Dieta interactiva
                 </BrandButton>
               </Link>
               <div className="px-2 text-left sm:text-right">

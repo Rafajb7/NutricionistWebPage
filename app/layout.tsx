@@ -3,6 +3,7 @@ import { Sora, Manrope } from "next/font/google";
 import "@/app/globals.css";
 import { GlobalDiabloMode } from "@/components/global-diablo-mode";
 import { Providers } from "@/components/providers";
+import { SiteFooter } from "@/components/site-footer";
 
 const sora = Sora({
   subsets: ["latin"],
@@ -34,6 +35,7 @@ export default function RootLayout({
       <body className={`${sora.variable} ${manrope.variable} bg-brand-bg font-[var(--font-body)] text-brand-text`}>
         <GlobalDiabloMode />
         {children}
+        <SiteFooter />
         <Providers />
       </body>
     </html>

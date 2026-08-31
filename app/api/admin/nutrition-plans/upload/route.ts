@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteMemoryCache } from "@/lib/cache/memory-cache";
 import { requireAdminSession } from "@/lib/auth/require-session";
-import { readUsersFromSheet } from "@/lib/google/sheets";
+import { readUsersFromSheetCached } from "@/lib/google/sheets";
 import { uploadNutritionPlanPdfForUser } from "@/lib/google/drive";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -29,7 +29,7 @@ export async function POST(req: Request) {
     }
 
     const targetUsername = normalizeUsername(usernameRaw);
-    const users = await readUsersFromSheet();
+    const users = await readUsersFromSheetCached();
     const targetUser = users.find(
       (user) => normalizeUsername(user.username) === targetUsername
     );

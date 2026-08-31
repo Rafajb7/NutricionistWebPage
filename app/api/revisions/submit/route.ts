@@ -168,6 +168,8 @@ export async function POST(req: NextRequest) {
 
     await upsertRevisionRows(rows);
     deleteMemoryCache(`revisions:${normalizedUsername}`);
+    deleteMemoryCache(`making-weight:${normalizedUsername}`);
+    deleteMemoryCache("admin:making-weight-critical-alerts");
 
     let stepsStoredCount = 0;
 

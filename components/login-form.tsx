@@ -8,6 +8,8 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
 
+const ADMIN_MAKING_WEIGHT_ALERTS_SUPPRESSED_KEY = "mat:admin-making-weight-alerts-opened";
+
 export function LoginForm() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -42,6 +44,11 @@ export function LoginForm() {
       }
 
       const json = (await res.json()) as { error?: string; mustChangePassword?: boolean };
+      try {
+        window.localStorage.removeItem(ADMIN_MAKING_WEIGHT_ALERTS_SUPPRESSED_KEY);
+      } catch {
+        // ignore local storage errors
+      }
       toast.success("Sesión iniciada");
       window.location.href = json.mustChangePassword ? "/password/change" : "/dashboard";
     } catch (error) {
@@ -64,18 +71,18 @@ export function LoginForm() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
-      className="w-full max-w-md rounded-3xl border border-brand-accent/25 bg-brand-surface/90 p-7 shadow-glow backdrop-blur"
+      className="w-full rounded-2xl border border-brand-accent/25 bg-brand-surface/90 p-5 shadow-glow backdrop-blur sm:p-6"
     >
       <BrandLogo href="/login" showText />
 
-      <div className="mt-8">
-        <h1 className="text-2xl font-bold text-brand-text">Acceso privado</h1>
-        <p className="mt-2 text-sm text-brand-muted">
+      <div className="mt-5">
+        <h1 className="text-xl font-bold text-brand-text">Acceso privado</h1>
+        <p className="mt-1.5 text-sm text-brand-muted">
           Plataforma de seguimiento nutricional para powerlifting.
         </p>
       </div>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-4">
+      <form onSubmit={onSubmit} className="mt-5 space-y-3">
         <div>
           <label className="mb-2 block text-xs uppercase tracking-[0.2em] text-brand-muted">
             Usuario
@@ -84,7 +91,7 @@ export function LoginForm() {
             required
             value={username}
             onChange={(event) => setUsername(event.target.value)}
-            className="w-full rounded-xl border border-white/15 bg-black/25 px-4 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+            className="w-full rounded-xl border border-white/15 bg-black/25 px-4 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
             placeholder="usuario"
           />
         </div>
@@ -97,11 +104,11 @@ export function LoginForm() {
             required
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            className="w-full rounded-xl border border-white/15 bg-black/25 px-4 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+            className="w-full rounded-xl border border-white/15 bg-black/25 px-4 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
             placeholder="********"
           />
         </div>
-        <BrandButton className="w-full" disabled={loading}>
+        <BrandButton className="w-full py-2.5" disabled={loading}>
           {loading ? "Entrando..." : "Iniciar sesión"}
         </BrandButton>
         <div className="text-center">

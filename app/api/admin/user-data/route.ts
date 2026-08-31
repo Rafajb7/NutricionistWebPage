@@ -8,7 +8,7 @@ import {
   listPeakModeDailyLogsForUser,
   listRoutineLogsForUser,
   listRevisionRowsForUser,
-  readUsersFromSheet
+  readUsersFromSheetCached
 } from "@/lib/google/sheets";
 import { toRevisionEntry } from "@/lib/revisions";
 import { logError } from "@/lib/logger";
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
     }
 
     const targetUsername = normalizeUsername(parsed.data.username);
-    const users = await readUsersFromSheet();
+    const users = await readUsersFromSheetCached();
     const targetUser = users.find(
       (user) => normalizeUsername(user.username) === targetUsername
     );

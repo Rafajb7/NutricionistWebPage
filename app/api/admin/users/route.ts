@@ -2,10 +2,14 @@ import { z } from "zod";
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import { hashPassword } from "@/lib/auth/password";
+import { buildCreateFinanceContractInput } from "@/lib/finance/contract-input";
+import { financeContractOnUserCreateSchema } from "@/lib/finance/validation";
+import { createFinanceContractWithPayments, listFinanceRecords } from "@/lib/google/finance";
 import {
   createUserInSheet,
   deleteUserFromSheetByUsername,
-  readUsersFromSheet
+  readUsersFromSheet,
+  readUsersFromSheetCached
 } from "@/lib/google/sheets";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -18,7 +22,8 @@ const createUserSchema = z.object({
   username: z.string().min(2).max(80),
   email: z.string().email().max(200).optional(),
   password: z.string().min(8).max(200),
-  permission: z.enum(["user", "admin"]).default("user")
+  permission: z.enum(["user", "admin"]).default("user"),
+  finance: financeContractOnUserCreateSchema.optional()
 });
 
 const deleteUserSchema = z.object({
@@ -30,7 +35,7 @@ export async function GET() {
   if (!auth.session) return auth.response;
 
   try {
-    const users = await readUsersFromSheet();
+    const users = await readUsersFromSheetCached();
     const items = users
       .map((user) => ({
         username: normalizeUsername(user.username),
@@ -67,6 +72,26 @@ export async function POST(req: Request) {
     if (exists) {
       return NextResponse.json({ error: "Username already exists." }, { status: 409 });
     }
+    if (parsed.data.finance && parsed.data.permission !== "user") {
+      return NextResponse.json(
+        { error: "Finance data can only be assigned to athlete users." },
+        { status: 400 }
+      );
+    }
+
+    const financeInput = parsed.data.finance
+      ? buildCreateFinanceContractInput({
+          payload: {
+            ...parsed.data.finance,
+            athleteUsername: normalizedUsername
+          },
+          athlete: {
+            username: normalizedUsername,
+            name: parsed.data.name.trim()
+          },
+          planOptions: (await listFinanceRecords()).planOptions
+        })
+      : null;
 
     const passwordHash = await hashPassword(parsed.data.password);
     await createUserInSheet({
@@ -77,14 +102,30 @@ export async function POST(req: Request) {
       passwordHash
     });
 
+    let financeWarning = "";
+    if (financeInput) {
+      try {
+        await createFinanceContractWithPayments(financeInput);
+      } catch (error) {
+        financeWarning = "User was created, but finance data could not be saved.";
+        logError("Failed to create finance data for new user", {
+          adminUsername: auth.session.username,
+          username: normalizedUsername,
+          error
+        });
+      }
+    }
+
     logInfo("Admin created user", {
       adminUsername: auth.session.username,
       username: normalizedUsername,
-      permission: parsed.data.permission
+      permission: parsed.data.permission,
+      withFinance: Boolean(financeInput && !financeWarning)
     });
 
     return NextResponse.json({
       ok: true,
+      financeWarning,
       user: {
         username: normalizedUsername,
         name: parsed.data.name.trim(),

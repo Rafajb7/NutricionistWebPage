@@ -3,6 +3,10 @@ import path from "node:path";
 import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 
+const GOOGLE_API_TIMEOUT_MS = 15000;
+
+google.options({ retry: false, timeout: GOOGLE_API_TIMEOUT_MS });
+
 type ServiceAccount = {
   type: "service_account";
   project_id: string;

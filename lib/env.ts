@@ -21,12 +21,6 @@ const envSchema = z.object({
   GOOGLE_PEAK_MODE_SPREADSHEET_ID: z.string().optional(),
   GOOGLE_PEAK_MODE_SHEET_NAME: z.string().default("ModoPico"),
   GOOGLE_PEAK_MODE_WORKSHEET_NAME: z.string().default("Registro diario"),
-  GOOGLE_COMMUNITY_SPREADSHEET_ID: z.string().optional(),
-  GOOGLE_COMMUNITY_SHEET_NAME: z.string().default("Comunidad"),
-  GOOGLE_COMMUNITY_POSTS_WORKSHEET_NAME: z.string().default("Publicaciones"),
-  GOOGLE_COMMUNITY_COMMENTS_WORKSHEET_NAME: z.string().default("Comentarios"),
-  GOOGLE_COMMUNITY_AUDIT_WORKSHEET_NAME: z.string().default("Auditoria"),
-  GOOGLE_COMMUNITY_DRIVE_FOLDER_ID: z.string().optional(),
   GOOGLE_ACHIEVEMENTS_SPREADSHEET_ID: z.string().optional(),
   GOOGLE_ACHIEVEMENTS_SHEET_NAME: z.string().default("Logros"),
   GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME: z.string().default("Marcas"),
@@ -35,6 +29,15 @@ const envSchema = z.object({
   GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID: z
     .string()
     .default("1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf"),
+  GOOGLE_NUTRITION_MANAGEMENT_SPREADSHEET_ID: z
+    .string()
+    .default("1VHkZ_ieggs_QsE8YP8PJtPxfBHCMB89_AKnDl36tfFE"),
+  GOOGLE_NUTRITION_MANAGEMENT_SHEET_NAME: z.string().default("Gestion nutricional"),
+  GOOGLE_FINANCE_SPREADSHEET_ID: z
+    .string()
+    .default("1wDc9vqroLQmtuV-gYqe-Vjb_kJVjdJVOwxvMX14XmPM"),
+  GOOGLE_FINANCE_SHEET_NAME: z.string().default("Finanzas"),
+  GOOGLE_BACKUP_FOLDER_ID: z.string().default("1Ab84anPvs22tle-WvkTLogWmK0h2GXqf"),
   GOOGLE_COMPETITIONS_CALENDAR_ID: z.string().optional(),
   APP_BASE_URL: z.string().url().optional(),
   SMTP_HOST: z.string().optional(),
@@ -47,6 +50,7 @@ const envSchema = z.object({
   SESSION_TTL_HOURS: z.coerce.number().default(24),
   ALLOW_PLAINTEXT_PASSWORDS: z.enum(["true", "false"]).default("false"),
   ADMIN_MIGRATION_TOKEN: z.string().optional(),
+  CRON_SECRET: z.string().optional(),
   MAX_UPLOAD_MB: z.coerce.number().default(8)
 });
 

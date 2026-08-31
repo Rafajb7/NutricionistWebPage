@@ -62,18 +62,14 @@ GOOGLE_ROUTINE_LOGS_WORKSHEET_NAME=Registro
 GOOGLE_PEAK_MODE_SPREADSHEET_ID=
 GOOGLE_PEAK_MODE_SHEET_NAME=ModoPico
 GOOGLE_PEAK_MODE_WORKSHEET_NAME=Registro diario
-GOOGLE_COMMUNITY_SPREADSHEET_ID=
-GOOGLE_COMMUNITY_SHEET_NAME=Comunidad
-GOOGLE_COMMUNITY_POSTS_WORKSHEET_NAME=Publicaciones
-GOOGLE_COMMUNITY_COMMENTS_WORKSHEET_NAME=Comentarios
-GOOGLE_COMMUNITY_AUDIT_WORKSHEET_NAME=Auditoria
-GOOGLE_COMMUNITY_DRIVE_FOLDER_ID=
 GOOGLE_ACHIEVEMENTS_SPREADSHEET_ID=
 GOOGLE_ACHIEVEMENTS_SHEET_NAME=Logros
 GOOGLE_ACHIEVEMENTS_MARKS_WORKSHEET_NAME=Marcas
 GOOGLE_ACHIEVEMENTS_GOALS_WORKSHEET_NAME=Objetivos
 GOOGLE_DRIVE_ROOT_FOLDER_ID=1G-QgvfDD-dqMPzjuaA71ii7t6aWn_prX
 GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID=1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf
+GOOGLE_NUTRITION_MANAGEMENT_SPREADSHEET_ID=
+GOOGLE_NUTRITION_MANAGEMENT_SHEET_NAME=Gestion nutricional
 GOOGLE_COMPETITIONS_CALENDAR_ID=
 
 APP_BASE_URL=http://localhost:3000
@@ -101,14 +97,12 @@ MAX_UPLOAD_MB=8
 4. Comparte con el email de la service account:
    - Spreadsheet `Users`
    - Spreadsheet `Preguntas`
-   - Spreadsheet `Revisiones`
-   - Spreadsheet `Rutinas` (solo si usas modo por nombre)
+- Spreadsheet `Revisiones`
+- Spreadsheet `Rutinas` (solo si usas modo por nombre)
 - Spreadsheet de catalogo de ejercicios (si usas `GOOGLE_ROUTINE_EXERCISES_SPREADSHEET_ID`)
 - Spreadsheet de registros de rutina (si usas `GOOGLE_ROUTINE_LOGS_SPREADSHEET_ID`)
-- Spreadsheet de comunidad (si usas `GOOGLE_COMMUNITY_SPREADSHEET_ID`)
 - Carpeta de Drive con id `1G-QgvfDD-dqMPzjuaA71ii7t6aWn_prX`
 - Carpeta de Drive de planes nutricionales con id `1B9yxdQztuuyzTeQrRB-JOP58vHCJ5Mmf`
-- Carpeta de adjuntos de comunidad (si usas `GOOGLE_COMMUNITY_DRIVE_FOLDER_ID`)
 - Google Calendar de competiciones (`GOOGLE_COMPETITIONS_CALENDAR_ID`) compartido con la service account como editor
 5. Asigna permisos de editor.
 
@@ -124,7 +118,6 @@ App:
 - Login: `http://localhost:3000/login`
 - Dashboard: `http://localhost:3000/dashboard`
 - Herramientas: `http://localhost:3000/tools`
-- Comunidad: `http://localhost:3000/community`
 
 ## Flujo funcional
 
@@ -149,6 +142,13 @@ App:
   - lista de PDFs desde Drive en la carpeta configurada (`GOOGLE_NUTRITION_PLANS_ROOT_FOLDER_ID`)
   - busqueda por subcarpeta de usuario (`Usuario`) dentro de la carpeta raiz de planes
   - miniatura, visualizacion en modal y descarga desde la web
+- Herramientas admin > Gestion nutricional:
+  - crea planes dinamicos por atleta usando usuarios existentes
+  - guarda borradores en Google Sheets (`Gestion nutricional` por defecto)
+  - el catalogo de alimentos usa valores por 100 g: proteinas, carbohidratos, grasas, sodio y agua
+  - cada alimento prescrito guarda snapshot nutricional para proteger planes historicos
+  - genera una previsualizacion PDF sin publicarla
+  - al confirmar/publicar sube el PDF a Drive para que aparezca en `/nutrition-plans`
 - Historico:
   - parsea enlaces directos y formulas `=IMAGE("...")`
   - filtros por fecha y busqueda por texto
