@@ -3,7 +3,7 @@ import { Instagram, Mail } from "lucide-react";
 export function SiteFooter() {
   return (
     <footer className="border-t border-white/10 bg-black/20 px-4 py-5">
-      <div className="mx-auto flex w-full max-w-7xl flex-col items-center justify-between gap-3 text-sm text-brand-muted sm:flex-row">
+      <div className="app-page-container mx-auto flex w-full flex-col items-center justify-between gap-3 text-sm text-brand-muted sm:flex-row">
         <p>
           Created by <span className="font-semibold text-brand-text">Rafael Jiménez</span>
         </p>

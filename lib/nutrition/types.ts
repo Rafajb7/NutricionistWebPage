@@ -30,7 +30,8 @@ export type NutritionFoodRestrictionTag =
   | "animal_seafood"
   | "animal_egg"
   | "animal_dairy"
-  | "animal_honey";
+  | "animal_honey"
+  | "plant_origin";
 
 export type NutritionAthleteRestrictionType = "allergy" | "intolerance" | "dislike" | "diet";
 

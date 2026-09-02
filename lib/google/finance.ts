@@ -11,11 +11,13 @@ import {
 } from "@/lib/finance/calculations";
 import type {
   CreateFinanceExpenseInput,
+  CreateFinanceExpenseInvoiceFileInput,
   CreateFinanceContractInput,
   CreateFinanceInvoiceInput,
   FinanceContract,
   FinanceContractStatus,
   FinanceExpense,
+  FinanceExpenseInvoiceFile,
   FinanceInvoice,
   FinanceInvoiceIssuerSettings,
   FinanceInvoiceLineItem,
@@ -33,6 +35,7 @@ type FinanceSheetsInfo = {
   contractsWorksheet: string;
   paymentsWorksheet: string;
   expensesWorksheet: string;
+  expenseInvoiceFilesWorksheet: string;
   invoicesWorksheet: string;
   invoiceSettingsWorksheet: string;
   planOptionsWorksheet: string;
@@ -42,6 +45,7 @@ type FinanceDataset = {
   contracts: FinanceContract[];
   payments: FinancePayment[];
   expenses: FinanceExpense[];
+  expenseInvoiceFiles: FinanceExpenseInvoiceFile[];
   invoices: FinanceInvoice[];
   invoiceSettings: FinanceInvoiceIssuerSettings;
   planOptions: FinancePlanOption[];
@@ -57,6 +61,7 @@ const WORKSHEETS = {
   contracts: "FinanceContracts",
   payments: "FinancePayments",
   expenses: "FinanceExpenses",
+  expenseInvoiceFiles: "FinanceExpenseInvoiceFiles",
   invoices: "FinanceInvoices",
   invoiceSettings: "FinanceInvoiceSettings",
   planOptions: "FinancePlanOptions"
@@ -125,6 +130,24 @@ const EXPENSE_HEADERS = [
   "Importe cents",
   "Moneda",
   "Notas",
+  "Creado",
+  "Actualizado"
+];
+
+const EXPENSE_INVOICE_FILE_HEADERS = [
+  "Id",
+  "Expense id",
+  "Drive file id",
+  "Nombre archivo",
+  "Mime type",
+  "Tamano bytes",
+  "Web view link",
+  "Fecha detectada",
+  "Importe detectado cents",
+  "Proveedor detectado",
+  "Texto extraido",
+  "Estado",
+  "Error analisis",
   "Creado",
   "Actualizado"
 ];
@@ -421,6 +444,7 @@ async function ensureFinanceSheetsReady(): Promise<FinanceSheetsInfo> {
     await ensureWorksheet(spreadsheetId, WORKSHEETS.contracts);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.payments);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.expenses);
+    await ensureWorksheet(spreadsheetId, WORKSHEETS.expenseInvoiceFiles);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.invoices);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.invoiceSettings);
     await ensureWorksheet(spreadsheetId, WORKSHEETS.planOptions);
@@ -440,6 +464,11 @@ async function ensureFinanceSheetsReady(): Promise<FinanceSheetsInfo> {
         spreadsheetId,
         worksheetName: WORKSHEETS.expenses,
         headers: EXPENSE_HEADERS
+      }),
+      ensureHeaderRow({
+        spreadsheetId,
+        worksheetName: WORKSHEETS.expenseInvoiceFiles,
+        headers: EXPENSE_INVOICE_FILE_HEADERS
       }),
       ensureHeaderRow({
         spreadsheetId,
@@ -463,6 +492,7 @@ async function ensureFinanceSheetsReady(): Promise<FinanceSheetsInfo> {
       contractsWorksheet: WORKSHEETS.contracts,
       paymentsWorksheet: WORKSHEETS.payments,
       expensesWorksheet: WORKSHEETS.expenses,
+      expenseInvoiceFilesWorksheet: WORKSHEETS.expenseInvoiceFiles,
       invoicesWorksheet: WORKSHEETS.invoices,
       invoiceSettingsWorksheet: WORKSHEETS.invoiceSettings,
       planOptionsWorksheet: WORKSHEETS.planOptions
@@ -570,6 +600,57 @@ async function updateWorksheetRowById(
   return true;
 }
 
+async function getWorksheetIdByTitle(spreadsheetId: string, title: string): Promise<number | null> {
+  const sheets = await getSheetsClient();
+  const response = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties(sheetId,title)"
+    })
+  );
+  const sheet = (response.data.sheets ?? []).find(
+    (item) => item.properties?.title === title
+  );
+  return sheet?.properties?.sheetId ?? null;
+}
+
+async function deleteWorksheetRowById(
+  worksheetName: string,
+  headers: string[],
+  id: string
+): Promise<boolean> {
+  const rows = await readWorksheetRowsWithNumbers(worksheetName, headers);
+  const target = rows.find((item) => String(item.row[0] ?? "").trim() === id);
+  if (!target) return false;
+
+  const info = await ensureFinanceSheetsReady();
+  const sheetId = await getWorksheetIdByTitle(info.spreadsheetId, worksheetName);
+  if (sheetId === null) return false;
+
+  const sheets = await getSheetsClient();
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.batchUpdate({
+      spreadsheetId: info.spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId,
+                dimension: "ROWS",
+                startIndex: target.rowNumber - 1,
+                endIndex: target.rowNumber
+              }
+            }
+          }
+        ]
+      }
+    })
+  );
+  invalidateFinanceDatasetCache();
+  return true;
+}
+
 function parsePlanOption(row: string[]): FinancePlanOption | null {
   const key = String(row[0] ?? "").trim();
   const label = String(row[1] ?? "").trim();
@@ -654,6 +735,38 @@ function parseExpense(row: string[]): FinanceExpense | null {
     notes: String(row[6] ?? "").trim(),
     createdAt: String(row[7] ?? "").trim(),
     updatedAt: String(row[8] ?? "").trim()
+  };
+}
+
+function parseExpenseInvoiceFile(row: string[]): FinanceExpenseInvoiceFile | null {
+  const id = String(row[0] ?? "").trim();
+  const expenseId = String(row[1] ?? "").trim();
+  const driveFileId = String(row[2] ?? "").trim();
+  if (!id || !driveFileId) return null;
+
+  const hasStatusColumns = row.length >= 15;
+  const status = hasStatusColumns
+    ? String(row[11] ?? "").trim()
+    : expenseId
+      ? "expense-created"
+      : "pending-review";
+
+  return {
+    id,
+    expenseId,
+    driveFileId,
+    fileName: String(row[3] ?? "").trim(),
+    mimeType: String(row[4] ?? "application/pdf").trim() || "application/pdf",
+    sizeBytes: row[5] ? parseInteger(row[5]) : null,
+    webViewLink: String(row[6] ?? "").trim(),
+    parsedDate: String(row[7] ?? "").trim(),
+    parsedAmountCents: parseInteger(row[8]),
+    parsedSupplier: String(row[9] ?? "").trim(),
+    textPreview: String(row[10] ?? "").trim(),
+    status: status === "expense-created" ? "expense-created" : "pending-review",
+    parseError: hasStatusColumns ? String(row[12] ?? "").trim() : "",
+    createdAt: String(row[hasStatusColumns ? 13 : 11] ?? "").trim(),
+    updatedAt: String(row[hasStatusColumns ? 14 : 12] ?? "").trim()
   };
 }
 
@@ -844,6 +957,26 @@ function serializeExpense(expense: FinanceExpense): Array<string | number> {
   ];
 }
 
+function serializeExpenseInvoiceFile(file: FinanceExpenseInvoiceFile): Array<string | number> {
+  return [
+    file.id,
+    file.expenseId,
+    file.driveFileId,
+    file.fileName,
+    file.mimeType,
+    file.sizeBytes ?? "",
+    file.webViewLink,
+    file.parsedDate,
+    file.parsedAmountCents,
+    file.parsedSupplier,
+    file.textPreview,
+    file.status,
+    file.parseError,
+    file.createdAt,
+    file.updatedAt
+  ];
+}
+
 function serializeInvoiceSettings(settings: FinanceInvoiceIssuerSettings): Array<string | number> {
   return [
     settings.id,
@@ -920,10 +1053,19 @@ async function ensureDefaultPlanOptions(dataset: FinanceDataset): Promise<Financ
 }
 
 async function readFinanceDatasetFresh(): Promise<FinanceDataset> {
-  const [contractRows, paymentRows, expenseRows, invoiceRows, invoiceSettingsRows, optionRows] = await readWorksheetRowsBatch([
+  const [
+    contractRows,
+    paymentRows,
+    expenseRows,
+    expenseInvoiceFileRows,
+    invoiceRows,
+    invoiceSettingsRows,
+    optionRows
+  ] = await readWorksheetRowsBatch([
     { worksheetName: WORKSHEETS.contracts, headers: CONTRACT_HEADERS },
     { worksheetName: WORKSHEETS.payments, headers: PAYMENT_HEADERS },
     { worksheetName: WORKSHEETS.expenses, headers: EXPENSE_HEADERS },
+    { worksheetName: WORKSHEETS.expenseInvoiceFiles, headers: EXPENSE_INVOICE_FILE_HEADERS },
     { worksheetName: WORKSHEETS.invoices, headers: INVOICE_HEADERS },
     { worksheetName: WORKSHEETS.invoiceSettings, headers: INVOICE_SETTINGS_HEADERS },
     { worksheetName: WORKSHEETS.planOptions, headers: PLAN_OPTION_HEADERS }
@@ -945,6 +1087,9 @@ async function readFinanceDatasetFresh(): Promise<FinanceDataset> {
     expenses: expenseRows
       .map(parseExpense)
       .filter((expense): expense is FinanceExpense => Boolean(expense)),
+    expenseInvoiceFiles: expenseInvoiceFileRows
+      .map(parseExpenseInvoiceFile)
+      .filter((file): file is FinanceExpenseInvoiceFile => Boolean(file)),
     invoices: invoiceRows
       .map(parseInvoice)
       .filter((invoice): invoice is FinanceInvoice => Boolean(invoice)),
@@ -998,6 +1143,7 @@ export async function listFinanceRecords(): Promise<{
   contracts: FinanceContract[];
   payments: FinancePayment[];
   expenses: FinanceExpense[];
+  expenseInvoiceFiles: FinanceExpenseInvoiceFile[];
   invoices: FinanceInvoice[];
   invoiceSettings: FinanceInvoiceIssuerSettings;
   planOptions: FinancePlanOption[];
@@ -1007,6 +1153,7 @@ export async function listFinanceRecords(): Promise<{
     contracts: [...dataset.contracts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     payments: [...dataset.payments].sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
     expenses: [...dataset.expenses].sort((a, b) => b.date.localeCompare(a.date)),
+    expenseInvoiceFiles: [...dataset.expenseInvoiceFiles].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     invoices: [...dataset.invoices].sort((a, b) => b.issueDate.localeCompare(a.issueDate)),
     invoiceSettings: dataset.invoiceSettings,
     planOptions: [...dataset.planOptions].sort((a, b) => a.sortOrder - b.sortOrder)
@@ -1143,6 +1290,76 @@ export async function createFinanceExpense(input: CreateFinanceExpenseInput): Pr
 
   await appendWorksheetRows(WORKSHEETS.expenses, EXPENSE_HEADERS, [serializeExpense(expense)]);
   return expense;
+}
+
+export async function createFinanceExpenseWithInvoiceFile(
+  input: CreateFinanceExpenseInvoiceFileInput
+): Promise<{ expense: FinanceExpense | null; expenseInvoiceFile: FinanceExpenseInvoiceFile }> {
+  const now = new Date().toISOString();
+  const expense = input.expense
+    ? {
+        id: randomUUID(),
+        date: input.expense.date,
+        category: input.expense.category.trim().slice(0, 120),
+        description: input.expense.description.trim().slice(0, 180),
+        amountCents: Math.max(1, Math.trunc(input.expense.amountCents)),
+        currency: input.expense.currency.trim().toUpperCase() || "EUR",
+        notes: input.expense.notes?.trim().slice(0, 1000) ?? "",
+        createdAt: now,
+        updatedAt: now
+      }
+    : null;
+  const expenseInvoiceFile: FinanceExpenseInvoiceFile = {
+    id: randomUUID(),
+    expenseId: expense?.id ?? "",
+    driveFileId: input.driveFileId,
+    fileName: input.fileName.trim().slice(0, 240),
+    mimeType: input.mimeType.trim().slice(0, 120) || "application/pdf",
+    sizeBytes: input.sizeBytes,
+    webViewLink: input.webViewLink.trim(),
+    parsedDate: input.parsedDate?.trim() || expense?.date || "",
+    parsedAmountCents: Math.max(0, Math.trunc(input.parsedAmountCents ?? expense?.amountCents ?? 0)),
+    parsedSupplier: input.parsedSupplier?.trim().slice(0, 180) ?? "",
+    textPreview: input.textPreview?.trim().slice(0, 1500) ?? "",
+    status: expense ? "expense-created" : "pending-review",
+    parseError: input.parseError?.trim().slice(0, 1000) ?? "",
+    createdAt: now,
+    updatedAt: now
+  };
+
+  if (expense) {
+    await appendWorksheetRows(WORKSHEETS.expenses, EXPENSE_HEADERS, [serializeExpense(expense)]);
+  }
+  try {
+    await appendWorksheetRows(WORKSHEETS.expenseInvoiceFiles, EXPENSE_INVOICE_FILE_HEADERS, [
+      serializeExpenseInvoiceFile(expenseInvoiceFile)
+    ]);
+  } catch (error) {
+    if (expense) {
+      await deleteWorksheetRowById(WORKSHEETS.expenses, EXPENSE_HEADERS, expense.id).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  return { expense, expenseInvoiceFile };
+}
+
+export async function deleteFinanceExpenseInvoiceFile(
+  expenseInvoiceFileId: string
+): Promise<FinanceExpenseInvoiceFile | null> {
+  const dataset = await readFinanceDataset({ force: true });
+  const file = dataset.expenseInvoiceFiles.find((item) => item.id === expenseInvoiceFileId);
+  if (!file) return null;
+
+  await deleteWorksheetRowById(
+    WORKSHEETS.expenseInvoiceFiles,
+    EXPENSE_INVOICE_FILE_HEADERS,
+    file.id
+  );
+  if (file.expenseId) {
+    await deleteWorksheetRowById(WORKSHEETS.expenses, EXPENSE_HEADERS, file.expenseId);
+  }
+  return file;
 }
 
 export async function createFinanceContractWithPayments(

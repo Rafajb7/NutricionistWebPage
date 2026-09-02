@@ -68,6 +68,26 @@ export type FinanceExpense = {
   updatedAt: string;
 };
 
+export type FinanceExpenseInvoiceFileStatus = "expense-created" | "pending-review";
+
+export type FinanceExpenseInvoiceFile = {
+  id: string;
+  expenseId: string;
+  driveFileId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  webViewLink: string;
+  parsedDate: string;
+  parsedAmountCents: number;
+  parsedSupplier: string;
+  textPreview: string;
+  status: FinanceExpenseInvoiceFileStatus;
+  parseError: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type FinanceInvoiceIssuerSettings = {
   id: string;
   businessName: string;
@@ -185,6 +205,7 @@ export type FinanceManagementData = {
   contracts: FinanceContract[];
   payments: FinancePayment[];
   expenses: FinanceExpense[];
+  expenseInvoiceFiles: FinanceExpenseInvoiceFile[];
   invoices: FinanceInvoice[];
   invoiceSettings: FinanceInvoiceIssuerSettings;
   planOptions: FinancePlanOption[];
@@ -235,6 +256,20 @@ export type CreateFinanceExpenseInput = {
   amountCents: number;
   currency: string;
   notes?: string;
+};
+
+export type CreateFinanceExpenseInvoiceFileInput = {
+  expense?: CreateFinanceExpenseInput | null;
+  driveFileId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  webViewLink: string;
+  parsedDate?: string | null;
+  parsedAmountCents?: number | null;
+  parsedSupplier?: string;
+  textPreview?: string;
+  parseError?: string;
 };
 
 export type UpdateFinanceInvoiceSettingsInput = Partial<

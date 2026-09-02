@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+.app-page-container {
+  max-width: 100%;
+}
+
+@media (min-width: 1024px) {
+  .app-page-container {
+    max-width: min(1800px, calc(100vw - 2rem));
+  }
+}
+
+@media (min-width: 1536px) {
+  .app-page-container {
+    max-width: min(1920px, calc(100vw - 4rem));
+  }
+}
+
 :root {
   --brand-accent: #f7cc2f;
   --brand-accent-2: #a28932;

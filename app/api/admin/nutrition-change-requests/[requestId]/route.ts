@@ -5,17 +5,16 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import { upsertNutritionPlanPdfForUser } from "@/lib/google/drive";
 import {
   buildNutritionPlanPdfFileName,
-  getAthleteRoadmapSteps,
   getNutritionPlanById,
   listNutritionChangeRequests,
   listNutritionManagementData,
-  listNutritionPlansForAthlete,
   markNutritionPlanPublished,
   resolveNutritionChangeRequest,
   saveNutritionPlan
 } from "@/lib/google/nutrition-management";
 import { logError, logInfo } from "@/lib/logger";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
+import { getNutritionPdfSupportingData } from "@/lib/nutrition/pdf-supporting-data";
 import {
   getDefaultQuantityUnitForFood,
   getDefaultUnitWeightGForFood
@@ -32,6 +31,9 @@ type RouteContext = {
     requestId: string;
   }>;
 };
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const resolveSchema = z.object({
   status: z.enum(["approved", "denied"]),
@@ -88,10 +90,10 @@ function applyChangeRequestToPlan(
 }
 
 async function publishPlanPdf(plan: NutritionPlanFull) {
-  const [comparisonPlans, roadmapSteps] = await Promise.all([
-    listNutritionPlansForAthlete(plan.athleteUsername),
-    getAthleteRoadmapSteps(plan.athleteUsername)
-  ]);
+  const { comparisonPlans, roadmapSteps } = await getNutritionPdfSupportingData(plan, {
+    planId: plan.id,
+    action: "change-request-publish"
+  });
   const pdf = await renderNutritionPlanPdf(plan, { comparisonPlans, roadmapSteps });
   const fileName = buildNutritionPlanPdfFileName(plan);
   const uploaded = await upsertNutritionPlanPdfForUser({

@@ -2,12 +2,11 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import {
   buildNutritionPlanPdfFileName,
-  getAthleteRoadmapSteps,
   getNutritionPlanById,
-  getPublishedNutritionPlanSnapshot,
-  listNutritionPlansForAthlete
+  getPublishedNutritionPlanSnapshot
 } from "@/lib/google/nutrition-management";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
+import { getNutritionPdfSupportingData } from "@/lib/nutrition/pdf-supporting-data";
 import { logError } from "@/lib/logger";
 
 type RouteContext = {
@@ -15,6 +14,9 @@ type RouteContext = {
     planId: string;
   }>;
 };
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 function isValidId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,}$/.test(value);
@@ -52,10 +54,11 @@ export async function POST(req: Request, context: RouteContext) {
         : await getNutritionPlanById(planId);
     if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
 
-    const [comparisonPlans, roadmapSteps] = await Promise.all([
-      listNutritionPlansForAthlete(plan.athleteUsername),
-      getAthleteRoadmapSteps(plan.athleteUsername)
-    ]);
+    const { comparisonPlans, roadmapSteps } = await getNutritionPdfSupportingData(plan, {
+      username: auth.session.username,
+      planId,
+      action: "preview"
+    });
     const pdf = await renderNutritionPlanPdf(plan, {
       comparisonPlans,
       includeMacros: options.includeMacros,

@@ -552,7 +552,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
 
   return (
     <MotionPage>
-      <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 md:px-8">
+      <div className="app-page-container mx-auto w-full space-y-6 px-4 py-8 md:px-8">
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4 backdrop-blur">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />

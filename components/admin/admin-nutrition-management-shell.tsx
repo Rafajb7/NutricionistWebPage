@@ -54,6 +54,7 @@ import {
   INTOLERANCE_RESTRICTION_OPTIONS,
   getRestrictionConflict,
   getRestrictionLabel,
+  inferRestrictionTagsForFood,
   parseRestrictionTags,
 } from "@/lib/nutrition/restrictions";
 import type {
@@ -137,6 +138,8 @@ type RestrictionFormState = {
 };
 
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+type FoodSortKey = "category" | "kcal";
+type SortDirection = "asc" | "desc";
 
 const EMPTY_FOOD_FORM: FoodFormState = {
   name: "",
@@ -318,7 +321,7 @@ function foodToForm(food: NutritionFood): FoodFormState {
     fatPer100g: String(food.fatPer100g),
     sodiumPer100g: String(food.sodiumPer100g),
     waterPer100g: String(food.waterPer100g),
-    restrictionTags: parseRestrictionTags(food.restrictionTags),
+    restrictionTags: inferRestrictionTagsForFood(food),
   };
 }
 
@@ -576,6 +579,10 @@ function formatFoodTagSummary(tags: NutritionFoodRestrictionTag[]): string {
   return labels.length ? labels.join(", ") : "-";
 }
 
+function formatFoodDisplayTagSummary(food: NutritionFood): string {
+  return formatFoodTagSummary(inferRestrictionTagsForFood(food));
+}
+
 function getChangeRequestTypeLabel(request: NutritionChangeRequest): string {
   return (
     CHANGE_REQUEST_TYPE_LABELS[request.requestType] ??
@@ -759,6 +766,39 @@ function SmallTotal({
   );
 }
 
+function TotalDelta({
+  label,
+  value,
+  unit,
+  decimals = 1,
+}: {
+  label: string;
+  value: number;
+  unit: string;
+  decimals?: number;
+}) {
+  const rounded = roundNutritionValue(value, decimals);
+  const isOver = rounded > 0;
+  const isUnder = rounded < 0;
+  const prefix = isOver ? "+" : "";
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
+        isOver
+          ? "border-red-400/35 bg-red-500/10 text-red-100"
+          : isUnder
+            ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-100"
+            : "border-white/10 bg-black/25 text-brand-muted"
+      }`}
+    >
+      <span>Delta {label}</span>
+      <strong>{prefix}{formatNumber(rounded, decimals)}</strong>
+      {unit ? <span>{unit}</span> : null}
+    </span>
+  );
+}
+
 function FoodRestrictionTagPicker(props: {
   value: NutritionFoodRestrictionTag[];
   onToggle: (tag: NutritionFoodRestrictionTag) => void;
@@ -767,6 +807,7 @@ function FoodRestrictionTagPicker(props: {
   const groups = [
     { id: "allergen", label: "Alergenos e intolerancias" },
     { id: "animal", label: "Origen animal" },
+    { id: "plant", label: "Origen vegetal" },
   ] as const;
 
   return (
@@ -847,6 +888,10 @@ export function AdminNutritionManagementShell({
     Record<string, string>
   >({});
   const [foodFilter, setFoodFilter] = useState("");
+  const [foodSort, setFoodSort] = useState<{
+    key: FoodSortKey;
+    direction: SortDirection;
+  } | null>(null);
   const [foodForm, setFoodForm] = useState<FoodFormState>(EMPTY_FOOD_FORM);
   const [editingFoodId, setEditingFoodId] = useState<string | null>(null);
   const [foodSubmitting, setFoodSubmitting] = useState(false);
@@ -923,13 +968,33 @@ export function AdminNutritionManagementShell({
 
   const filteredFoods = useMemo(() => {
     const q = foodFilter.trim().toLowerCase();
-    if (!q) return foods;
-    return foods.filter(
-      (food) =>
-        food.name.toLowerCase().includes(q) ||
-        food.category.toLowerCase().includes(q),
-    );
-  }, [foods, foodFilter]);
+    const nextFoods = q
+      ? foods.filter(
+          (food) =>
+            food.name.toLowerCase().includes(q) ||
+            food.category.toLowerCase().includes(q),
+        )
+      : [...foods];
+
+    if (!foodSort) return nextFoods;
+
+    const direction = foodSort.direction === "asc" ? 1 : -1;
+    return nextFoods.sort((a, b) => {
+      if (foodSort.key === "category") {
+        const categoryCompare = (a.category || "").localeCompare(
+          b.category || "",
+          "es",
+        );
+        if (categoryCompare !== 0) return categoryCompare * direction;
+        return a.name.localeCompare(b.name, "es") * direction;
+      }
+
+      const kcalCompare =
+        calculateFoodCaloriesPer100g(a) - calculateFoodCaloriesPer100g(b);
+      if (kcalCompare !== 0) return kcalCompare * direction;
+      return a.name.localeCompare(b.name, "es") * direction;
+    });
+  }, [foods, foodFilter, foodSort]);
 
   const planTotals = useMemo<NutritionTotals>(() => {
     return plan ? calculatePlanTotals(plan) : EMPTY_NUTRITION_TOTALS;
@@ -1521,6 +1586,13 @@ export function AdminNutritionManagementShell({
           ? current.restrictionTags.filter((item) => item !== tag)
           : [...current.restrictionTags, tag].sort(),
       };
+    });
+  }
+
+  function toggleFoodSort(key: FoodSortKey) {
+    setFoodSort((current) => {
+      if (!current || current.key !== key) return { key, direction: "asc" };
+      return { key, direction: current.direction === "asc" ? "desc" : "asc" };
     });
   }
 
@@ -2415,7 +2487,7 @@ export function AdminNutritionManagementShell({
 
   return (
     <MotionPage>
-      <div className="mx-auto w-full max-w-7xl space-y-4 px-3 py-5 sm:px-4 sm:py-6 md:px-8">
+      <div className="app-page-container mx-auto w-full space-y-4 px-3 py-5 sm:px-4 sm:py-6 md:px-8">
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 backdrop-blur sm:p-4">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
@@ -2600,7 +2672,7 @@ export function AdminNutritionManagementShell({
                       </div>
 
                       <p className="mt-3 break-words text-xs text-brand-muted">
-                        Etiquetas: {formatFoodTagSummary(food.restrictionTags)}
+                        Etiquetas: {formatFoodDisplayTagSummary(food)}
                       </p>
                       <div className="mt-3 flex justify-end gap-2">
                         <button
@@ -2654,8 +2726,34 @@ export function AdminNutritionManagementShell({
                   <thead className="bg-black/30 text-[11px] uppercase tracking-[0.08em] text-brand-muted">
                     <tr>
                       <th className="px-2 py-2 text-left">Alimento</th>
-                      <th className="px-2 py-2 text-left">Categoria</th>
-                      <th className="px-2 py-2 text-right">Kcal</th>
+                      <th className="px-2 py-2 text-left">
+                        <button
+                          type="button"
+                          onClick={() => toggleFoodSort("category")}
+                          className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 transition hover:bg-white/10 hover:text-brand-text"
+                        >
+                          Categoria
+                          {foodSort?.key === "category" && foodSort.direction === "desc" ? (
+                            <ArrowDown className="h-3 w-3" />
+                          ) : (
+                            <ArrowUp className="h-3 w-3" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="px-2 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => toggleFoodSort("kcal")}
+                          className="ml-auto inline-flex items-center gap-1 rounded-md px-1 py-0.5 transition hover:bg-white/10 hover:text-brand-text"
+                        >
+                          Kcal
+                          {foodSort?.key === "kcal" && foodSort.direction === "desc" ? (
+                            <ArrowDown className="h-3 w-3" />
+                          ) : (
+                            <ArrowUp className="h-3 w-3" />
+                          )}
+                        </button>
+                      </th>
                       <th className="px-2 py-2 text-right">P</th>
                       <th className="px-2 py-2 text-right">C</th>
                       <th className="px-2 py-2 text-right">G</th>
@@ -2705,9 +2803,9 @@ export function AdminNutritionManagementShell({
                           </td>
                           <td
                             className="truncate px-2 py-2 text-[11px] text-brand-muted"
-                            title={formatFoodTagSummary(food.restrictionTags)}
+                            title={formatFoodDisplayTagSummary(food)}
                           >
-                            {formatFoodTagSummary(food.restrictionTags)}
+                            {formatFoodDisplayTagSummary(food)}
                           </td>
                           <td className="px-2 py-2">
                             <span
@@ -3915,6 +4013,8 @@ export function AdminNutritionManagementShell({
                                   meal.entries,
                                   optionNumber,
                                 );
+                                const referenceTotals =
+                                  calculateMealOptionTotals(meal.entries, 1);
                                 const isReferenceOption = optionNumber === 1;
 
                                 return (
@@ -3946,7 +4046,7 @@ export function AdminNutritionManagementShell({
                                           alert={
                                             !isReferenceOption &&
                                             optionTotals.caloriesKcal >
-                                              totals.caloriesKcal
+                                              referenceTotals.caloriesKcal
                                           }
                                         />
                                         <SmallTotal
@@ -3956,7 +4056,7 @@ export function AdminNutritionManagementShell({
                                           alert={
                                             !isReferenceOption &&
                                             optionTotals.proteinG >
-                                              totals.proteinG
+                                              referenceTotals.proteinG
                                           }
                                         />
                                         <SmallTotal
@@ -3965,7 +4065,8 @@ export function AdminNutritionManagementShell({
                                           unit="g"
                                           alert={
                                             !isReferenceOption &&
-                                            optionTotals.carbsG > totals.carbsG
+                                            optionTotals.carbsG >
+                                              referenceTotals.carbsG
                                           }
                                         />
                                         <SmallTotal
@@ -3974,7 +4075,8 @@ export function AdminNutritionManagementShell({
                                           unit="g"
                                           alert={
                                             !isReferenceOption &&
-                                            optionTotals.fatG > totals.fatG
+                                            optionTotals.fatG >
+                                              referenceTotals.fatG
                                           }
                                         />
                                         {!isReferenceOption ? (
@@ -3996,6 +4098,46 @@ export function AdminNutritionManagementShell({
                                         ) : null}
                                       </div>
                                     </div>
+                                    {!isReferenceOption ? (
+                                      <div className="mt-3 flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/20 p-2">
+                                        <span className="w-full text-[11px] font-semibold uppercase tracking-[0.14em] text-brand-muted sm:w-auto sm:self-center">
+                                          Diferencia vs opcion 1
+                                        </span>
+                                        <TotalDelta
+                                          label="Kcal"
+                                          value={
+                                            optionTotals.caloriesKcal -
+                                            referenceTotals.caloriesKcal
+                                          }
+                                          unit=""
+                                          decimals={0}
+                                        />
+                                        <TotalDelta
+                                          label="P"
+                                          value={
+                                            optionTotals.proteinG -
+                                            referenceTotals.proteinG
+                                          }
+                                          unit="g"
+                                        />
+                                        <TotalDelta
+                                          label="C"
+                                          value={
+                                            optionTotals.carbsG -
+                                            referenceTotals.carbsG
+                                          }
+                                          unit="g"
+                                        />
+                                        <TotalDelta
+                                          label="G"
+                                          value={
+                                            optionTotals.fatG -
+                                            referenceTotals.fatG
+                                          }
+                                          unit="g"
+                                        />
+                                      </div>
+                                    ) : null}
 
                                     <div className="mt-3 space-y-3 lg:hidden">
                                       {entries.length ? (

@@ -11,6 +11,9 @@ type RouteContext = {
   }>;
 };
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 function sanitizeFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "-");
 }

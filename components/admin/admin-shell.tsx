@@ -4,13 +4,26 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Calendar, ChevronDown, ChevronUp, Download, Eye, Flame, LogOut, Search, Shield, Trophy, Upload, Users } from "lucide-react";
+import {
+  Calendar,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Download,
+  Eye,
+  LogOut,
+  Search,
+  Shield,
+  Trophy,
+  Upload,
+  Users
+} from "lucide-react";
 import { toast } from "sonner";
 import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getActiveCompetitionMode } from "@/lib/competition-mode";
 
 type SessionUser = { username: string; name: string };
 type AdminShellProps = { user: SessionUser };
@@ -201,6 +214,53 @@ function formatDateLabel(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
   return parsed.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function formatIsoDate(date: Date): string {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getIsoMonth(date: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.slice(0, 7) : formatIsoDate(new Date()).slice(0, 7);
+}
+
+function addMonthsToIsoMonth(month: string, offset: number): string {
+  const parsed = new Date(`${month}-01T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return month;
+  parsed.setMonth(parsed.getMonth() + offset);
+  return formatIsoDate(parsed).slice(0, 7);
+}
+
+function formatMonthLabel(month: string): string {
+  const parsed = new Date(`${month}-01T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return month;
+  return parsed.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+}
+
+function buildRevisionCalendarDays(month: string, revisionDates: string[], activeDate: string) {
+  const firstDay = new Date(`${month}-01T00:00:00`);
+  if (Number.isNaN(firstDay.getTime())) return [];
+
+  const revisionDateSet = new Set(revisionDates);
+  const start = new Date(firstDay);
+  const mondayOffset = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - mondayOffset);
+
+  return Array.from({ length: 42 }).map((_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    const iso = formatIsoDate(date);
+    return {
+      date: iso,
+      day: date.getDate(),
+      inMonth: iso.slice(0, 7) === month,
+      hasRevision: revisionDateSet.has(iso),
+      isActive: iso === activeDate
+    };
+  });
 }
 
 function formatDateTimeLabel(dateTime: string): string {
@@ -463,7 +523,13 @@ export function AdminShell({ user }: AdminShellProps) {
   const [filter, setFilter] = useState("");
   const [selectedUsername, setSelectedUsername] = useState("");
   const [selectedData, setSelectedData] = useState<AdminUserData | null>(null);
-  const [openRevisionDates, setOpenRevisionDates] = useState<string[]>([]);
+  const [activeRevisionDate, setActiveRevisionDate] = useState("");
+  const [activeCompetitionId, setActiveCompetitionId] = useState("");
+  const [revisionCalendarMonth, setRevisionCalendarMonth] = useState(() =>
+    formatIsoDate(new Date()).slice(0, 7)
+  );
+  const [achievementsOpen, setAchievementsOpen] = useState(false);
+  const [trainingOpen, setTrainingOpen] = useState(false);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>("CINTURA");
   const [selectedPeakMetric, setSelectedPeakMetric] = useState<PeakMetricKey>("pesoAyunasKg");
   const [uploadingPlans, setUploadingPlans] = useState(false);
@@ -485,6 +551,33 @@ export function AdminShell({ user }: AdminShellProps) {
     }
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
   }, [selectedData]);
+  const revisionDates = useMemo(() => groupedRevisions.map(([date]) => date), [groupedRevisions]);
+  const activeRevisionIndex = activeRevisionDate
+    ? revisionDates.indexOf(activeRevisionDate)
+    : -1;
+  const activeRevisionItems =
+    groupedRevisions.find(([date]) => date === activeRevisionDate)?.[1] ?? [];
+  const activeRevisionTextItems = activeRevisionItems.filter((item) => !item.imageUrl);
+  const activeRevisionImageItems = activeRevisionItems.filter((item) => item.imageUrl);
+  const revisionCalendarDays = useMemo(
+    () => buildRevisionCalendarDays(revisionCalendarMonth, revisionDates, activeRevisionDate),
+    [activeRevisionDate, revisionCalendarMonth, revisionDates]
+  );
+
+  const competitionItems = useMemo(
+    () =>
+      [...(selectedData?.tools.competitions ?? [])].sort((a, b) => {
+        const byDate = b.date.localeCompare(a.date);
+        if (byDate !== 0) return byDate;
+        return b.createdAt.localeCompare(a.createdAt);
+      }),
+    [selectedData]
+  );
+  const activeCompetitionIndex = activeCompetitionId
+    ? competitionItems.findIndex((item) => item.id === activeCompetitionId)
+    : -1;
+  const activeCompetition =
+    activeCompetitionIndex >= 0 ? competitionItems[activeCompetitionIndex] : null;
 
   const metricSeriesByKey = useMemo(() => {
     const out: Record<MetricKey, MetricPoint[]> = {
@@ -595,7 +688,6 @@ export function AdminShell({ user }: AdminShellProps) {
         if (!active) return;
         const next = (json.users ?? []).sort((a, b) => a.username.localeCompare(b.username, "es"));
         setUsers(next);
-        setSelectedUsername((current) => current || next[0]?.username || "");
       } catch (error) {
         console.error(error);
         toast.error("Error cargando usuarios.");
@@ -608,9 +700,8 @@ export function AdminShell({ user }: AdminShellProps) {
   }, []);
 
   useEffect(() => {
-    if (!filteredUsers.length) return;
-    if (!filteredUsers.some((u) => u.username === selectedUsername)) {
-      setSelectedUsername(filteredUsers[0].username);
+    if (selectedUsername && !filteredUsers.some((u) => u.username === selectedUsername)) {
+      setSelectedUsername("");
     }
   }, [filteredUsers, selectedUsername]);
 
@@ -622,9 +713,35 @@ export function AdminShell({ user }: AdminShellProps) {
   }, [availableMetricOptions, selectedMetric]);
 
   useEffect(() => {
-    setOpenRevisionDates([]);
+    setActiveRevisionDate("");
+    setActiveCompetitionId("");
+    setAchievementsOpen(false);
+    setTrainingOpen(false);
     loadSelectedUserData(selectedUsername);
   }, [selectedUsername, loadSelectedUserData]);
+
+  useEffect(() => {
+    const latestRevisionDate = revisionDates[0] ?? "";
+    setActiveRevisionDate((current) =>
+      current && revisionDates.includes(current) ? current : latestRevisionDate
+    );
+  }, [revisionDates]);
+
+  useEffect(() => {
+    if (!activeRevisionDate) return;
+    setRevisionCalendarMonth((current) =>
+      current === getIsoMonth(activeRevisionDate) ? current : getIsoMonth(activeRevisionDate)
+    );
+  }, [activeRevisionDate]);
+
+  useEffect(() => {
+    const latestCompetitionId = competitionItems[0]?.id ?? "";
+    setActiveCompetitionId((current) =>
+      current && competitionItems.some((item) => item.id === current)
+        ? current
+        : latestCompetitionId
+    );
+  }, [competitionItems]);
 
   async function handleLogout() {
     const res = await fetch("/api/logout", { method: "POST" });
@@ -676,35 +793,9 @@ export function AdminShell({ user }: AdminShellProps) {
     goals: selectedData?.tools.achievements.goals.length ?? 0
   };
 
-  const selectedUserCompetitionMode = useMemo(
-    () => getActiveCompetitionMode(selectedData?.tools.competitions ?? []),
-    [selectedData]
-  );
-
   return (
     <MotionPage>
-      <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 md:px-8">
-        {selectedUserCompetitionMode ? (
-          <div
-            className={
-              selectedUserCompetitionMode.mode === "diablo"
-                ? "fixed left-1/2 top-16 z-40 w-[calc(100%-1.5rem)] max-w-2xl -translate-x-1/2 rounded-xl border border-red-300/40 bg-red-800/90 px-4 py-3 text-center text-sm font-semibold text-white shadow-xl backdrop-blur"
-                : "fixed left-1/2 top-16 z-40 w-[calc(100%-1.5rem)] max-w-2xl -translate-x-1/2 rounded-xl border border-violet-300/40 bg-violet-800/90 px-4 py-3 text-center text-sm font-semibold text-white shadow-xl backdrop-blur"
-            }
-          >
-            <span className="inline-flex items-center justify-center gap-2">
-              {selectedUserCompetitionMode.mode === "diablo" ? (
-                <Flame className="h-4 w-4" />
-              ) : (
-                <Shield className="h-4 w-4" />
-              )}
-              {selectedUserCompetitionMode.mode === "diablo"
-                ? "El modo diablo de este usuario esta activado"
-                : "El modo titan de este usuario esta activado"}
-            </span>
-          </div>
-        ) : null}
-
+      <div className="app-page-container mx-auto w-full space-y-6 px-4 py-8 md:px-8">
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4 backdrop-blur">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
@@ -744,6 +835,7 @@ export function AdminShell({ user }: AdminShellProps) {
             <div className="min-w-0 w-full text-sm text-brand-muted">
               <p>Usuario</p>
               <select value={selectedUsername} onChange={(event) => setSelectedUsername(event.target.value)} className="mt-2 min-w-0 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60">
+                <option value="">Selecciona un usuario</option>
                 {usersLoading ? <option>Cargando...</option> : null}
                 {!usersLoading && filteredUsers.length === 0 ? <option value="">Sin resultados</option> : null}
                 {!usersLoading ? filteredUsers.map((item) => <option key={item.username} value={item.username}>{`${item.name} (${item.username}) - ${item.permission}`}</option>) : null}
@@ -775,45 +867,125 @@ export function AdminShell({ user }: AdminShellProps) {
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="text-lg font-semibold text-brand-text">Dashboard: revisiones</h3>
-                <div className="flex gap-2">
-                  <BrandButton variant="ghost" onClick={() => setOpenRevisionDates([])}>Minimizar todo</BrandButton>
-                  <BrandButton variant="ghost" onClick={() => setOpenRevisionDates(groupedRevisions.map(([d]) => d))}>Expandir todo</BrandButton>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={activeRevisionIndex < 0 || activeRevisionIndex >= revisionDates.length - 1}
+                    onClick={() => setActiveRevisionDate(revisionDates[activeRevisionIndex + 1] ?? activeRevisionDate)}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-black/20 text-brand-text transition hover:border-brand-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Revision anterior en el tiempo"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <div className="min-w-[150px] rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-center">
+                    <p className="text-[10px] uppercase tracking-[0.14em] text-brand-muted">
+                      Revision
+                    </p>
+                    <p className="text-sm font-semibold text-brand-text">
+                      {activeRevisionDate ? formatDateLabel(activeRevisionDate) : "-"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={activeRevisionIndex <= 0}
+                    onClick={() => setActiveRevisionDate(revisionDates[activeRevisionIndex - 1] ?? activeRevisionDate)}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-black/20 text-brand-text transition hover:border-brand-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Revision posterior en el tiempo"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
               {groupedRevisions.length === 0 ? <p className="mt-3 text-sm text-brand-muted">No hay revisiones registradas.</p> : (
-                <div className="mt-4 space-y-3">
-                  {groupedRevisions.map(([date, items]) => {
-                    const textItems = items.filter((item) => !item.imageUrl);
-                    const imageItems = items.filter((item) => item.imageUrl);
-                    const isOpen = openRevisionDates.includes(date);
-                    return (
-                      <article key={date} className="overflow-hidden rounded-xl border border-white/10 bg-black/25">
-                        <button type="button" onClick={() => setOpenRevisionDates((prev) => prev.includes(date) ? prev.filter((d) => d !== date) : [...prev, date])} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
-                          <div><p className="text-sm font-semibold text-brand-text">{formatDateLabel(date)}</p><p className="text-xs text-brand-muted">{textItems.length} respuestas · {imageItems.length} fotos</p></div>
-                          {isOpen ? <ChevronUp className="h-4 w-4 text-brand-muted" /> : <ChevronDown className="h-4 w-4 text-brand-muted" />}
+                <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                  <article className="overflow-hidden rounded-xl border border-white/10 bg-black/25">
+                    <div className="flex w-full items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+                      <div>
+                        <p className="text-sm font-semibold text-brand-text">
+                          {activeRevisionDate ? formatDateLabel(activeRevisionDate) : "Sin revision seleccionada"}
+                        </p>
+                        <p className="text-xs text-brand-muted">
+                          {activeRevisionTextItems.length} respuestas · {activeRevisionImageItems.length} fotos
+                        </p>
+                      </div>
+                      <Calendar className="h-4 w-4 text-brand-muted" />
+                    </div>
+                    <div className="space-y-3 p-4">
+                      {activeRevisionTextItems.map((item, index) => (
+                        <div key={`${activeRevisionDate}-text-${index}`} className="rounded-lg border border-white/10 p-3">
+                          <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">{item.pregunta}</p>
+                          <p className="mt-1 whitespace-pre-wrap text-sm text-brand-text">{item.respuesta}</p>
+                        </div>
+                      ))}
+                      {activeRevisionImageItems.length ? (
+                        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                          {activeRevisionImageItems.map((item, index) => (
+                            <a key={`${activeRevisionDate}-img-${index}`} href={item.imageUrl ?? "#"} target="_blank" rel="noreferrer" className="overflow-hidden rounded-lg border border-white/15">
+                              <img src={item.imageUrl ?? ""} alt={item.pregunta} className="h-24 w-full object-cover" />
+                            </a>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </article>
+
+                  <aside className="rounded-xl border border-white/10 bg-black/25 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRevisionCalendarMonth((month) => addMonthsToIsoMonth(month, -1))}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:border-brand-accent/40"
+                        aria-label="Mes anterior"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <p className="text-sm font-semibold capitalize text-brand-text">
+                        {formatMonthLabel(revisionCalendarMonth)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setRevisionCalendarMonth((month) => addMonthsToIsoMonth(month, 1))}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:border-brand-accent/40"
+                        aria-label="Mes siguiente"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted">
+                      {["L", "M", "X", "J", "V", "S", "D"].map((day) => (
+                        <span key={day}>{day}</span>
+                      ))}
+                    </div>
+                    <div className="mt-2 grid grid-cols-7 gap-1">
+                      {revisionCalendarDays.map((day) => (
+                        <button
+                          key={day.date}
+                          type="button"
+                          disabled={!day.hasRevision}
+                          onClick={() => setActiveRevisionDate(day.date)}
+                          className={[
+                            "relative flex aspect-square items-center justify-center rounded-lg border text-xs transition",
+                            day.isActive
+                              ? "border-brand-accent bg-brand-accent text-black"
+                              : day.hasRevision
+                                ? "border-brand-accent/35 bg-brand-accent/10 text-brand-text hover:border-brand-accent/70"
+                                : "border-white/5 bg-black/10 text-brand-muted/45",
+                            day.inMonth ? "" : "opacity-40",
+                            day.hasRevision ? "" : "cursor-default"
+                          ].join(" ")}
+                        >
+                          {day.day}
+                          {day.hasRevision ? (
+                            <span
+                              className={`absolute bottom-1 h-1 w-1 rounded-full ${
+                                day.isActive ? "bg-black" : "bg-brand-accent"
+                              }`}
+                            />
+                          ) : null}
                         </button>
-                        {isOpen ? (
-                          <div className="space-y-3 border-t border-white/10 p-4">
-                            {textItems.map((item, index) => (
-                              <div key={`${date}-text-${index}`} className="rounded-lg border border-white/10 p-3">
-                                <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">{item.pregunta}</p>
-                                <p className="mt-1 whitespace-pre-wrap text-sm text-brand-text">{item.respuesta}</p>
-                              </div>
-                            ))}
-                            {imageItems.length ? (
-                              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                                {imageItems.map((item, index) => (
-                                  <a key={`${date}-img-${index}`} href={item.imageUrl ?? "#"} target="_blank" rel="noreferrer" className="overflow-hidden rounded-lg border border-white/15">
-                                    <img src={item.imageUrl ?? ""} alt={item.pregunta} className="h-24 w-full object-cover" />
-                                  </a>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
+                      ))}
+                    </div>
+                  </aside>
                 </div>
               )}
             </div>
@@ -991,87 +1163,156 @@ export function AdminShell({ user }: AdminShellProps) {
 
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h3 className="text-lg font-semibold text-brand-text">Herramienta: Gestion de entreno</h3>
-                {selectedData.tools.routines.length === 0 ? <p className="mt-3 text-sm text-brand-muted">No hay sesiones registradas.</p> : (
-                  <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
-                    <table className="min-w-[1180px] w-full text-sm">
-                      <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
-                        <tr>
-                          <th className="px-3 py-2 text-left">Fecha</th>
-                          <th className="px-3 py-2 text-left">Dia</th>
-                          <th className="px-3 py-2 text-left">Grupo</th>
-                          <th className="px-3 py-2 text-left">Ejercicio</th>
-                          <th className="px-3 py-2 text-left">Series</th>
-                          <th className="px-3 py-2 text-left">Reps</th>
-                          <th className="px-3 py-2 text-left">Peso</th>
-                          <th className="px-3 py-2 text-left">RPE</th>
-                          <th className="px-3 py-2 text-left">Fatiga</th>
-                          <th className="px-3 py-2 text-left">Molestias GI</th>
-                          <th className="px-3 py-2 text-left">Intraentreno</th>
-                          <th className="px-3 py-2 text-left">Notas</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedData.tools.routines.map((item, index) => (
-                          <tr key={`${item.timestamp}-${index}`} className="border-t border-white/10">
-                            <td className="px-3 py-2 text-brand-text">{formatDateLabel(item.fechaSesion)}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.dia}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.grupoMuscular}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.ejercicio}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.series}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.repeticiones}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.pesoKg === null ? "-" : `${item.pesoKg} kg`}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.erp}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.nivelFatiga}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.molestiasGastrointestinales}</td>
-                            <td className="px-3 py-2 text-brand-text">{item.intraentreno ? "Si" : "No"}</td>
-                            <td className="px-3 py-2 text-brand-muted">{item.notas || "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                <button
+                  type="button"
+                  onClick={() => setTrainingOpen((current) => !current)}
+                  className="flex w-full items-center justify-between gap-3 text-left"
+                >
+                  <div>
+                    <h3 className="text-lg font-semibold text-brand-text">Herramienta: Gestion de entreno</h3>
+                    <p className="mt-1 text-xs text-brand-muted">
+                      {summary.routines} sesiones registradas
+                    </p>
                   </div>
-                )}
+                  {trainingOpen ? (
+                    <ChevronUp className="h-4 w-4 text-brand-muted" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-brand-muted" />
+                  )}
+                </button>
+                {trainingOpen ? (
+                  selectedData.tools.routines.length === 0 ? <p className="mt-3 text-sm text-brand-muted">No hay sesiones registradas.</p> : (
+                    <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
+                      <table className="min-w-[1180px] w-full text-sm">
+                        <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Fecha</th>
+                            <th className="px-3 py-2 text-left">Dia</th>
+                            <th className="px-3 py-2 text-left">Grupo</th>
+                            <th className="px-3 py-2 text-left">Ejercicio</th>
+                            <th className="px-3 py-2 text-left">Series</th>
+                            <th className="px-3 py-2 text-left">Reps</th>
+                            <th className="px-3 py-2 text-left">Peso</th>
+                            <th className="px-3 py-2 text-left">RPE</th>
+                            <th className="px-3 py-2 text-left">Fatiga</th>
+                            <th className="px-3 py-2 text-left">Molestias GI</th>
+                            <th className="px-3 py-2 text-left">Intraentreno</th>
+                            <th className="px-3 py-2 text-left">Notas</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedData.tools.routines.map((item, index) => (
+                            <tr key={`${item.timestamp}-${index}`} className="border-t border-white/10">
+                              <td className="px-3 py-2 text-brand-text">{formatDateLabel(item.fechaSesion)}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.dia}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.grupoMuscular}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.ejercicio}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.series}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.repeticiones}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.pesoKg === null ? "-" : `${item.pesoKg} kg`}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.erp}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.nivelFatiga}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.molestiasGastrointestinales}</td>
+                              <td className="px-3 py-2 text-brand-text">{item.intraentreno ? "Si" : "No"}</td>
+                              <td className="px-3 py-2 text-brand-muted">{item.notas || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                ) : null}
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h3 className="text-lg font-semibold text-brand-text">Herramienta: Competiciones</h3>
-                {selectedData.tools.competitions.length === 0 ? <p className="mt-3 text-sm text-brand-muted">No hay competiciones registradas.</p> : (
-                  <div className="mt-3 space-y-2">
-                    {selectedData.tools.competitions.map((event) => (
-                      <article key={event.id} className="rounded-lg border border-white/10 bg-black/25 p-3">
-                        <p className="text-sm font-semibold text-brand-text">{event.title}</p>
-                        <p className="mt-1 text-xs text-brand-muted"><Calendar className="mr-1 inline-block h-3.5 w-3.5" />{formatDateLabel(event.date)}</p>
-                        <p className="mt-2 text-sm text-brand-text">{event.location || "Sin ubicacion"}</p>
-                        <p className="mt-1 whitespace-pre-wrap text-xs text-brand-muted">{event.description || "Sin descripcion"}</p>
-                        {event.createdAt ? <p className="mt-2 text-[11px] text-brand-muted">Creado: {formatDateTimeLabel(event.createdAt)}</p> : null}
-                      </article>
-                    ))}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold text-brand-text">Herramienta: Competiciones</h3>
+                    <p className="mt-1 text-xs text-brand-muted">
+                      {summary.competitions} competiciones registradas
+                    </p>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={activeCompetitionIndex < 0 || activeCompetitionIndex >= competitionItems.length - 1}
+                      onClick={() => setActiveCompetitionId(competitionItems[activeCompetitionIndex + 1]?.id ?? activeCompetitionId)}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 bg-black/20 text-brand-text transition hover:border-brand-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label="Competicion anterior en el tiempo"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={activeCompetitionIndex <= 0}
+                      onClick={() => setActiveCompetitionId(competitionItems[activeCompetitionIndex - 1]?.id ?? activeCompetitionId)}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 bg-black/20 text-brand-text transition hover:border-brand-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label="Competicion posterior en el tiempo"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                {!activeCompetition ? <p className="mt-3 text-sm text-brand-muted">No hay competiciones registradas.</p> : (
+                  <article className="mt-3 rounded-lg border border-white/10 bg-black/25 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-brand-text">{activeCompetition.title}</p>
+                        <p className="mt-1 text-xs text-brand-muted"><Calendar className="mr-1 inline-block h-3.5 w-3.5" />{formatDateLabel(activeCompetition.date)}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full border border-white/10 bg-black/25 px-2 py-1 text-[11px] text-brand-muted">
+                        {activeCompetitionIndex + 1}/{competitionItems.length}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-brand-text">{activeCompetition.location || "Sin ubicacion"}</p>
+                    <p className="mt-1 whitespace-pre-wrap text-xs text-brand-muted">{activeCompetition.description || "Sin descripcion"}</p>
+                    {activeCompetition.createdAt ? <p className="mt-2 text-[11px] text-brand-muted">Creado: {formatDateTimeLabel(activeCompetition.createdAt)}</p> : null}
+                  </article>
                 )}
               </div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-              <div className="flex items-center gap-2"><Trophy className="h-4 w-4 text-brand-accent" /><h3 className="text-lg font-semibold text-brand-text">Herramienta: Logros</h3></div>
-              <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">Marcas maximas</p>
-                  {selectedData.tools.achievements.marks.length === 0 ? <p className="mt-2 text-sm text-brand-muted">Sin marcas registradas.</p> : (
-                    <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
-                      <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Valor</th></tr></thead><tbody>{selectedData.tools.achievements.marks.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.date)}</td><td className="px-3 py-2 text-brand-text">{formatAchievementValue(item.weightKg, item.exercise)}</td></tr>)}</tbody></table>
-                    </div>
-                  )}
+              <button
+                type="button"
+                onClick={() => setAchievementsOpen((current) => !current)}
+                className="flex w-full items-center justify-between gap-3 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <Trophy className="h-4 w-4 text-brand-accent" />
+                  <div>
+                    <h3 className="text-lg font-semibold text-brand-text">Herramienta: Logros</h3>
+                    <p className="mt-1 text-xs text-brand-muted">
+                      {summary.marks} marcas maximas · {summary.goals} objetivos
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">Objetivos</p>
-                  {selectedData.tools.achievements.goals.length === 0 ? <p className="mt-2 text-sm text-brand-muted">Sin objetivos registrados.</p> : (
-                    <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
-                      <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha objetivo</th><th className="px-3 py-2 text-left">Objetivo</th></tr></thead><tbody>{selectedData.tools.achievements.goals.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.targetDate)}</td><td className="px-3 py-2 text-brand-text">{formatAchievementValue(item.targetWeightKg, item.exercise)}</td></tr>)}</tbody></table>
-                    </div>
-                  )}
+                {achievementsOpen ? (
+                  <ChevronUp className="h-4 w-4 text-brand-muted" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-brand-muted" />
+                )}
+              </button>
+              {achievementsOpen ? (
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">Marcas maximas</p>
+                    {selectedData.tools.achievements.marks.length === 0 ? <p className="mt-2 text-sm text-brand-muted">Sin marcas registradas.</p> : (
+                      <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
+                        <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Valor</th></tr></thead><tbody>{selectedData.tools.achievements.marks.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.date)}</td><td className="px-3 py-2 text-brand-text">{formatAchievementValue(item.weightKg, item.exercise)}</td></tr>)}</tbody></table>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-brand-muted">Objetivos</p>
+                    {selectedData.tools.achievements.goals.length === 0 ? <p className="mt-2 text-sm text-brand-muted">Sin objetivos registrados.</p> : (
+                      <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
+                        <table className="min-w-[520px] w-full text-sm"><thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted"><tr><th className="px-3 py-2 text-left">Ejercicio</th><th className="px-3 py-2 text-left">Fecha objetivo</th><th className="px-3 py-2 text-left">Objetivo</th></tr></thead><tbody>{selectedData.tools.achievements.goals.map((item) => <tr key={item.id} className="border-t border-white/10"><td className="px-3 py-2 text-brand-text">{item.exercise}</td><td className="px-3 py-2 text-brand-text">{formatDateLabel(item.targetDate)}</td><td className="px-3 py-2 text-brand-text">{formatAchievementValue(item.targetWeightKg, item.exercise)}</td></tr>)}</tbody></table>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
           </section>
         ) : (

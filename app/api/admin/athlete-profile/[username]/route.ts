@@ -198,6 +198,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
       contracts: [],
       payments: [],
       expenses: [],
+      expenseInvoiceFiles: [],
       invoices: [],
       invoiceSettings: DEFAULT_FINANCE_INVOICE_SETTINGS,
       planOptions: []

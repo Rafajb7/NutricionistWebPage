@@ -41,6 +41,7 @@ import {
   type MakingWeightRiskLevel,
   type MakingWeightStatus,
 } from "@/lib/making-weight";
+import { getActiveCompetitionMode } from "@/lib/competition-mode";
 import type { CompetitionCalendarEvent } from "@/lib/google/calendar";
 import type { PeakModeDailyLogRow, RoutineLogRow } from "@/lib/google/sheets";
 import type { RevisionEntry } from "@/lib/google/types";
@@ -226,6 +227,16 @@ function getMakingWeightRiskClass(risk: MakingWeightRiskLevel): string {
   if (risk === "moderate")
     return "border-amber-400/45 bg-amber-500/15 text-amber-100";
   return "border-emerald-400/35 bg-emerald-500/10 text-emerald-100";
+}
+
+function getCompetitionModeLabel(mode: "titan" | "diablo"): string {
+  return mode === "diablo" ? "Modo Diablo" : "Modo Titan";
+}
+
+function getCompetitionModeClass(mode: "titan" | "diablo"): string {
+  return mode === "diablo"
+    ? "border-red-400/40 bg-red-500/15 text-red-100"
+    : "border-violet-300/40 bg-violet-500/15 text-violet-100";
 }
 
 function getRevisionQuestionValue(
@@ -488,6 +499,10 @@ export function AthleteProfileShell({
           (a.weighInDate || a.date).localeCompare(b.weighInDate || b.date),
         )[0] ?? null,
     [profile?.tools.competitions, today],
+  );
+  const activeCompetitionMode = useMemo(
+    () => getActiveCompetitionMode(profile?.tools.competitions ?? []),
+    [profile?.tools.competitions],
   );
   const currentMakingWeight = useMemo(
     () =>
@@ -789,7 +804,7 @@ export function AthleteProfileShell({
 
   return (
     <MotionPage>
-      <div className="mx-auto w-full max-w-7xl space-y-4 px-3 py-5 sm:px-4 sm:py-6 md:px-8">
+      <div className="app-page-container mx-auto w-full space-y-4 px-3 py-5 sm:px-4 sm:py-6 md:px-8">
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 backdrop-blur sm:p-4">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
@@ -1539,6 +1554,16 @@ export function AthleteProfileShell({
                 </div>
                 {primaryMakingWeightStatus ? (
                   <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+                    {activeCompetitionMode ? (
+                      <span
+                        className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${getCompetitionModeClass(
+                          activeCompetitionMode.mode,
+                        )}`}
+                      >
+                        <ShieldAlert className="h-4 w-4" />
+                        {getCompetitionModeLabel(activeCompetitionMode.mode)}
+                      </span>
+                    ) : null}
                     <BrandButton
                       variant="ghost"
                       className="w-full px-3 py-2 text-xs sm:w-auto"
@@ -1569,6 +1594,21 @@ export function AthleteProfileShell({
 
               {primaryMakingWeightStatus ? (
                 <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  {activeCompetitionMode ? (
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3 xl:col-span-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand-muted">
+                        Ventana activa
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-brand-text">
+                        {getCompetitionModeLabel(activeCompetitionMode.mode)} ·{" "}
+                        {formatSignedDays(activeCompetitionMode.daysUntilCompetition)} hasta competicion
+                      </p>
+                      <p className="mt-1 text-xs text-brand-muted">
+                        Desde {formatDateLabel(activeCompetitionMode.startsOn)} hasta{" "}
+                        {formatDateLabel(activeCompetitionMode.endsOn)}
+                      </p>
+                    </div>
+                  ) : null}
                   <MetricCard
                     label="Dia competicion"
                     value={formatDateLabel(

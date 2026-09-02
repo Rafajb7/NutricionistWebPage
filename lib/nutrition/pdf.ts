@@ -130,6 +130,10 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
 
   return {
     ...plan,
+    athleteUsername: plan.athleteUsername ?? "",
+    athleteName: plan.athleteName ?? "",
+    name: plan.name ?? "Plan nutricional",
+    notes: plan.notes ?? "",
     supplementation: plan.supplementation ?? "",
     recommendations: plan.recommendations ?? "",
     targetProteinG: Number.isFinite(plan.targetProteinG) ? Math.max(0, Math.round(plan.targetProteinG)) : 0,
@@ -137,11 +141,15 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
     targetFatG: Number.isFinite(plan.targetFatG) ? Math.max(0, Math.round(plan.targetFatG)) : 0,
     meals: meals.map((meal) => ({
       ...meal,
+      notes: meal.notes ?? "",
+      included: meal.included !== false,
       entries: (Array.isArray(meal.entries) ? meal.entries : [])
         .map((entry) => {
           const quantityUnit = normalizePdfQuantityUnit(entry.quantityUnit);
           return {
             ...entry,
+            foodName: entry.foodName ?? "",
+            customText: entry.customText ?? "",
             quantityG: normalizePdfQuantityG(entry.quantityG),
             quantityUnit,
             unitWeightG: normalizePdfUnitWeightG(entry.unitWeightG, quantityUnit),
@@ -150,6 +158,8 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
               const alternativeQuantityUnit = normalizePdfQuantityUnit(alternative.quantityUnit);
               return {
                 ...alternative,
+                foodName: alternative.foodName ?? "",
+                customText: alternative.customText ?? "",
                 quantityG: normalizePdfQuantityG(alternative.quantityG),
                 quantityUnit: alternativeQuantityUnit,
                 unitWeightG: normalizePdfUnitWeightG(alternative.unitWeightG, alternativeQuantityUnit)
