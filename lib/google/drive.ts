@@ -21,6 +21,12 @@ type UpsertNutritionPlanInput = UploadNutritionPlanInput & {
   existingFileId?: string | null;
 };
 
+type UploadFinanceExpenseInvoiceInput = {
+  originalFileName: string;
+  mimeType: string;
+  buffer: Buffer;
+};
+
 export type NutritionPlanFile = {
   id: string;
   name: string;
@@ -28,6 +34,16 @@ export type NutritionPlanFile = {
   createdTime: string | null;
   modifiedTime: string | null;
   sizeBytes: number | null;
+};
+
+export type FinanceExpenseInvoiceDriveFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  createdTime: string | null;
+  modifiedTime: string | null;
+  sizeBytes: number | null;
+  webViewLink: string;
 };
 
 function escapeDriveQuery(value: string): string {
@@ -416,6 +432,58 @@ export async function upsertNutritionPlanPdfForUser(
   const file = toNutritionPlanFile(created.data, driveFileName);
   await cleanupDuplicateNutritionPlanPdfsByName(drive, userFolderId, driveFileName, file.id);
   return file;
+}
+
+export async function uploadFinanceExpenseInvoicePdf(
+  input: UploadFinanceExpenseInvoiceInput
+): Promise<FinanceExpenseInvoiceDriveFile> {
+  const env = getEnv();
+  const drive = await getDriveClient();
+  const invoicesFolderId = await ensureDriveFolder(
+    drive,
+    env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    "Facturas"
+  );
+  const receivedFolderId = await ensureDriveFolder(
+    drive,
+    invoicesFolderId,
+    "Facturas recibidas"
+  );
+
+  const safeOriginal = sanitizeDriveFileName(input.originalFileName);
+  const hasPdfExtension = /\.pdf$/i.test(safeOriginal);
+  const baseName = hasPdfExtension ? safeOriginal : `${safeOriginal}.pdf`;
+  const driveFileName = `${new Date().toISOString().slice(0, 10)}_${Date.now()}_${baseName}`;
+
+  const created = await drive.files.create({
+    requestBody: {
+      name: driveFileName,
+      parents: [receivedFolderId],
+      appProperties: {
+        matFileType: "finance-expense-invoice"
+      }
+    },
+    media: {
+      mimeType: input.mimeType || "application/pdf",
+      body: Readable.from(input.buffer)
+    },
+    fields: "id,name,mimeType,createdTime,modifiedTime,size,webViewLink",
+    supportsAllDrives: true
+  });
+
+  if (!created.data.id) {
+    throw new Error("Finance expense invoice upload failed: missing file id.");
+  }
+
+  return {
+    id: String(created.data.id),
+    name: String(created.data.name ?? driveFileName),
+    mimeType: String(created.data.mimeType ?? "application/pdf"),
+    createdTime: created.data.createdTime ?? null,
+    modifiedTime: created.data.modifiedTime ?? null,
+    sizeBytes: created.data.size ? Number(created.data.size) : null,
+    webViewLink: created.data.webViewLink ?? ""
+  };
 }
 
 export async function downloadDriveFile(fileId: string): Promise<{

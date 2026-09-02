@@ -38,7 +38,8 @@ const nutritionFoodRestrictionTagSchema = z.enum([
   "animal_seafood",
   "animal_egg",
   "animal_dairy",
-  "animal_honey"
+  "animal_honey",
+  "plant_origin"
 ]);
 
 const nutritionAthleteRestrictionTypeSchema = z.enum(["allergy", "intolerance", "dislike", "diet"]);
@@ -68,6 +69,7 @@ const nutritionAthleteRestrictionKeySchema = z.enum([
   "animal_egg",
   "animal_dairy",
   "animal_honey",
+  "plant_origin",
   "diet_vegan",
   "diet_vegetarian",
   "diet_no_pork",

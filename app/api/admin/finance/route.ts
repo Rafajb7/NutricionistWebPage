@@ -30,6 +30,7 @@ export async function GET() {
       contracts: finance.contracts,
       payments: finance.payments,
       expenses: finance.expenses,
+      expenseInvoiceFiles: finance.expenseInvoiceFiles,
       invoices: finance.invoices,
       invoiceSettings: finance.invoiceSettings,
       planOptions: finance.planOptions,

@@ -15,7 +15,7 @@ export type RestrictionOption = {
 export const FOOD_RESTRICTION_TAG_OPTIONS: Array<{
   key: NutritionFoodRestrictionTag;
   label: string;
-  group: "allergen" | "animal";
+  group: "allergen" | "animal" | "plant";
 }> = [
   { key: "gluten", label: "Gluten", group: "allergen" },
   { key: "lactose", label: "Lactosa", group: "allergen" },
@@ -40,7 +40,8 @@ export const FOOD_RESTRICTION_TAG_OPTIONS: Array<{
   { key: "animal_seafood", label: "Origen marisco", group: "animal" },
   { key: "animal_egg", label: "Origen huevo", group: "animal" },
   { key: "animal_dairy", label: "Origen lacteo", group: "animal" },
-  { key: "animal_honey", label: "Miel", group: "animal" }
+  { key: "animal_honey", label: "Miel", group: "animal" },
+  { key: "plant_origin", label: "Origen vegetal", group: "plant" }
 ];
 
 export const ALLERGY_RESTRICTION_OPTIONS: RestrictionOption[] = [
@@ -194,6 +195,51 @@ export function inferRestrictionTagsForFood(
   addTag(tags, isPoultry, "animal_poultry");
   addTag(tags, isPork, "animal_pork");
 
+  const hasAnimalOrigin = [
+    "animal_meat",
+    "animal_poultry",
+    "animal_pork",
+    "animal_fish",
+    "animal_seafood",
+    "animal_egg",
+    "animal_dairy",
+    "animal_honey"
+  ].some((tag) => tags.has(tag as NutritionFoodRestrictionTag));
+  const plantCategories = [
+    "frutas",
+    "verduras",
+    "legumbres",
+    "cereales",
+    "tuberculos",
+    "frutos secos",
+    "semillas",
+    "grasas",
+    "carbohidratos"
+  ];
+  const plantTerms = [
+    "arroz",
+    "pasta",
+    "pan",
+    "patata",
+    "boniato",
+    "avena",
+    "quinoa",
+    "lenteja",
+    "garbanzo",
+    "tofu",
+    "tempeh",
+    "seitan",
+    "aceite",
+    "fruta",
+    "verdura"
+  ];
+  addTag(
+    tags,
+    !hasAnimalOrigin &&
+      (plantCategories.some((item) => category.includes(item)) || hasAny(text, plantTerms)),
+    "plant_origin"
+  );
+
   return Array.from(tags).sort();
 }
 
@@ -215,10 +261,20 @@ export function getRestrictionLabel(
 }
 
 export function getRestrictionConflict(
-  food: Pick<NutritionFood, "id" | "restrictionTags">,
+  food: Pick<NutritionFood, "id" | "restrictionTags"> &
+    Partial<Pick<NutritionFood, "name" | "category">>,
   restrictions: NutritionAthleteRestriction[]
 ): NutritionAthleteRestriction | null {
-  const tags = new Set(parseRestrictionTags(food.restrictionTags));
+  const tags =
+    food.name !== undefined && food.category !== undefined
+      ? new Set(
+          inferRestrictionTagsForFood({
+            name: food.name,
+            category: food.category,
+            restrictionTags: food.restrictionTags
+          })
+        )
+      : new Set(parseRestrictionTags(food.restrictionTags));
   for (const restriction of restrictions) {
     if (restriction.type === "dislike" && restriction.foodId === food.id) return restriction;
     if (restriction.type === "allergy") {

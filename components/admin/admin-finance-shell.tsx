@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import type { ChangeEvent } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -9,13 +10,17 @@ import {
   Building2,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   CircleDollarSign,
   Clock3,
   CreditCard,
   Download,
+  ExternalLink,
   FileClock,
+  FileUp,
   FileText,
   LineChart,
   LogOut,
@@ -53,6 +58,7 @@ import type {
   FinanceContract,
   FinanceDashboard,
   FinanceExpense,
+  FinanceExpenseInvoiceFile,
   FinanceInvoice,
   FinanceInvoiceIssuerSettings,
   FinanceInvoiceLineItem,
@@ -544,6 +550,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     contracts: [],
     payments: [],
     expenses: [],
+    expenseInvoiceFiles: [],
     invoices: [],
     invoiceSettings: DEFAULT_FINANCE_INVOICE_SETTINGS,
     planOptions: [],
@@ -556,6 +563,10 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
   const [savingInvoiceSettings, setSavingInvoiceSettings] = useState(false);
   const [savingInvoice, setSavingInvoice] = useState(false);
   const [contractActionId, setContractActionId] = useState<string | null>(null);
+  const [invoiceSettingsOpen, setInvoiceSettingsOpen] = useState(false);
+  const [uploadingExpenseInvoice, setUploadingExpenseInvoice] = useState(false);
+  const [expenseInvoiceInputKey, setExpenseInvoiceInputKey] = useState(0);
+  const [deletingExpenseInvoiceId, setDeletingExpenseInvoiceId] = useState<string | null>(null);
 
   const [athleteFilter, setAthleteFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<
@@ -609,6 +620,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
         contracts: json.contracts ?? [],
         payments: json.payments ?? [],
         expenses: json.expenses ?? [],
+        expenseInvoiceFiles: json.expenseInvoiceFiles ?? [],
         invoices: json.invoices ?? [],
         invoiceSettings,
         planOptions: json.planOptions ?? [],
@@ -675,6 +687,14 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     });
     return map;
   }, [data.expenses]);
+
+  const expenseInvoiceByExpenseId = useMemo(() => {
+    const map = new Map<string, FinanceExpenseInvoiceFile>();
+    data.expenseInvoiceFiles.forEach((file) => {
+      map.set(file.expenseId, file);
+    });
+    return map;
+  }, [data.expenseInvoiceFiles]);
 
   const filteredPayments = useMemo(() => {
     const monthRange = getMonthRange(today);
@@ -1052,6 +1072,110 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     }
   }
 
+  async function handleUploadExpenseInvoice(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0] ?? null;
+    setExpenseInvoiceInputKey((current) => current + 1);
+    if (!file) return;
+    if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+      toast.error("Selecciona un PDF de factura.");
+      return;
+    }
+
+    setUploadingExpenseInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append("invoice", file);
+      const res = await fetch("/api/admin/finance/expense-invoices", {
+        method: "POST",
+        body: formData,
+      });
+      const json = (await res.json()) as {
+        autoExpenseCreated?: boolean;
+        expense?: FinanceExpense | null;
+        expenseInvoiceFile?: FinanceExpenseInvoiceFile;
+        expenses?: FinanceExpense[];
+        expenseInvoiceFiles?: FinanceExpenseInvoiceFile[];
+        dashboard?: FinanceDashboard;
+        error?: string;
+      };
+      if (!res.ok || !json.expenseInvoiceFile) {
+        throw new Error(json.error ?? "No se pudo cargar la factura.");
+      }
+
+      setData((current) => ({
+        ...current,
+        expenses:
+          json.expenses ??
+          (json.expense
+            ? [json.expense, ...current.expenses].sort((a, b) =>
+                b.date.localeCompare(a.date),
+              )
+            : current.expenses),
+        expenseInvoiceFiles:
+          json.expenseInvoiceFiles ??
+          [json.expenseInvoiceFile!, ...current.expenseInvoiceFiles].sort(
+            (a, b) => b.createdAt.localeCompare(a.createdAt),
+          ),
+        dashboard: json.dashboard ?? current.dashboard,
+      }));
+      toast.success(
+        json.autoExpenseCreated
+          ? "Factura leida y gasto registrado."
+          : "Factura guardada. Revisa el gasto manualmente.",
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error(
+        error instanceof Error ? error.message : "Error cargando factura.",
+      );
+    } finally {
+      setUploadingExpenseInvoice(false);
+    }
+  }
+
+  async function handleDeleteExpenseInvoice(file: FinanceExpenseInvoiceFile) {
+    setDeletingExpenseInvoiceId(file.id);
+    try {
+      const res = await fetch(`/api/admin/finance/expense-invoices/${file.id}`, {
+        method: "DELETE",
+      });
+      const json = (await res.json()) as {
+        expenses?: FinanceExpense[];
+        expenseInvoiceFiles?: FinanceExpenseInvoiceFile[];
+        dashboard?: FinanceDashboard;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(json.error ?? "No se pudo eliminar la factura.");
+      }
+
+      setData((current) => ({
+        ...current,
+        expenses:
+          json.expenses ??
+          current.expenses.filter((expense) => expense.id !== file.expenseId),
+        expenseInvoiceFiles:
+          json.expenseInvoiceFiles ??
+          current.expenseInvoiceFiles.filter((item) => item.id !== file.id),
+        dashboard: json.dashboard ?? current.dashboard,
+      }));
+      toast.success(
+        file.expenseId
+          ? "Factura y gasto asociado eliminados."
+          : "Factura eliminada.",
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error(
+        error instanceof Error ? error.message : "Error eliminando factura.",
+      );
+    } finally {
+      setDeletingExpenseInvoiceId(null);
+    }
+  }
+
   function startPaymentEdit(payment: FinancePayment) {
     setPaymentEdit({
       paymentId: payment.id,
@@ -1206,7 +1330,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
 
   return (
     <MotionPage>
-      <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 md:px-8">
+      <div className="app-page-container mx-auto w-full space-y-6 px-4 py-8 md:px-8">
         <header className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4 backdrop-blur">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <BrandLogo />
@@ -1564,7 +1688,27 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                       Se registra en calendario y cuentas actuales.
                     </p>
                   </div>
-                  <ReceiptText className="h-5 w-5 text-brand-accent" />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label
+                      className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-xs text-brand-text transition hover:bg-brand-accent/10 ${
+                        uploadingExpenseInvoice
+                          ? "pointer-events-none opacity-60"
+                          : ""
+                      }`}
+                    >
+                      <FileUp className="h-4 w-4" />
+                      {uploadingExpenseInvoice ? "Leyendo..." : "Cargar PDF"}
+                      <input
+                        key={expenseInvoiceInputKey}
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        disabled={uploadingExpenseInvoice}
+                        className="hidden"
+                        onChange={handleUploadExpenseInvoice}
+                      />
+                    </label>
+                    <ReceiptText className="h-5 w-5 text-brand-accent" />
+                  </div>
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-2">
                   <label className="block text-sm text-brand-muted">
@@ -1695,7 +1839,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
               </div>
             </section>
 
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
@@ -1716,27 +1860,37 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                   </span>
                 </div>
 
-                <div className="mt-5 grid gap-4 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                  <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
+                <div className="mt-5 space-y-4">
+                  <div className="rounded-xl border border-white/10 bg-black/20">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setInvoiceSettingsOpen((current) => !current)
+                      }
+                      className="flex w-full flex-col gap-2 p-3 text-left transition hover:bg-white/[0.03] sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <span className="flex items-center gap-2">
                         <Building2 className="h-4 w-4 text-brand-accent" />
-                        <h3 className="text-sm font-semibold text-brand-text">
+                        <span className="text-sm font-semibold text-brand-text">
                           Datos fiscales por defecto
-                        </h3>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleSaveInvoiceSettings}
-                        disabled={savingInvoiceSettings}
-                        className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10 disabled:opacity-60"
-                      >
-                        <Save className="h-3.5 w-3.5" />
-                        {savingInvoiceSettings ? "Guardando..." : "Guardar"}
-                      </button>
-                    </div>
-                    <div className="mt-3 grid gap-3 md:grid-cols-2">
-                      <label className="block text-sm text-brand-muted md:col-span-2">
+                        </span>
+                      </span>
+                      <span className="flex items-center gap-2 text-xs text-brand-muted">
+                        <span className="truncate">
+                          {data.invoiceSettings.businessName ||
+                            "Configurar emisor"}
+                        </span>
+                        {invoiceSettingsOpen ? (
+                          <ChevronUp className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )}
+                      </span>
+                    </button>
+                    {invoiceSettingsOpen ? (
+                      <div className="border-t border-white/10 p-3">
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      <label className="block text-sm text-brand-muted md:col-span-2 xl:col-span-3">
                         Nombre fiscal
                         <input
                           value={invoiceSettingsForm.businessName}
@@ -1775,7 +1929,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted md:col-span-2">
+                      <label className="block text-sm text-brand-muted md:col-span-2 xl:col-span-3">
                         Direccion fiscal
                         <input
                           value={invoiceSettingsForm.address}
@@ -1920,7 +2074,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted md:col-span-2">
+                      <label className="block text-sm text-brand-muted md:col-span-2 xl:col-span-3">
                         Metodo de pago
                         <input
                           value={invoiceSettingsForm.paymentMethod}
@@ -1933,7 +2087,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted md:col-span-2">
+                      <label className="block text-sm text-brand-muted md:col-span-2 xl:col-span-3">
                         IBAN
                         <input
                           value={invoiceSettingsForm.bankIban}
@@ -1946,7 +2100,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted md:col-span-2">
+                      <label className="block text-sm text-brand-muted md:col-span-2 xl:col-span-3">
                         Notas por defecto
                         <textarea
                           value={invoiceSettingsForm.notes}
@@ -1960,7 +2114,22 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                    </div>
+                        </div>
+                        <div className="mt-3 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={handleSaveInvoiceSettings}
+                            disabled={savingInvoiceSettings}
+                            className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10 disabled:opacity-60"
+                          >
+                            <Save className="h-3.5 w-3.5" />
+                            {savingInvoiceSettings
+                              ? "Guardando..."
+                              : "Guardar datos"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="rounded-xl border border-white/10 bg-black/20 p-3">
@@ -2392,6 +2561,93 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     </p>
                   ) : null}
                 </div>
+
+                <div className="mt-5 border-t border-white/10 pt-4">
+                  <div className="flex items-center gap-2">
+                    <FileUp className="h-5 w-5 text-brand-accent" />
+                    <h2 className="text-lg font-semibold text-brand-text">
+                      Facturas PDF cargadas
+                    </h2>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {data.expenseInvoiceFiles.slice(0, 10).map((file) => {
+                      const expense = data.expenses.find(
+                        (item) => item.id === file.expenseId,
+                      );
+                      return (
+                        <article
+                          key={file.id}
+                          className="rounded-xl border border-white/10 bg-black/20 p-3"
+                        >
+                          <p
+                            className="truncate text-sm font-semibold text-brand-text"
+                            title={file.fileName}
+                          >
+                            {expense?.description ||
+                              file.parsedSupplier ||
+                              file.fileName}
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                file.status === "expense-created"
+                                  ? "bg-emerald-400/15 text-emerald-100"
+                                  : "bg-amber-400/15 text-amber-100"
+                              }`}
+                            >
+                              {file.status === "expense-created"
+                                ? "Gasto registrado"
+                                : "Pendiente de revisar"}
+                            </span>
+                            <span className="text-xs text-brand-muted">
+                              {file.parsedDate
+                                ? formatDate(file.parsedDate)
+                                : "Fecha no detectada"}{" "}
+                              -{" "}
+                              {file.parsedAmountCents > 0
+                                ? formatCents(file.parsedAmountCents)
+                                : "Importe no detectado"}
+                            </span>
+                          </div>
+                          {file.parseError ? (
+                            <p className="mt-2 text-xs text-amber-100/80">
+                              {file.parseError}
+                            </p>
+                          ) : null}
+                          <div className="mt-3 flex flex-wrap justify-end gap-2">
+                            {file.webViewLink ? (
+                              <a
+                                href={file.webViewLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                                PDF
+                              </a>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteExpenseInvoice(file)}
+                              disabled={deletingExpenseInvoiceId === file.id}
+                              className="inline-flex items-center gap-1 rounded-lg border border-red-400/35 px-2.5 py-1.5 text-xs text-red-100 transition hover:bg-red-500/10 disabled:opacity-60"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {deletingExpenseInvoiceId === file.id
+                                ? "Eliminando..."
+                                : "Eliminar"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {!data.expenseInvoiceFiles.length ? (
+                      <p className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                        Sin facturas recibidas cargadas.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -2714,31 +2970,60 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                 </h2>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {data.expenses.slice(0, 9).map((expense) => (
-                  <article
-                    key={expense.id}
-                    className="rounded-xl border border-white/10 bg-black/20 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-brand-text">
-                          {expense.description}
-                        </p>
-                        <p className="mt-1 text-xs text-brand-muted">
-                          {expense.category} - {formatDate(expense.date)}
+                {data.expenses.slice(0, 9).map((expense) => {
+                  const invoiceFile = expenseInvoiceByExpenseId.get(expense.id);
+                  return (
+                    <article
+                      key={expense.id}
+                      className="rounded-xl border border-white/10 bg-black/20 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-brand-text">
+                            {expense.description}
+                          </p>
+                          <p className="mt-1 text-xs text-brand-muted">
+                            {expense.category} - {formatDate(expense.date)}
+                          </p>
+                        </div>
+                        <p className="shrink-0 text-sm font-semibold text-red-100">
+                          {formatCents(expense.amountCents, expense.currency)}
                         </p>
                       </div>
-                      <p className="shrink-0 text-sm font-semibold text-red-100">
-                        {formatCents(expense.amountCents, expense.currency)}
-                      </p>
-                    </div>
-                    {expense.notes ? (
-                      <p className="mt-2 text-xs text-brand-muted">
-                        {expense.notes}
-                      </p>
-                    ) : null}
-                  </article>
-                ))}
+                      {expense.notes ? (
+                        <p className="mt-2 text-xs text-brand-muted">
+                          {expense.notes}
+                        </p>
+                      ) : null}
+                      {invoiceFile ? (
+                        <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          {invoiceFile.webViewLink ? (
+                            <a
+                              href={invoiceFile.webViewLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              PDF
+                            </a>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteExpenseInvoice(invoiceFile)}
+                            disabled={deletingExpenseInvoiceId === invoiceFile.id}
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-400/35 px-2.5 py-1.5 text-xs text-red-100 transition hover:bg-red-500/10 disabled:opacity-60"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            {deletingExpenseInvoiceId === invoiceFile.id
+                              ? "Eliminando..."
+                              : "Eliminar"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })}
                 {!data.expenses.length ? (
                   <p className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
                     Sin gastos registrados.
