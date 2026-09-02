@@ -19,6 +19,8 @@ const COLORS = {
   white: "#FFFFFF"
 };
 
+let cachedLogoBuffer: Buffer | null | undefined;
+
 function formatDate(value: string): string {
   if (!value) return "-";
   const parsed = new Date(`${value}T00:00:00`);
@@ -45,10 +47,21 @@ function safeText(value: string): string {
   return value.trim() || "-";
 }
 
-function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number, size: number) {
+function getLogoBuffer(): Buffer | null {
+  if (cachedLogoBuffer !== undefined) return cachedLogoBuffer;
   const logoPath = path.join(process.cwd(), "public", "logo-bueno.png");
-  if (!fs.existsSync(logoPath)) return;
-  doc.image(logoPath, x, y, { fit: [size, size] });
+  cachedLogoBuffer = fs.existsSync(logoPath) ? fs.readFileSync(logoPath) : null;
+  return cachedLogoBuffer;
+}
+
+function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number, size: number) {
+  const logo = getLogoBuffer();
+  if (!logo) return;
+  try {
+    doc.image(logo, x, y, { fit: [size, size] });
+  } catch {
+    doc.circle(x + size / 2, y + size / 2, size / 2 - 3).strokeColor(COLORS.accent).lineWidth(1).stroke();
+  }
 }
 
 function drawAddressBlock(

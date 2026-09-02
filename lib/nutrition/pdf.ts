@@ -56,13 +56,23 @@ const MACRO_CHART_ITEMS: Array<{
   { key: "fatG", label: "Grasas", shortLabel: "G", color: "#FF6B4A" }
 ];
 
-function getLogoPath(): string | null {
+let cachedLogoBuffer: Buffer | null | undefined;
+
+function getLogoBuffer(): Buffer | null {
+  if (cachedLogoBuffer !== undefined) return cachedLogoBuffer;
   const pdfLogoPath = path.join(process.cwd(), "public", "logo-pdf.png");
-  if (fs.existsSync(pdfLogoPath)) return pdfLogoPath;
+  if (fs.existsSync(pdfLogoPath)) {
+    cachedLogoBuffer = fs.readFileSync(pdfLogoPath);
+    return cachedLogoBuffer;
+  }
   const transparentLogoPath = path.join(process.cwd(), "public", "logo-bueno.png");
-  if (fs.existsSync(transparentLogoPath)) return transparentLogoPath;
+  if (fs.existsSync(transparentLogoPath)) {
+    cachedLogoBuffer = fs.readFileSync(transparentLogoPath);
+    return cachedLogoBuffer;
+  }
   const fallbackLogoPath = path.join(process.cwd(), "public", "logoV1.png");
-  return fs.existsSync(fallbackLogoPath) ? fallbackLogoPath : null;
+  cachedLogoBuffer = fs.existsSync(fallbackLogoPath) ? fs.readFileSync(fallbackLogoPath) : null;
+  return cachedLogoBuffer;
 }
 
 function formatNumber(value: number, decimals = 1): string {
@@ -278,10 +288,10 @@ function drawPageBackground(doc: PDFKit.PDFDocument) {
       .stroke();
   }
 
-  const logoPath = getLogoPath();
-  if (logoPath) {
+  const logo = getLogoBuffer();
+  if (logo) {
     try {
-      doc.opacity(0.07).image(logoPath, doc.page.width - 230, doc.page.height - 230, {
+      doc.opacity(0.07).image(logo, doc.page.width - 230, doc.page.height - 230, {
         width: 190
       });
       doc.opacity(1);
@@ -293,11 +303,11 @@ function drawPageBackground(doc: PDFKit.PDFDocument) {
 }
 
 function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number, size: number) {
-  const logoPath = getLogoPath();
+  const logo = getLogoBuffer();
   doc.save();
-  if (logoPath) {
+  if (logo) {
     try {
-      doc.image(logoPath, x, y, {
+      doc.image(logo, x, y, {
         fit: [size, size],
         align: "center",
         valign: "center"
