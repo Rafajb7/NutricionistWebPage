@@ -79,6 +79,7 @@ export type NutritionPlanSummary = {
   targetProteinG: number;
   targetCarbsG: number;
   targetFatG: number;
+  targetCaloriesKcal: number;
   notes: string;
   supplementation: string;
   recommendations: string;

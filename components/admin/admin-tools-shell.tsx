@@ -20,6 +20,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
+import { parseHeightCmInput, type AthleteSex } from "@/lib/athlete-profile";
 import { DEFAULT_FINANCE_PLAN_OPTIONS } from "@/lib/finance/types";
 import type { NutritionChangeRequest } from "@/lib/nutrition/types";
 
@@ -37,6 +38,9 @@ type AdminUser = {
   name: string;
   email: string;
   permission: "user" | "admin";
+  birthDate: string;
+  sex: AthleteSex;
+  heightCm: number | null;
 };
 
 type AdminCalendarEvent = {
@@ -131,6 +135,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   const [newUserUsername, setNewUserUsername] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserBirthDate, setNewUserBirthDate] = useState("");
+  const [newUserSex, setNewUserSex] = useState<AthleteSex>("");
+  const [newUserHeightCm, setNewUserHeightCm] = useState("");
   const [newUserPermission, setNewUserPermission] = useState<"user" | "admin">(
     "user",
   );
@@ -373,6 +380,19 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       toast.error("Indica el importe financiero acordado.");
       return;
     }
+    const normalizedNewUserHeight = parseHeightCmInput(newUserHeightCm);
+    if (newUserPermission === "user") {
+      if (
+        !newUserBirthDate ||
+        !newUserSex ||
+        normalizedNewUserHeight === null ||
+        normalizedNewUserHeight < 50 ||
+        normalizedNewUserHeight > 260
+      ) {
+        toast.error("Fecha de nacimiento, sexo y altura son obligatorios para atletas.");
+        return;
+      }
+    }
 
     setCreatingUser(true);
     try {
@@ -384,6 +404,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
           username: newUserUsername,
           email: newUserEmail || undefined,
           password: newUserPassword,
+          birthDate: newUserBirthDate,
+          sex: newUserSex,
+          heightCm: normalizedNewUserHeight ?? undefined,
           permission: newUserPermission,
           finance: newUserFinanceEnabled
             ? {
@@ -436,6 +459,9 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       setNewUserUsername("");
       setNewUserEmail("");
       setNewUserPassword("");
+      setNewUserBirthDate("");
+      setNewUserSex("");
+      setNewUserHeightCm("");
       setNewUserPermission("user");
       setNewUserFinanceEnabled(false);
       setNewUserFinancePlanKey("monthly");
@@ -789,6 +815,47 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
                   </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm text-brand-muted">
+                      Fecha nacimiento
+                      <input
+                        type="date"
+                        value={newUserBirthDate}
+                        onChange={(event) =>
+                          setNewUserBirthDate(event.target.value)
+                        }
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      />
+                    </label>
+                    <label className="block text-sm text-brand-muted">
+                      Sexo
+                      <select
+                        value={newUserSex}
+                        onChange={(event) =>
+                          setNewUserSex(event.target.value as AthleteSex)
+                        }
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      >
+                        <option value="">Seleccionar</option>
+                        <option value="male">Hombre</option>
+                        <option value="female">Mujer</option>
+                      </select>
+                    </label>
+                    <label className="block text-sm text-brand-muted sm:col-span-2">
+                      Altura (cm)
+                      <input
+                        type="number"
+                        min="50"
+                        max="260"
+                        step="0.1"
+                        value={newUserHeightCm}
+                        onChange={(event) =>
+                          setNewUserHeightCm(event.target.value)
+                        }
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                      />
+                    </label>
+                  </div>
                   <label className="block text-sm text-brand-muted">
                     Contraseña inicial
                     <input

@@ -149,6 +149,9 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
     targetProteinG: Number.isFinite(plan.targetProteinG) ? Math.max(0, Math.round(plan.targetProteinG)) : 0,
     targetCarbsG: Number.isFinite(plan.targetCarbsG) ? Math.max(0, Math.round(plan.targetCarbsG)) : 0,
     targetFatG: Number.isFinite(plan.targetFatG) ? Math.max(0, Math.round(plan.targetFatG)) : 0,
+    targetCaloriesKcal: Number.isFinite(plan.targetCaloriesKcal)
+      ? Math.max(0, Math.round(plan.targetCaloriesKcal))
+      : 0,
     meals: meals.map((meal) => ({
       ...meal,
       notes: meal.notes ?? "",

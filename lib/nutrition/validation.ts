@@ -188,6 +188,7 @@ export const nutritionPlanSaveSchema = z.object({
   targetProteinG: z.coerce.number().min(0).max(2000),
   targetCarbsG: z.coerce.number().min(0).max(3000),
   targetFatG: z.coerce.number().min(0).max(1000),
+  targetCaloriesKcal: z.coerce.number().int().min(0).max(20000).optional().default(0),
   notes: z.string().max(3000).optional().default(""),
   supplementation: z.string().max(3000).optional().default(""),
   recommendations: z.string().max(3000).optional().default(""),

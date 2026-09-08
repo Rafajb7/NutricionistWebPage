@@ -12,6 +12,11 @@ import {
   isGoogleRateLimitError,
   withGoogleApiRetry
 } from "@/lib/google/retry";
+import {
+  normalizeAthleteSex,
+  normalizeHeightCm,
+  type AthleteSex
+} from "@/lib/athlete-profile";
 import type { RevisionRow } from "@/lib/google/types";
 import { logError } from "@/lib/logger";
 import { DEFAULT_EXERCISE_CATALOG } from "@/lib/routines/default-exercises";
@@ -23,6 +28,9 @@ type AppUser = {
   password: string;
   email: string;
   permission: "user" | "admin";
+  birthDate: string;
+  sex: AthleteSex;
+  heightCm: number | null;
   passwordColumn: number;
 };
 
@@ -32,6 +40,9 @@ type UsersSheetColumns = {
   nameCol: number;
   emailCol: number;
   permissionCol: number;
+  birthDateCol: number;
+  sexCol: number;
+  heightCmCol: number;
 };
 
 export type RoutineExercise = {
@@ -221,6 +232,22 @@ function parseUserPermission(value: string | undefined): "user" | "admin" {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "admin") return "admin";
   return "user";
+}
+
+function findHeaderIndex(headers: string[], aliases: string[]): number {
+  return headers.findIndex((header) => aliases.includes(header));
+}
+
+function getLastHeaderIndex(headers: string[]): number {
+  for (let index = headers.length - 1; index >= 0; index -= 1) {
+    if (String(headers[index] ?? "").trim()) return index;
+  }
+  return -1;
+}
+
+function parseUserHeightCm(value: string | undefined): number | null {
+  const parsed = parseNumber(value);
+  return normalizeHeightCm(parsed);
 }
 
 function getUsernameVariants(username: string): Set<string> {
@@ -891,21 +918,37 @@ async function getValuesBySheetName(
 
 async function readUsersFromSheetUncached(): Promise<AppUser[]> {
   const env = getEnv();
-  const values = await getValuesBySheetName(env.GOOGLE_USERS_SHEET_NAME, "A1:Z");
+  const values = await getValuesBySheetName(env.GOOGLE_USERS_SHEET_NAME, "A1:ZZ");
   if (!values.length) return [];
 
   const headers = values[0].map(normalizeHeader);
-  const usernameCol = headers.findIndex((h) =>
-    ["usuario", "username", "telegram", "user"].includes(h)
-  );
-  const passwordCol = headers.findIndex((h) =>
-    ["contrasenas", "contrasena", "password"].includes(h)
-  );
-  const nameCol = headers.findIndex((h) => ["nombre", "name"].includes(h));
-  const emailCol = headers.findIndex((h) => ["email", "correo", "mail"].includes(h));
-  const permissionCol = headers.findIndex((h) =>
-    ["permisos", "permiso", "permissions", "permission", "rol", "role"].includes(h)
-  );
+  const usernameCol = findHeaderIndex(headers, ["usuario", "username", "telegram", "user"]);
+  const passwordCol = findHeaderIndex(headers, ["contrasenas", "contrasena", "password"]);
+  const nameCol = findHeaderIndex(headers, ["nombre", "name"]);
+  const emailCol = findHeaderIndex(headers, ["email", "correo", "mail"]);
+  const permissionCol = findHeaderIndex(headers, [
+    "permisos",
+    "permiso",
+    "permissions",
+    "permission",
+    "rol",
+    "role"
+  ]);
+  const birthDateCol = findHeaderIndex(headers, [
+    "fecha nacimiento",
+    "fecha de nacimiento",
+    "nacimiento",
+    "birth date",
+    "birthdate",
+    "date of birth"
+  ]);
+  const sexCol = findHeaderIndex(headers, ["sexo", "sex", "genero", "gender"]);
+  const heightCmCol = findHeaderIndex(headers, [
+    "altura cm",
+    "altura",
+    "height cm",
+    "height"
+  ]);
 
   if (usernameCol === -1 || passwordCol === -1 || nameCol === -1) {
     throw new Error(
@@ -922,6 +965,9 @@ async function readUsersFromSheetUncached(): Promise<AppUser[]> {
       password: row[passwordCol]?.trim() ?? "",
       email: emailCol >= 0 ? row[emailCol]?.trim() ?? "" : "",
       permission: parseUserPermission(permissionCol >= 0 ? row[permissionCol] : undefined),
+      birthDate: birthDateCol >= 0 ? row[birthDateCol]?.trim() ?? "" : "",
+      sex: normalizeAthleteSex(sexCol >= 0 ? row[sexCol] : undefined),
+      heightCm: heightCmCol >= 0 ? parseUserHeightCm(row[heightCmCol]) : null,
       passwordColumn: passwordCol
     }))
     .filter((u) => u.username);
@@ -969,24 +1015,68 @@ async function getUsersSheetContext(): Promise<{
   const env = getEnv();
   const spreadsheetId = await resolveSpreadsheetIdByName(env.GOOGLE_USERS_SHEET_NAME);
   const worksheetName = await getFirstWorksheetTitle(spreadsheetId);
-  const values = await getValuesBySheetName(env.GOOGLE_USERS_SHEET_NAME, "A1:Z1", worksheetName);
-  const headers = (values[0] ?? []).map(normalizeHeader);
+  const values = await getValuesBySheetName(env.GOOGLE_USERS_SHEET_NAME, "A1:ZZ1", worksheetName);
+  const rawHeaders = (values[0] ?? []).map((value) => String(value ?? ""));
+  const headers = rawHeaders.map(normalizeHeader);
 
-  const usernameCol = headers.findIndex((h) =>
-    ["usuario", "username", "telegram", "user"].includes(h)
-  );
-  const passwordCol = headers.findIndex((h) =>
-    ["contrasenas", "contrasena", "password"].includes(h)
-  );
-  const nameCol = headers.findIndex((h) => ["nombre", "name"].includes(h));
-  const emailCol = headers.findIndex((h) => ["email", "correo", "mail"].includes(h));
-  const permissionCol = headers.findIndex((h) =>
-    ["permisos", "permiso", "permissions", "permission", "rol", "role"].includes(h)
-  );
+  const usernameCol = findHeaderIndex(headers, ["usuario", "username", "telegram", "user"]);
+  const passwordCol = findHeaderIndex(headers, ["contrasenas", "contrasena", "password"]);
+  const nameCol = findHeaderIndex(headers, ["nombre", "name"]);
+  const emailCol = findHeaderIndex(headers, ["email", "correo", "mail"]);
+  const permissionCol = findHeaderIndex(headers, [
+    "permisos",
+    "permiso",
+    "permissions",
+    "permission",
+    "rol",
+    "role"
+  ]);
 
   if (usernameCol === -1 || passwordCol === -1 || nameCol === -1) {
     throw new Error(
       'Users sheet must include "Nombre", "Usuario" and "contrasenas" columns.'
+    );
+  }
+
+  const nextHeaders = [...rawHeaders];
+  let nextColumnIndex = Math.max(rawHeaders.length, getLastHeaderIndex(rawHeaders) + 1);
+  let headerUpdated = false;
+  const ensureOptionalColumn = (header: string, aliases: string[]) => {
+    const existingIndex = findHeaderIndex(nextHeaders.map(normalizeHeader), aliases);
+    if (existingIndex >= 0) return existingIndex;
+    const index = nextColumnIndex;
+    nextColumnIndex += 1;
+    nextHeaders[index] = header;
+    headerUpdated = true;
+    return index;
+  };
+
+  const birthDateCol = ensureOptionalColumn("Fecha nacimiento", [
+    "fecha nacimiento",
+    "fecha de nacimiento",
+    "nacimiento",
+    "birth date",
+    "birthdate",
+    "date of birth"
+  ]);
+  const sexCol = ensureOptionalColumn("Sexo", ["sexo", "sex", "genero", "gender"]);
+  const heightCmCol = ensureOptionalColumn("Altura cm", [
+    "altura cm",
+    "altura",
+    "height cm",
+    "height"
+  ]);
+
+  if (headerUpdated) {
+    const sheets = await getSheetsClient();
+    const endCol = indexToA1Column(nextHeaders.length - 1);
+    await withGoogleApiRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `'${worksheetName}'!A1:${endCol}1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [nextHeaders] }
+      })
     );
   }
 
@@ -998,7 +1088,10 @@ async function getUsersSheetContext(): Promise<{
       passwordCol,
       nameCol,
       emailCol,
-      permissionCol
+      permissionCol,
+      birthDateCol,
+      sexCol,
+      heightCmCol
     }
   };
 }
@@ -1009,6 +1102,9 @@ export async function createUserInSheet(input: {
   passwordHash: string;
   email?: string;
   permission: "user" | "admin";
+  birthDate?: string;
+  sex?: AthleteSex;
+  heightCm?: number | null;
 }): Promise<void> {
   const context = await getUsersSheetContext();
   const sheets = await getSheetsClient();
@@ -1017,7 +1113,10 @@ export async function createUserInSheet(input: {
     context.columns.passwordCol,
     context.columns.nameCol,
     context.columns.emailCol,
-    context.columns.permissionCol
+    context.columns.permissionCol,
+    context.columns.birthDateCol,
+    context.columns.sexCol,
+    context.columns.heightCmCol
   );
   const row = Array.from({ length: maxCol + 1 }, () => "");
   row[context.columns.nameCol] = input.name.trim();
@@ -1029,6 +1128,10 @@ export async function createUserInSheet(input: {
   if (context.columns.permissionCol >= 0) {
     row[context.columns.permissionCol] = input.permission;
   }
+  row[context.columns.birthDateCol] = (input.birthDate ?? "").trim();
+  row[context.columns.sexCol] = normalizeAthleteSex(input.sex);
+  row[context.columns.heightCmCol] =
+    input.heightCm !== undefined && input.heightCm !== null ? String(input.heightCm) : "";
 
   const endCol = indexToA1Column(maxCol);
   await sheets.spreadsheets.values.append({
@@ -1106,6 +1209,9 @@ export async function updateUserInSheet(input: {
   name?: string;
   email?: string;
   permission?: "user" | "admin";
+  birthDate?: string;
+  sex?: AthleteSex;
+  heightCm?: number | null;
 }): Promise<AppUser | null> {
   const cleanUsername = normalizeUsername(input.username).toLowerCase();
   if (!cleanUsername) return null;
@@ -1120,6 +1226,9 @@ export async function updateUserInSheet(input: {
   const updates: Promise<void>[] = [];
   const nextName = input.name?.trim();
   const nextEmail = input.email?.trim();
+  const nextBirthDate = input.birthDate?.trim();
+  const nextSex = input.sex === undefined ? undefined : normalizeAthleteSex(input.sex);
+  const nextHeightCm = input.heightCm;
 
   if (nextName !== undefined) {
     updates.push(
@@ -1154,6 +1263,39 @@ export async function updateUserInSheet(input: {
       })
     );
   }
+  if (nextBirthDate !== undefined) {
+    updates.push(
+      updateUserSheetCell({
+        spreadsheetId: context.spreadsheetId,
+        worksheetName: context.worksheetName,
+        rowNumber: targetUser.rowNumber,
+        columnIndex: context.columns.birthDateCol,
+        value: nextBirthDate
+      })
+    );
+  }
+  if (nextSex !== undefined) {
+    updates.push(
+      updateUserSheetCell({
+        spreadsheetId: context.spreadsheetId,
+        worksheetName: context.worksheetName,
+        rowNumber: targetUser.rowNumber,
+        columnIndex: context.columns.sexCol,
+        value: nextSex
+      })
+    );
+  }
+  if (nextHeightCm !== undefined) {
+    updates.push(
+      updateUserSheetCell({
+        spreadsheetId: context.spreadsheetId,
+        worksheetName: context.worksheetName,
+        rowNumber: targetUser.rowNumber,
+        columnIndex: context.columns.heightCmCol,
+        value: nextHeightCm === null ? "" : String(nextHeightCm)
+      })
+    );
+  }
 
   await Promise.all(updates);
   invalidateUsersSheetCache();
@@ -1162,7 +1304,10 @@ export async function updateUserInSheet(input: {
     ...targetUser,
     name: nextName ?? targetUser.name,
     email: nextEmail ?? targetUser.email,
-    permission: input.permission ?? targetUser.permission
+    permission: input.permission ?? targetUser.permission,
+    birthDate: nextBirthDate ?? targetUser.birthDate,
+    sex: nextSex ?? targetUser.sex,
+    heightCm: nextHeightCm !== undefined ? nextHeightCm : targetUser.heightCm
   };
 }
 

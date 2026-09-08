@@ -50,7 +50,10 @@ export async function GET() {
       .map((user) => ({
         username: normalizeUsername(user.username),
         name: user.name.trim(),
-        email: user.email.trim()
+        email: user.email.trim(),
+        birthDate: user.birthDate,
+        sex: user.sex,
+        heightCm: user.heightCm
       }))
       .filter((user) => user.username)
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
