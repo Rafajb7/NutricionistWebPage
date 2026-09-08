@@ -5,6 +5,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { buildCreateFinanceContractInput } from "@/lib/finance/contract-input";
 import { financeContractOnUserCreateSchema } from "@/lib/finance/validation";
 import { createFinanceContractWithPayments, listFinanceRecords } from "@/lib/google/finance";
+import { parseHeightCmInput } from "@/lib/athlete-profile";
 import {
   createUserInSheet,
   deleteUserFromSheetByUsername,
@@ -17,14 +18,52 @@ function normalizeUsername(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
 }
 
-const createUserSchema = z.object({
-  name: z.string().min(2).max(120),
-  username: z.string().min(2).max(80),
-  email: z.string().email().max(200).optional(),
-  password: z.string().min(8).max(200),
-  permission: z.enum(["user", "admin"]).default("user"),
-  finance: financeContractOnUserCreateSchema.optional()
-});
+const optionalIsoDateSchema = z
+  .union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.literal("")])
+  .optional()
+  .default("");
+
+const optionalHeightCmSchema = z.preprocess((value) => {
+  const parsed = parseHeightCmInput(value);
+  return parsed ?? (value === undefined || value === null || value === "" ? null : value);
+}, z.number().min(50).max(260).nullable().optional().default(null));
+
+const createUserSchema = z
+  .object({
+    name: z.string().min(2).max(120),
+    username: z.string().min(2).max(80),
+    email: z.string().email().max(200).optional(),
+    password: z.string().min(8).max(200),
+    permission: z.enum(["user", "admin"]).default("user"),
+    birthDate: optionalIsoDateSchema,
+    sex: z.enum(["", "male", "female"]).optional().default(""),
+    heightCm: optionalHeightCmSchema,
+    finance: financeContractOnUserCreateSchema.optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.permission !== "user") return;
+    if (!value.birthDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["birthDate"],
+        message: "Birth date is required for athletes."
+      });
+    }
+    if (!value.sex) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sex"],
+        message: "Sex is required for athletes."
+      });
+    }
+    if (value.heightCm === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["heightCm"],
+        message: "Height is required for athletes."
+      });
+    }
+  });
 
 const deleteUserSchema = z.object({
   username: z.string().min(2).max(80)
@@ -41,7 +80,10 @@ export async function GET() {
         username: normalizeUsername(user.username),
         name: user.name.trim(),
         email: user.email.trim(),
-        permission: user.permission
+        permission: user.permission,
+        birthDate: user.birthDate,
+        sex: user.sex,
+        heightCm: user.heightCm
       }))
       .filter((user) => user.username.length > 0)
       .sort((a, b) => a.username.localeCompare(b.username, "es"));
@@ -99,7 +141,10 @@ export async function POST(req: Request) {
       username: normalizedUsername,
       email: parsed.data.email?.trim(),
       permission: parsed.data.permission,
-      passwordHash
+      passwordHash,
+      birthDate: parsed.data.birthDate,
+      sex: parsed.data.sex,
+      heightCm: parsed.data.heightCm
     });
 
     let financeWarning = "";
@@ -130,7 +175,10 @@ export async function POST(req: Request) {
         username: normalizedUsername,
         name: parsed.data.name.trim(),
         email: parsed.data.email?.trim() ?? "",
-        permission: parsed.data.permission
+        permission: parsed.data.permission,
+        birthDate: parsed.data.birthDate,
+        sex: parsed.data.sex,
+        heightCm: parsed.data.heightCm
       }
     });
   } catch (error) {

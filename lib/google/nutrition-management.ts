@@ -168,7 +168,8 @@ const PLAN_HEADERS = [
   "Drive file id publicado",
   "Version",
   "Suplementacion",
-  "Recomendaciones"
+  "Recomendaciones",
+  "Objetivo kcal"
 ];
 
 const MEAL_HEADERS = [
@@ -925,6 +926,7 @@ function parsePlan(row: string[]): NutritionPlanSummary | null {
     targetProteinG: parseNumber(row[5]),
     targetCarbsG: parseNumber(row[6]),
     targetFatG: parseNumber(row[7]),
+    targetCaloriesKcal: parseInteger(row[16]),
     notes: String(row[8] ?? "").trim(),
     supplementation: String(row[14] ?? "").trim(),
     recommendations: String(row[15] ?? "").trim(),
@@ -1282,7 +1284,8 @@ function serializePlan(plan: NutritionPlanSummary): Array<string | number> {
     plan.publishedFileId,
     plan.versionNumber,
     plan.supplementation,
-    plan.recommendations
+    plan.recommendations,
+    plan.targetCaloriesKcal
   ];
 }
 
@@ -2195,6 +2198,7 @@ export async function createNutritionPlanForAthlete(input: {
     targetProteinG: 0,
     targetCarbsG: 0,
     targetFatG: 0,
+    targetCaloriesKcal: 0,
     notes: "",
     supplementation: "",
     recommendations: "",
@@ -2244,6 +2248,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
     targetProteinG: clampNumber(input.targetProteinG, 0, 2000),
     targetCarbsG: clampNumber(input.targetCarbsG, 0, 3000),
     targetFatG: clampNumber(input.targetFatG, 0, 1000),
+    targetCaloriesKcal: Math.round(clampNumber(input.targetCaloriesKcal, 0, 20000)),
     notes: input.notes.trim().slice(0, 3000),
     supplementation: input.supplementation.trim().slice(0, 3000),
     recommendations: input.recommendations.trim().slice(0, 3000),

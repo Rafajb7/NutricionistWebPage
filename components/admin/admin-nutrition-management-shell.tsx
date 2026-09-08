@@ -11,8 +11,10 @@ import {
 } from "react";
 import { useSearchParams } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
+  Calculator,
   Check,
   Copy,
   Download,
@@ -36,6 +38,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
+import { parseHeightCmInput, type AthleteSex } from "@/lib/athlete-profile";
 import {
   calculateEntryTotals,
   calculateMacroPercent,
@@ -47,6 +50,15 @@ import {
   getMacroRemaining,
   roundNutritionValue,
 } from "@/lib/nutrition/calculations";
+import {
+  ENERGY_FORMULA_OPTIONS,
+  PAL_OPTIONS,
+  calculateEnergyNeeds,
+  getDefaultEnergyFormula,
+  getEnergyFormulaLabel,
+  type EnergyCalculationResult,
+  type EnergyFormula,
+} from "@/lib/nutrition/energy-calculator";
 import {
   ALLERGY_RESTRICTION_OPTIONS,
   DIET_RESTRICTION_OPTIONS,
@@ -95,6 +107,26 @@ type Athlete = {
   username: string;
   name: string;
   email: string;
+  birthDate: string;
+  sex: AthleteSex;
+  heightCm: number | null;
+};
+
+type AthleteEnergyDataResponse = {
+  athlete?: Athlete;
+  latestRevision?: {
+    weightKg: {
+      value: number;
+      date: string;
+      question: string;
+    } | null;
+    bodyFatPercent: {
+      value: number;
+      date: string;
+      question: string;
+    } | null;
+  };
+  error?: string;
 };
 
 type LoadResponse = {
@@ -137,6 +169,16 @@ type RestrictionFormState = {
   notes: string;
 };
 
+type EnergyCalculatorFormState = {
+  birthDate: string;
+  sex: AthleteSex;
+  weightKg: string;
+  heightCm: string;
+  bodyFatPercent: string;
+  pal: string;
+  formula: EnergyFormula;
+};
+
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type FoodSortKey = "category" | "kcal";
 type SortDirection = "asc" | "desc";
@@ -150,6 +192,18 @@ const EMPTY_FOOD_FORM: FoodFormState = {
   sodiumPer100g: "",
   waterPer100g: "",
   restrictionTags: [],
+};
+
+const DEFAULT_ENERGY_PAL = 1.75;
+
+const EMPTY_ENERGY_FORM: EnergyCalculatorFormState = {
+  birthDate: "",
+  sex: "",
+  weightKg: "",
+  heightCm: "",
+  bodyFatPercent: "",
+  pal: String(DEFAULT_ENERGY_PAL),
+  formula: "mifflin_st_jeor",
 };
 
 const CHANGE_REQUEST_POLL_INTERVAL_MS = 2 * 60_000;
@@ -245,6 +299,7 @@ function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
     targetProteinG: clampInteger(plan.targetProteinG, 0, 2000),
     targetCarbsG: clampInteger(plan.targetCarbsG, 0, 3000),
     targetFatG: clampInteger(plan.targetFatG, 0, 1000),
+    targetCaloriesKcal: clampInteger(plan.targetCaloriesKcal ?? 0, 0, 20000),
     meals: meals.map((meal) => ({
       ...meal,
       entries: (Array.isArray(meal.entries) ? meal.entries : [])
@@ -288,6 +343,23 @@ function formatNumber(value: number, decimals = 1): string {
     minimumFractionDigits: rounded % 1 === 0 ? 0 : decimals,
     maximumFractionDigits: decimals,
   }).format(rounded);
+}
+
+function parseOptionalNumberInput(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toDecimalInputValue(value: number | null | undefined, decimals = 1): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "";
+  return String(roundNutritionValue(value, decimals));
+}
+
+function toIntegerInputValue(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "";
+  return String(Math.round(value));
 }
 
 function formatDate(value: string): string {
@@ -697,7 +769,8 @@ function MacroProgress(props: {
   const unit = props.unit ?? "g";
   const remaining = getMacroRemaining(props.current, props.target);
   const percent = calculateMacroPercent(props.current, props.target);
-  const isOver = remaining < 0;
+  const hasTarget = Number.isFinite(props.target) && props.target > 0;
+  const isOver = hasTarget && remaining < 0;
   const width = props.target > 0 ? Math.min(100, Math.max(4, percent)) : 0;
 
   return (
@@ -708,7 +781,8 @@ function MacroProgress(props: {
             {props.label}
           </p>
           <p className="mt-1 text-lg font-bold text-brand-text">
-            {formatNumber(props.current)} / {formatNumber(props.target)} {unit}
+            {formatNumber(props.current, unit === "kcal" ? 0 : 1)} /{" "}
+            {hasTarget ? formatNumber(props.target, unit === "kcal" ? 0 : 1) : "-"} {unit}
           </p>
         </div>
         <span
@@ -718,7 +792,7 @@ function MacroProgress(props: {
               : "border-brand-accent/40 bg-brand-accent/10 text-brand-text"
           }`}
         >
-          {percent}%
+          {hasTarget ? `${percent}%` : "-"}
         </span>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
@@ -732,7 +806,9 @@ function MacroProgress(props: {
       >
         {isOver
           ? `+${formatNumber(Math.abs(remaining))} ${unit} sobre objetivo`
-          : `Faltan ${formatNumber(Math.max(remaining, 0))} ${unit}`}
+          : hasTarget
+            ? `Faltan ${formatNumber(Math.max(remaining, 0), unit === "kcal" ? 0 : 1)} ${unit}`
+            : "Sin objetivo definido"}
       </p>
     </div>
   );
@@ -845,6 +921,305 @@ function FoodRestrictionTagPicker(props: {
   );
 }
 
+function EnergyCalculatorPanel(props: {
+  athlete: Athlete | null;
+  form: EnergyCalculatorFormState;
+  calculation: EnergyCalculationResult;
+  loading: boolean;
+  targetDraft: string;
+  acceptedTargetKcal: number;
+  disabled: boolean;
+  onFormChange: <K extends keyof EnergyCalculatorFormState>(
+    key: K,
+    value: EnergyCalculatorFormState[K],
+  ) => void;
+  onTargetChange: (value: string) => void;
+  onAcceptTarget: () => void;
+}) {
+  const selectedPal = PAL_OPTIONS.find(
+    (option) => String(option.value) === props.form.pal,
+  );
+  const hasCalculation =
+    props.calculation.bmrKcal !== null && props.calculation.tdeeKcal !== null;
+  const acceptedTarget = props.acceptedTargetKcal > 0;
+  const hasMissingData = !props.loading && props.calculation.errors.length > 0;
+  const fieldClass =
+    "mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-black/20 px-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-50";
+  const metricItems = [
+    {
+      label: "Edad",
+      value: props.calculation.age === null ? "-" : `${props.calculation.age} anos`,
+    },
+    {
+      label: "MLG",
+      value:
+        props.calculation.leanMassKg === null
+          ? "-"
+          : `${formatNumber(props.calculation.leanMassKg)} kg`,
+    },
+    {
+      label: "TMB",
+      value: hasCalculation
+        ? `${formatNumber(props.calculation.bmrKcal ?? 0, 0)} kcal`
+        : "-",
+    },
+    {
+      label: "GET",
+      value: hasCalculation
+        ? `${formatNumber(props.calculation.tdeeKcal ?? 0, 0)} kcal/dia`
+        : "-",
+    },
+    {
+      label: "Formula",
+      value: getEnergyFormulaLabel(props.form.formula),
+    },
+    {
+      label: "PAL",
+      value: props.form.pal || "-",
+    },
+  ];
+
+  return (
+    <section
+      className={`rounded-2xl border p-3 sm:p-4 ${
+        hasMissingData
+          ? "border-amber-300/35 bg-amber-500/5"
+          : "border-brand-accent/20 bg-brand-surface/70"
+      }`}
+    >
+      <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Calculator
+              className={`h-5 w-5 ${
+                hasMissingData ? "text-amber-200" : "text-brand-accent"
+              }`}
+            />
+            <h2
+              className={`text-base font-semibold ${
+                hasMissingData ? "text-amber-100" : "text-brand-text"
+              }`}
+            >
+              Calculadora kcal{hasMissingData ? " - faltan datos" : ""}
+            </h2>
+            {props.loading ? (
+              <span className="rounded-full border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-brand-muted">
+                Cargando datos
+              </span>
+            ) : hasMissingData ? (
+              <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-amber-300/35 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-100">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">
+                  Faltan: {props.calculation.errors.join(", ")}
+                </span>
+              </span>
+            ) : (
+              <span className="rounded-full border border-emerald-300/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold text-emerald-100">
+                GET {formatNumber(props.calculation.tdeeKcal ?? 0, 0)} kcal/dia
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-brand-muted">
+            TMB x PAL. El PAL ya incluye actividad global; no sumes otra vez
+            las kcal del entrenamiento.
+          </p>
+          {selectedPal ? (
+            <p className="mt-1 text-[11px] text-brand-muted">
+              {selectedPal.description}
+            </p>
+          ) : null}
+        </div>
+        {props.calculation.warnings.length ? (
+          <div className="flex max-w-xl flex-wrap gap-1.5">
+            {props.calculation.warnings.map((warning) => (
+              <span
+                key={warning}
+                className="rounded-full border border-amber-300/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100"
+              >
+                {warning}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-8">
+          <label className="block text-sm text-brand-muted">
+            Fecha nacimiento
+            <input
+              type="date"
+              value={props.form.birthDate}
+              onChange={(event) => props.onFormChange("birthDate", event.target.value)}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            />
+          </label>
+          <label className="block text-sm text-brand-muted">
+            Sexo
+            <select
+              value={props.form.sex}
+              onChange={(event) => props.onFormChange("sex", event.target.value as AthleteSex)}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            >
+              <option value="">Seleccionar</option>
+              <option value="male">Hombre</option>
+              <option value="female">Mujer</option>
+            </select>
+          </label>
+          <label className="block text-sm text-brand-muted">
+            Peso actual (kg)
+            <input
+              type="number"
+              min="1"
+              step="0.1"
+              value={props.form.weightKg}
+              onChange={(event) => props.onFormChange("weightKg", event.target.value)}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            />
+          </label>
+          <label className="block text-sm text-brand-muted">
+            Altura (cm)
+            <input
+              type="number"
+              min="1"
+              step="0.1"
+              value={props.form.heightCm}
+              onChange={(event) => props.onFormChange("heightCm", event.target.value)}
+              onBlur={() => {
+                const normalizedHeight = parseHeightCmInput(props.form.heightCm);
+                if (normalizedHeight !== null) {
+                  props.onFormChange("heightCm", toDecimalInputValue(normalizedHeight, 1));
+                }
+              }}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            />
+          </label>
+          <label className="block text-sm text-brand-muted">
+            % grasa corporal
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.1"
+              value={props.form.bodyFatPercent}
+              onChange={(event) => props.onFormChange("bodyFatPercent", event.target.value)}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            />
+          </label>
+          <label className="block text-sm text-brand-muted">
+            Formula TMB
+            <select
+              value={props.form.formula}
+              onChange={(event) =>
+                props.onFormChange("formula", event.target.value as EnergyFormula)
+              }
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            >
+              {ENERGY_FORMULA_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                  {option.requiresBodyFat ? " (% grasa)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm text-brand-muted">
+            PAL
+            <select
+              value={PAL_OPTIONS.some((option) => String(option.value) === props.form.pal) ? props.form.pal : "custom"}
+              onChange={(event) => {
+                if (event.target.value === "custom") return;
+                props.onFormChange("pal", event.target.value);
+              }}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            >
+              {PAL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+              <option value="custom">Manual</option>
+            </select>
+          </label>
+          <label className="block text-sm text-brand-muted">
+            PAL manual
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={props.form.pal}
+              onChange={(event) => props.onFormChange("pal", event.target.value)}
+              disabled={!props.athlete || props.loading}
+              className={fieldClass}
+            />
+          </label>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-wrap gap-1.5">
+          {metricItems.map((item) => (
+            <span
+              key={item.label}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-brand-muted"
+            >
+              {item.label}
+              <strong className="text-brand-text">{item.value}</strong>
+            </span>
+          ))}
+          <span
+            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] ${
+              acceptedTarget
+                ? "border-brand-accent/35 bg-brand-accent/10 text-brand-text"
+                : "border-white/10 bg-black/20 text-brand-muted"
+            }`}
+          >
+            Kcal aceptadas
+            <strong>
+              {acceptedTarget
+                ? `${formatNumber(props.acceptedTargetKcal, 0)} kcal`
+                : "Sin fijar"}
+            </strong>
+          </span>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-[minmax(180px,220px)_auto]">
+          <label className="block text-sm font-semibold text-brand-text">
+            Kcal objetivo
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={props.targetDraft}
+              onChange={(event) => props.onTargetChange(event.target.value)}
+              disabled={!props.athlete || props.disabled}
+              className="mt-1.5 h-9 w-full rounded-lg border border-brand-accent/35 bg-black/25 px-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent disabled:cursor-not-allowed disabled:opacity-50"
+            />
+          </label>
+          <BrandButton
+            onClick={props.onAcceptTarget}
+            disabled={!props.athlete || props.disabled || !props.targetDraft.trim()}
+            className="h-9 self-end px-3 py-2 text-xs sm:px-4"
+          >
+            <Check className="mr-2 h-4 w-4" />
+            Aceptar kcal
+          </BrandButton>
+        </div>
+      </div>
+      {!hasCalculation && !props.calculation.errors.length ? (
+        <p className="mt-3 text-xs text-brand-muted">
+          Selecciona un atleta para precargar sus datos.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 export function AdminNutritionManagementShell({
   user,
 }: AdminNutritionManagementShellProps) {
@@ -892,6 +1267,11 @@ export function AdminNutritionManagementShell({
     key: FoodSortKey;
     direction: SortDirection;
   } | null>(null);
+  const [energyLoading, setEnergyLoading] = useState(false);
+  const [energyForm, setEnergyForm] =
+    useState<EnergyCalculatorFormState>(EMPTY_ENERGY_FORM);
+  const [energyTargetDraft, setEnergyTargetDraft] = useState("");
+  const [energyTargetTouched, setEnergyTargetTouched] = useState(false);
   const [foodForm, setFoodForm] = useState<FoodFormState>(EMPTY_FOOD_FORM);
   const [editingFoodId, setEditingFoodId] = useState<string | null>(null);
   const [foodSubmitting, setFoodSubmitting] = useState(false);
@@ -1000,6 +1380,23 @@ export function AdminNutritionManagementShell({
     return plan ? calculatePlanTotals(plan) : EMPTY_NUTRITION_TOTALS;
   }, [plan]);
 
+  const energyCalculation = useMemo(
+    () =>
+      calculateEnergyNeeds({
+        birthDate: energyForm.birthDate,
+        sex: energyForm.sex,
+        weightKg: parseOptionalNumberInput(energyForm.weightKg),
+        heightCm: parseHeightCmInput(energyForm.heightCm),
+        bodyFatPercent:
+          parseOptionalNumberInput(energyForm.bodyFatPercent) === 0
+            ? null
+            : parseOptionalNumberInput(energyForm.bodyFatPercent),
+        pal: parseOptionalNumberInput(energyForm.pal),
+        formula: energyForm.formula,
+      }),
+    [energyForm],
+  );
+
   const hasPublishedSnapshot = Boolean(
     publishedPlan || plan?.publishedFileId || reviewPlan?.publishedFileId,
   );
@@ -1083,6 +1480,83 @@ export function AdminNutritionManagementShell({
       return next.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     });
   }, []);
+
+  useEffect(() => {
+    if (!selectedAthlete) {
+      setEnergyForm(EMPTY_ENERGY_FORM);
+      setEnergyTargetDraft("");
+      setEnergyTargetTouched(false);
+      setEnergyLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setEnergyLoading(true);
+    setEnergyTargetTouched(false);
+    fetch(
+      `/api/admin/nutrition-management/athletes/${encodeURIComponent(selectedAthlete)}/energy-data`,
+      { cache: "no-store" },
+    )
+      .then(async (res) => {
+        const json = (await res.json()) as AthleteEnergyDataResponse;
+        if (!res.ok) {
+          throw new Error(json.error ?? "No se pudieron cargar los datos kcal.");
+        }
+        if (cancelled) return;
+
+        const latestWeight = json.latestRevision?.weightKg?.value ?? null;
+        const latestBodyFat = json.latestRevision?.bodyFatPercent?.value ?? null;
+        const usableBodyFat =
+          latestBodyFat !== null && latestBodyFat > 0 ? latestBodyFat : null;
+        const athleteData =
+          json.athlete ??
+          athletes.find((athlete) => athlete.username === selectedAthlete) ??
+          null;
+
+        setEnergyForm({
+          birthDate: athleteData?.birthDate ?? "",
+          sex: athleteData?.sex ?? "",
+          weightKg: toDecimalInputValue(latestWeight, 1),
+          heightCm: toDecimalInputValue(athleteData?.heightCm ?? null, 1),
+          bodyFatPercent: toDecimalInputValue(usableBodyFat, 1),
+          pal: String(DEFAULT_ENERGY_PAL),
+          formula: getDefaultEnergyFormula(usableBodyFat),
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error(error);
+          setEnergyForm({
+            ...EMPTY_ENERGY_FORM,
+            birthDate: selectedAthleteInfo?.birthDate ?? "",
+            sex: selectedAthleteInfo?.sex ?? "",
+            heightCm: toDecimalInputValue(selectedAthleteInfo?.heightCm ?? null, 1),
+          });
+          toast.error("No se pudieron cargar los datos de la calculadora kcal.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setEnergyLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [athletes, selectedAthlete, selectedAthleteInfo]);
+
+  useEffect(() => {
+    if (energyTargetTouched) return;
+    if (plan?.targetCaloriesKcal && plan.targetCaloriesKcal > 0) {
+      setEnergyTargetDraft(toIntegerInputValue(plan.targetCaloriesKcal));
+      return;
+    }
+    setEnergyTargetDraft(toIntegerInputValue(energyCalculation.tdeeKcal));
+  }, [
+    energyCalculation.tdeeKcal,
+    energyTargetTouched,
+    plan?.id,
+    plan?.targetCaloriesKcal,
+  ]);
 
   const loadInitialData = useCallback(async () => {
     setLoading(true);
@@ -1685,6 +2159,44 @@ export function AdminNutritionManagementShell({
     }));
   }
 
+  function updateEnergyFormField<K extends keyof EnergyCalculatorFormState>(
+    key: K,
+    value: EnergyCalculatorFormState[K],
+  ) {
+    setEnergyForm((current) => ({
+      ...current,
+      [key]: value,
+    }));
+    if (key !== "formula") {
+      setEnergyTargetTouched(false);
+    }
+  }
+
+  function updateEnergyTargetDraft(value: string) {
+    setEnergyTargetTouched(true);
+    setEnergyTargetDraft(sanitizeIntegerInput(value));
+  }
+
+  function acceptEnergyTarget() {
+    if (!plan) {
+      toast.error("Selecciona o crea un plan antes de aceptar kcal.");
+      return;
+    }
+    if (isCurrentPlanPublished) {
+      toast.error("Cambia a Revision para modificar las kcal objetivo.");
+      return;
+    }
+    const target = parseIntegerInput(energyTargetDraft);
+    if (target === null || target <= 0 || target > 20000) {
+      toast.error("Introduce unas kcal objetivo validas.");
+      return;
+    }
+
+    updatePlanField("targetCaloriesKcal", target);
+    setEnergyTargetTouched(false);
+    toast.success("Kcal objetivo aceptadas.");
+  }
+
   function handlePlanModeChange(nextMode: NutritionPlanStatus) {
     if (nextMode === "published") {
       if (!publishedPlan) {
@@ -1712,7 +2224,11 @@ export function AdminNutritionManagementShell({
   }
 
   function updateTarget(
-    key: "targetProteinG" | "targetCarbsG" | "targetFatG",
+    key:
+      | "targetProteinG"
+      | "targetCarbsG"
+      | "targetFatG"
+      | "targetCaloriesKcal",
     value: number,
   ) {
     updatePlanDraft((current) => ({
@@ -1720,7 +2236,13 @@ export function AdminNutritionManagementShell({
       [key]: clampInteger(
         value,
         0,
-        key === "targetCarbsG" ? 3000 : key === "targetProteinG" ? 2000 : 1000,
+        key === "targetCaloriesKcal"
+          ? 20000
+          : key === "targetCarbsG"
+            ? 3000
+            : key === "targetProteinG"
+              ? 2000
+              : 1000,
       ),
     }));
   }
@@ -3356,6 +3878,20 @@ export function AdminNutritionManagementShell({
             </aside>
 
             <div className="min-w-0 space-y-4">
+              <EnergyCalculatorPanel
+                athlete={selectedAthleteInfo}
+                form={energyForm}
+                calculation={energyCalculation}
+                loading={energyLoading}
+                targetDraft={energyTargetDraft}
+                acceptedTargetKcal={
+                  plan?.targetCaloriesKcal ?? reviewPlan?.targetCaloriesKcal ?? 0
+                }
+                disabled={isCurrentPlanPublished || !plan}
+                onFormChange={updateEnergyFormField}
+                onTargetChange={updateEnergyTargetDraft}
+                onAcceptTarget={acceptEnergyTarget}
+              />
               {planLoading ? (
                 <Skeleton className="h-[640px] w-full rounded-2xl" />
               ) : !plan ? (
@@ -3489,17 +4025,12 @@ export function AdminNutritionManagementShell({
                     ) : null}
 
                     <div className="mt-4 grid gap-3 lg:grid-cols-4">
-                      <div className="min-w-0 rounded-xl border border-white/10 bg-black/25 p-3">
-                        <p className="truncate text-[11px] uppercase tracking-[0.16em] text-brand-muted">
-                          Kcal
-                        </p>
-                        <p className="mt-1 text-lg font-bold text-brand-text">
-                          {formatNumber(planTotals.caloriesKcal, 0)}
-                        </p>
-                        <p className="mt-2 text-xs text-brand-muted">
-                          Calculadas con P 4 / C 4 / G 9
-                        </p>
-                      </div>
+                      <MacroProgress
+                        label="Kcal"
+                        current={planTotals.caloriesKcal}
+                        target={plan.targetCaloriesKcal}
+                        unit="kcal"
+                      />
                       <MacroProgress
                         label="Proteinas"
                         current={planTotals.proteinG}

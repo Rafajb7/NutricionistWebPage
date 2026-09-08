@@ -29,6 +29,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
+import { parseHeightCmInput, type AthleteSex } from "@/lib/athlete-profile";
 import { calculatePlanTotals } from "@/lib/nutrition/calculations";
 import {
   formatCents,
@@ -80,6 +81,9 @@ type AthleteProfile = {
     name: string;
     email: string;
     permission: "user" | "admin";
+    birthDate: string;
+    sex: AthleteSex;
+    heightCm: number | null;
   };
   dashboard: {
     revisions: RevisionEntry[];
@@ -402,6 +406,9 @@ export function AthleteProfileShell({
   const [savingMakingWeight, setSavingMakingWeight] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
+  const [birthDateDraft, setBirthDateDraft] = useState("");
+  const [sexDraft, setSexDraft] = useState<AthleteSex>("");
+  const [heightCmDraft, setHeightCmDraft] = useState("");
   const [permissionDraft, setPermissionDraft] = useState<"user" | "admin">(
     "user",
   );
@@ -441,6 +448,13 @@ export function AthleteProfileShell({
       setProfile(json.profile);
       setNameDraft(json.profile.user.name);
       setEmailDraft(json.profile.user.email);
+      setBirthDateDraft(json.profile.user.birthDate ?? "");
+      setSexDraft(json.profile.user.sex ?? "");
+      setHeightCmDraft(
+        json.profile.user.heightCm === null || json.profile.user.heightCm === undefined
+          ? ""
+          : String(json.profile.user.heightCm),
+      );
       setPermissionDraft(json.profile.user.permission);
       setNotesDraft(json.profile.privateNotes.notes);
       setRoadmapDraft(
@@ -567,6 +581,14 @@ export function AthleteProfileShell({
 
   async function saveUserProfile() {
     if (!profile) return;
+    const parsedHeight = parseHeightCmInput(heightCmDraft);
+    if (
+      parsedHeight !== null &&
+      (!Number.isFinite(parsedHeight) || parsedHeight < 50 || parsedHeight > 260)
+    ) {
+      toast.error("Introduce una altura valida entre 50 y 260 cm.");
+      return;
+    }
     setSavingUser(true);
     try {
       const res = await fetch(
@@ -578,6 +600,9 @@ export function AthleteProfileShell({
             user: {
               name: nameDraft,
               email: emailDraft,
+              birthDate: birthDateDraft,
+              sex: sexDraft,
+              heightCm: parsedHeight,
               permission: permissionDraft,
             },
           }),
@@ -590,6 +615,13 @@ export function AthleteProfileShell({
       setProfile(json.profile);
       setNameDraft(json.profile.user.name);
       setEmailDraft(json.profile.user.email);
+      setBirthDateDraft(json.profile.user.birthDate ?? "");
+      setSexDraft(json.profile.user.sex ?? "");
+      setHeightCmDraft(
+        json.profile.user.heightCm === null || json.profile.user.heightCm === undefined
+          ? ""
+          : String(json.profile.user.heightCm),
+      );
       setPermissionDraft(json.profile.user.permission);
       toast.success("Perfil actualizado.");
     } catch (error) {
@@ -938,6 +970,41 @@ export function AthleteProfileShell({
                       value={emailDraft}
                       onChange={(event) => setEmailDraft(event.target.value)}
                       type="email"
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Fecha nacimiento
+                    <input
+                      type="date"
+                      value={birthDateDraft}
+                      onChange={(event) => setBirthDateDraft(event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Sexo
+                    <select
+                      value={sexDraft}
+                      onChange={(event) =>
+                        setSexDraft(event.target.value as AthleteSex)
+                      }
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    >
+                      <option value="">Sin definir</option>
+                      <option value="male">Hombre</option>
+                      <option value="female">Mujer</option>
+                    </select>
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Altura (cm)
+                    <input
+                      type="number"
+                      min="50"
+                      max="260"
+                      step="0.1"
+                      value={heightCmDraft}
+                      onChange={(event) => setHeightCmDraft(event.target.value)}
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
                   </label>

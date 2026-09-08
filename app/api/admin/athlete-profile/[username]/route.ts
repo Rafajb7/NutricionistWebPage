@@ -13,6 +13,7 @@ import {
 import { listNutritionPlanPdfsForUser } from "@/lib/google/drive";
 import { listFinanceRecords } from "@/lib/google/finance";
 import { isGoogleRateLimitError } from "@/lib/google/retry";
+import { parseHeightCmInput } from "@/lib/athlete-profile";
 import {
   getAthleteRoadmapSteps,
   getAthletePrivateNotes,
@@ -43,7 +44,14 @@ const patchSchema = z.object({
     .object({
       name: z.string().min(2).max(120).optional(),
       email: z.union([z.string().email().max(200), z.literal("")]).optional(),
-      permission: z.enum(["user", "admin"]).optional()
+      permission: z.enum(["user", "admin"]).optional(),
+      birthDate: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.literal("")]).optional(),
+      sex: z.enum(["", "male", "female"]).optional(),
+      heightCm: z.preprocess((value) => {
+        if (value === undefined) return undefined;
+        const parsed = parseHeightCmInput(value);
+        return parsed ?? (value === null || value === "" ? null : value);
+      }, z.number().min(50).max(260).nullable().optional())
     })
     .optional(),
   privateNotes: z.string().max(6000).optional(),
@@ -241,7 +249,10 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
       username: targetUsername,
       name: targetUser.name.trim(),
       email: targetUser.email.trim(),
-      permission: targetUser.permission
+      permission: targetUser.permission,
+      birthDate: targetUser.birthDate,
+      sex: targetUser.sex,
+      heightCm: targetUser.heightCm
     },
     dashboard: {
       revisions: revisionRows.map(toRevisionEntry).sort((a, b) => b.fecha.localeCompare(a.fecha))
@@ -345,7 +356,10 @@ export async function PATCH(req: Request, context: RouteContext) {
         username: targetUsername,
         name: parsed.data.user.name,
         email: parsed.data.user.email,
-        permission: parsed.data.user.permission
+        permission: parsed.data.user.permission,
+        birthDate: parsed.data.user.birthDate,
+        sex: parsed.data.user.sex,
+        heightCm: parsed.data.user.heightCm
       });
     }
 
@@ -392,6 +406,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     }
 
     deleteMemoryCache(getAthleteProfileCacheKey(targetUsername));
+    deleteMemoryCache(`nutrition-energy-data:${targetUsername}`);
     const profile = await loadAthleteProfile(targetUsername, auth.session.username);
     logInfo("Athlete profile updated", {
       username: auth.session.username,
