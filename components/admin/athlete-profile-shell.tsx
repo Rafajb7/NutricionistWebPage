@@ -12,6 +12,7 @@ import {
   Camera,
   CalendarDays,
   ClipboardList,
+  Eye,
   FileText,
   LogOut,
   Map as MapIcon,
@@ -119,6 +120,13 @@ type AthleteProfile = {
 
 type ProfileResponse = {
   profile?: AthleteProfile;
+  error?: string;
+};
+
+type DeleteNutritionPdfResponse = {
+  ok?: boolean;
+  deleted?: NutritionPdf;
+  pdfs?: NutritionPdf[];
   error?: string;
 };
 
@@ -343,53 +351,50 @@ function RoadmapPreview({ steps }: { steps: AthleteRoadmapStep[] }) {
   const ordered = [...steps].sort((a, b) => a.position - b.position);
   if (!ordered.length) {
     return (
-      <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+      <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-muted">
         Sin etapas definidas.
       </div>
     );
   }
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <ol className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
       {ordered.map((step, index) => (
-        <article
+        <li
           key={step.id}
-          className="rounded-xl border border-white/10 bg-black/20 p-3"
+          className="min-w-0 rounded-lg border border-white/10 bg-black/20 px-3 py-2"
         >
-          <div className="flex items-start gap-3">
+          <div className="flex items-center gap-2">
             <span
-              className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-bold ${getRoadmapStatusClass(
+              className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-bold ${getRoadmapStatusClass(
                 step.status,
               )}`}
             >
               {index + 1}
             </span>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-brand-text">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-brand-text">
                 {step.title}
               </p>
-              <p className="mt-1 text-xs text-brand-muted">
+              <p className="mt-0.5 truncate text-[11px] text-brand-muted">
                 {getRoadmapStatusLabel(step.status)}
+                {step.startDate || step.endDate ? " | " : ""}
+                {step.startDate || step.endDate
+                  ? `${step.startDate ? formatDateLabel(step.startDate) : "Sin inicio"} - ${
+                      step.endDate ? formatDateLabel(step.endDate) : "sin cierre"
+                    }`
+                  : ""}
               </p>
-              {step.startDate || step.endDate ? (
-                <p className="mt-1 text-xs text-brand-muted">
-                  {step.startDate
-                    ? formatDateLabel(step.startDate)
-                    : "Sin inicio"}{" "}
-                  -{" "}
-                  {step.endDate ? formatDateLabel(step.endDate) : "sin cierre"}
-                </p>
-              ) : null}
             </div>
           </div>
           {step.description ? (
-            <p className="mt-3 break-words text-xs text-brand-muted">
+            <p className="mt-2 break-words text-[11px] text-brand-muted">
               {step.description}
             </p>
           ) : null}
-        </article>
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }
 
@@ -404,6 +409,9 @@ export function AthleteProfileShell({
   const [savingNotes, setSavingNotes] = useState(false);
   const [savingRoadmap, setSavingRoadmap] = useState(false);
   const [savingMakingWeight, setSavingMakingWeight] = useState(false);
+  const [deletingNutritionPdfId, setDeletingNutritionPdfId] = useState<
+    string | null
+  >(null);
   const [nameDraft, setNameDraft] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
   const [birthDateDraft, setBirthDateDraft] = useState("");
@@ -414,6 +422,7 @@ export function AthleteProfileShell({
   );
   const [notesDraft, setNotesDraft] = useState("");
   const [roadmapDraft, setRoadmapDraft] = useState<AthleteRoadmapStep[]>([]);
+  const [roadmapEditorOpen, setRoadmapEditorOpen] = useState(false);
   const [makingWeightForm, setMakingWeightForm] =
     useState<MakingWeightCompetitionForm>(() =>
       createMakingWeightCompetitionForm(),
@@ -457,11 +466,11 @@ export function AthleteProfileShell({
       );
       setPermissionDraft(json.profile.user.permission);
       setNotesDraft(json.profile.privateNotes.notes);
-      setRoadmapDraft(
-        [...(json.profile.nutrition.roadmapSteps ?? [])].sort(
-          (a, b) => a.position - b.position,
-        ),
+      const nextRoadmapSteps = [...(json.profile.nutrition.roadmapSteps ?? [])].sort(
+        (a, b) => a.position - b.position,
       );
+      setRoadmapDraft(nextRoadmapSteps);
+      setRoadmapEditorOpen(nextRoadmapSteps.length === 0);
     } catch (error) {
       console.error(error);
       toast.error("Error cargando la ficha 360.");
@@ -497,13 +506,6 @@ export function AthleteProfileShell({
     [profile?.tools.peakModeLogs],
   );
   const latestPeakLog = orderedPeakLogs[0] ?? null;
-  const orderedRoutines = useMemo(
-    () =>
-      [...(profile?.tools.routines ?? [])].sort((a, b) =>
-        b.timestamp.localeCompare(a.timestamp),
-      ),
-    [profile?.tools.routines],
-  );
   const today = todayIsoDate();
   const nextCompetition = useMemo(
     () =>
@@ -659,7 +661,50 @@ export function AthleteProfileShell({
     }
   }
 
+  async function deleteNutritionPdf(pdf: NutritionPdf) {
+    if (!profile || deletingNutritionPdfId) return;
+    const confirmed = window.confirm(
+      `Seguro que quieres eliminar el PDF "${pdf.name}"? Se borrara de Google Drive y dejara de aparecer en la plataforma.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingNutritionPdfId(pdf.id);
+    try {
+      const res = await fetch(
+        `/api/admin/athlete-profile/${encodeURIComponent(
+          profile.user.username,
+        )}/nutrition-pdfs/${encodeURIComponent(pdf.id)}`,
+        { method: "DELETE" },
+      );
+      const json = (await res.json()) as DeleteNutritionPdfResponse;
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error ?? "No se pudo eliminar el PDF.");
+      }
+
+      setProfile((current) =>
+        current
+          ? {
+              ...current,
+              nutrition: {
+                ...current.nutrition,
+                pdfs:
+                  json.pdfs ??
+                  current.nutrition.pdfs.filter((item) => item.id !== pdf.id),
+              },
+            }
+          : current,
+      );
+      toast.success("PDF eliminado de Drive.");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Error eliminando el PDF.");
+    } finally {
+      setDeletingNutritionPdfId(null);
+    }
+  }
+
   function addRoadmapStep() {
+    setRoadmapEditorOpen(true);
     setRoadmapDraft((current) => [
       ...current,
       createLocalRoadmapStep(current.length + 1),
@@ -947,7 +992,7 @@ export function AthleteProfileShell({
             </motion.section>
 
             <section className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
                 <div className="flex items-center justify-between gap-3">
                   <SectionTitle
                     eyebrow="Datos personales"
@@ -1072,7 +1117,7 @@ export function AthleteProfileShell({
               </div>
             </section>
 
-            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                 <div className="flex min-w-0 items-center gap-3">
                   <MapIcon className="h-5 w-5 text-brand-accent" />
@@ -1098,18 +1143,28 @@ export function AthleteProfileShell({
                 </div>
               </div>
 
-              <div className="mt-4">
+              <div className="mt-3">
                 <RoadmapPreview steps={roadmapDraft} />
               </div>
 
-              <div className="mt-4 space-y-3">
+              <details
+                className="mt-3 rounded-lg border border-white/10 bg-black/10"
+                open={roadmapEditorOpen}
+                onToggle={(event) =>
+                  setRoadmapEditorOpen(event.currentTarget.open)
+                }
+              >
+                <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-brand-text">
+                  Editar etapas
+                </summary>
+                <div className="space-y-2 border-t border-white/10 p-2.5 sm:p-3">
                 {roadmapDraft.map((step, index) => (
                   <article
                     key={step.id}
-                    className="rounded-xl border border-white/10 bg-black/20 p-3"
+                    className="rounded-lg border border-white/10 bg-black/20 p-2.5 sm:p-3"
                   >
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.2fr)_160px_150px_150px_auto] lg:items-end">
-                      <label className="block text-sm text-brand-muted">
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_140px_130px_130px_auto] xl:items-end">
+                      <label className="block text-xs text-brand-muted">
                         Etapa
                         <input
                           value={step.title}
@@ -1119,10 +1174,10 @@ export function AthleteProfileShell({
                               title: event.target.value,
                             }))
                           }
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-black/20 px-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted">
+                      <label className="block text-xs text-brand-muted">
                         Estado
                         <select
                           value={step.status}
@@ -1133,14 +1188,14 @@ export function AthleteProfileShell({
                                 .value as AthleteRoadmapStepStatus,
                             }))
                           }
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-black/20 px-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         >
                           <option value="completed">Completada</option>
                           <option value="current">Actual</option>
                           <option value="pending">Pendiente</option>
                         </select>
                       </label>
-                      <label className="block text-sm text-brand-muted">
+                      <label className="block text-xs text-brand-muted">
                         Inicio
                         <input
                           type="date"
@@ -1151,10 +1206,10 @@ export function AthleteProfileShell({
                               startDate: event.target.value,
                             }))
                           }
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-black/20 px-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted">
+                      <label className="block text-xs text-brand-muted">
                         Fin
                         <input
                           type="date"
@@ -1165,15 +1220,15 @@ export function AthleteProfileShell({
                               endDate: event.target.value,
                             }))
                           }
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-black/20 px-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
-                      <div className="grid grid-cols-3 gap-2 sm:col-span-2 lg:col-span-1 lg:flex">
+                      <div className="grid grid-cols-3 gap-2 sm:col-span-2 xl:col-span-1 xl:flex">
                         <button
                           type="button"
                           onClick={() => moveRoadmapStep(step.id, -1)}
                           disabled={index === 0}
-                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="inline-flex h-9 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 xl:w-9"
                           aria-label="Subir etapa"
                           title="Subir"
                         >
@@ -1183,7 +1238,7 @@ export function AthleteProfileShell({
                           type="button"
                           onClick={() => moveRoadmapStep(step.id, 1)}
                           disabled={index === roadmapDraft.length - 1}
-                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="inline-flex h-9 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 xl:w-9"
                           aria-label="Bajar etapa"
                           title="Bajar"
                         >
@@ -1192,7 +1247,7 @@ export function AthleteProfileShell({
                         <button
                           type="button"
                           onClick={() => removeRoadmapStep(step.id)}
-                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20"
+                          className="inline-flex h-9 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 xl:w-9"
                           aria-label="Eliminar etapa"
                           title="Eliminar"
                         >
@@ -1200,7 +1255,7 @@ export function AthleteProfileShell({
                         </button>
                       </div>
                     </div>
-                    <label className="mt-3 block text-sm text-brand-muted">
+                    <label className="mt-2 block text-xs text-brand-muted">
                       Descripcion
                       <textarea
                         value={step.description}
@@ -1210,17 +1265,18 @@ export function AthleteProfileShell({
                             description: event.target.value,
                           }))
                         }
-                        rows={2}
-                        className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                        rows={1}
+                        className="mt-1.5 min-h-9 w-full rounded-lg border border-white/10 bg-black/20 px-2.5 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                       />
                     </label>
                   </article>
                 ))}
-              </div>
+                </div>
+              </details>
             </section>
 
             <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                   <SectionTitle
                     eyebrow="Nutricion"
@@ -1236,73 +1292,65 @@ export function AthleteProfileShell({
                 </div>
 
                 {nutritionPlans.length ? (
-                  <div className="mt-4 space-y-3">
+                  <div className="mt-3 space-y-2">
                     {nutritionPlans.map((nutritionPlan) => {
                       const totals = calculatePlanTotals(nutritionPlan);
                       return (
-                        <div
+                        <article
                           key={nutritionPlan.id}
-                          className="rounded-xl border border-white/10 bg-black/20 p-4"
+                          className="rounded-lg border border-white/10 bg-black/20 p-3"
                         >
-                          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div className="min-w-0">
-                              <p className="break-words text-sm font-semibold text-brand-text">
+                              <p className="truncate text-sm font-semibold text-brand-text">
                                 {nutritionPlan.name}
                               </p>
-                              <p className="mt-1 break-words text-xs text-brand-muted">
+                              <p className="mt-0.5 truncate text-[11px] text-brand-muted">
                                 Estado: {nutritionPlan.status} | Version{" "}
                                 {nutritionPlan.versionNumber} |{" "}
                                 {nutritionPlan.meals.length} comidas
                               </p>
                             </div>
-                            <span className="rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-2 py-1 text-[11px] text-brand-text">
-                              {formatNumber(totals.caloriesKcal)} kcal
-                            </span>
-                          </div>
-                          <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                            <MetricCard
-                              label="Proteinas"
-                              value={formatNumber(totals.proteinG, " g")}
-                            />
-                            <MetricCard
-                              label="Carbos"
-                              value={formatNumber(totals.carbsG, " g")}
-                            />
-                            <MetricCard
-                              label="Grasas"
-                              value={formatNumber(totals.fatG, " g")}
-                            />
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {nutritionPlan.meals.map((meal) => (
-                              <span
-                                key={meal.id}
-                                className="min-w-0 break-words rounded-lg border border-white/10 bg-black/25 px-2 py-1 text-xs text-brand-muted"
-                              >
-                                {meal.name}: {meal.entries.length}
+                            <div className="flex flex-wrap gap-1.5">
+                              <span className="rounded-lg border border-brand-accent/35 bg-brand-accent/10 px-2 py-1 text-[11px] font-semibold text-brand-text">
+                                {formatNumber(totals.caloriesKcal)} kcal
                               </span>
-                            ))}
+                              <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1 text-[11px] text-brand-muted">
+                                P {formatNumber(totals.proteinG, " g")}
+                              </span>
+                              <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1 text-[11px] text-brand-muted">
+                                C {formatNumber(totals.carbsG, " g")}
+                              </span>
+                              <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1 text-[11px] text-brand-muted">
+                                G {formatNumber(totals.fatG, " g")}
+                              </span>
+                            </div>
                           </div>
-                        </div>
+                        </article>
                       );
                     })}
                   </div>
                 ) : (
-                  <p className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-brand-muted">
+                  <p className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-brand-muted">
                     No hay planes nutricionales registrados.
                   </p>
                 )}
 
-                <div className="mt-4">
-                  <p className="text-sm font-semibold text-brand-text">
-                    Intolerancias y rechazos
-                  </p>
+                <div className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-brand-text">
+                      Intolerancias y rechazos
+                    </p>
+                    <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-brand-muted">
+                      {profile.nutrition.restrictions.length}
+                    </span>
+                  </div>
                   {profile.nutrition.restrictions.length ? (
                     <div className="mt-2 flex flex-wrap gap-2">
                       {profile.nutrition.restrictions.map((restriction) => (
                         <span
                           key={restriction.id}
-                          className="inline-flex items-center gap-2 rounded-full border border-red-400/30 bg-red-500/10 px-3 py-1 text-xs text-red-100"
+                          className="inline-flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-100"
                         >
                           <ShieldAlert className="h-3.5 w-3.5" />
                           {restriction.label}
@@ -1310,7 +1358,7 @@ export function AthleteProfileShell({
                       ))}
                     </div>
                   ) : (
-                    <p className="mt-2 text-sm text-brand-muted">
+                    <p className="mt-2 text-xs text-brand-muted">
                       Sin restricciones registradas.
                     </p>
                   )}
@@ -1372,77 +1420,43 @@ export function AthleteProfileShell({
               </div>
             </section>
 
-            <section className="grid gap-4 xl:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <SectionTitle eyebrow="Entreno" title="Rutinas y rendimiento" />
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <MetricCard
-                    label="Sesiones"
-                    value={String(orderedRoutines.length)}
-                  />
-                  <MetricCard
-                    label="Marcas"
-                    value={String(profile.tools.achievements.marks.length)}
-                    detail={`${profile.tools.achievements.goals.length} objetivos`}
-                  />
-                </div>
-                <div className="mt-4 space-y-2">
-                  {orderedRoutines.slice(0, 5).map((item, index) => (
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
+              <SectionTitle eyebrow="Agenda" title="Competiciones" />
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <MetricCard
+                  label="Proxima"
+                  value={nextCompetition?.title ?? "-"}
+                  detail={
+                    nextCompetition
+                      ? formatDateLabel(nextCompetition.date)
+                      : "Sin fecha"
+                  }
+                />
+                <MetricCard
+                  label="Total"
+                  value={String(profile.tools.competitions.length)}
+                  detail="Eventos registrados"
+                />
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {profile.tools.competitions
+                  .slice()
+                  .sort((a, b) => b.date.localeCompare(a.date))
+                  .slice(0, 5)
+                  .map((item) => (
                     <div
-                      key={`${item.timestamp}-${index}`}
-                      className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm"
+                      key={item.id}
+                      className="rounded-lg border border-white/10 bg-black/20 px-3 py-2"
                     >
-                      <p className="font-semibold text-brand-text">
-                        {item.ejercicio}
+                      <p className="truncate text-sm font-semibold text-brand-text">
+                        {item.title}
                       </p>
-                      <p className="mt-1 text-xs text-brand-muted">
-                        {formatDateLabel(item.fechaSesion)} | {item.series}x
-                        {item.repeticiones} |{" "}
-                        {item.pesoKg === null ? "-" : `${item.pesoKg} kg`}
+                      <p className="mt-1 truncate text-xs text-brand-muted">
+                        {formatDateLabel(item.date)}{" "}
+                        {item.location ? `| ${item.location}` : ""}
                       </p>
                     </div>
                   ))}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <SectionTitle eyebrow="Agenda" title="Competiciones" />
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                  <MetricCard
-                    label="Proxima"
-                    value={nextCompetition?.title ?? "-"}
-                    detail={
-                      nextCompetition
-                        ? formatDateLabel(nextCompetition.date)
-                        : "Sin fecha"
-                    }
-                  />
-                  <MetricCard
-                    label="Total"
-                    value={String(profile.tools.competitions.length)}
-                    detail="Eventos registrados"
-                  />
-                </div>
-                <div className="mt-4 space-y-2">
-                  {profile.tools.competitions
-                    .slice()
-                    .sort((a, b) => b.date.localeCompare(a.date))
-                    .slice(0, 5)
-                    .map((item) => (
-                      <div
-                        key={item.id}
-                        className="rounded-lg border border-white/10 bg-black/20 px-3 py-2"
-                      >
-                        <p className="text-sm font-semibold text-brand-text">
-                          {item.title}
-                        </p>
-                        <p className="mt-1 text-xs text-brand-muted">
-                          {formatDateLabel(item.date)}{" "}
-                          {item.location ? `| ${item.location}` : ""}
-                        </p>
-                      </div>
-                    ))}
-                </div>
               </div>
             </section>
 
@@ -1458,11 +1472,7 @@ export function AthleteProfileShell({
                     Gestionar
                   </Link>
                 </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <MetricCard
-                    label="Contratos activos"
-                    value={String(profile.finance.summary.activeContractsCount)}
-                  />
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <MetricCard
                     label="Pendiente"
                     value={formatCents(profile.finance.summary.pendingCents)}
@@ -1580,29 +1590,58 @@ export function AthleteProfileShell({
                     <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand-muted">
                       PDFs
                     </p>
-                    {profile.nutrition.pdfs.slice(0, 6).map((pdf) => (
-                      <a
-                        key={pdf.id}
-                        href={`/api/nutrition-plans/${pdf.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block rounded-xl border border-white/10 bg-black/20 p-3 transition hover:bg-white/10"
-                      >
-                        <div className="flex items-start gap-3">
-                          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-brand-accent" />
-                          <div className="min-w-0">
-                            <p className="break-words text-sm font-semibold text-brand-text">
-                              {pdf.name}
-                            </p>
-                            <p className="mt-1 break-words text-xs text-brand-muted">
-                              {formatDateLabel(
-                                pdf.modifiedTime ?? pdf.createdTime,
-                              )}
-                            </p>
+                    {profile.nutrition.pdfs.slice(0, 6).map((pdf) => {
+                      const isDeleting = deletingNutritionPdfId === pdf.id;
+
+                      return (
+                        <article
+                          key={pdf.id}
+                          className="group relative overflow-hidden rounded-xl border border-white/10 bg-black/20 p-3 transition hover:bg-white/10 focus-within:bg-white/10"
+                        >
+                          <div className="flex items-start gap-3 sm:pr-20">
+                            <FileText className="mt-0.5 h-4 w-4 shrink-0 text-brand-accent" />
+                            <div className="min-w-0">
+                              <p className="break-words text-sm font-semibold text-brand-text">
+                                {pdf.name}
+                              </p>
+                              <p className="mt-1 break-words text-xs text-brand-muted">
+                                {formatDateLabel(
+                                  pdf.modifiedTime ?? pdf.createdTime,
+                                )}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      </a>
-                    ))}
+                          <div className="mt-3 grid grid-cols-2 gap-2 sm:absolute sm:right-3 sm:top-3 sm:mt-0 sm:flex sm:opacity-0 sm:transition sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                            <a
+                              href={`/api/nutrition-plans/${pdf.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex h-9 items-center justify-center rounded-lg border border-brand-accent/40 bg-brand-accent/10 px-3 text-brand-text transition hover:bg-brand-accent/20 sm:w-9 sm:px-0"
+                              aria-label={`Visualizar PDF ${pdf.name}`}
+                              title="Visualizar"
+                            >
+                              <Eye className="h-4 w-4" />
+                              <span className="ml-2 text-xs font-semibold sm:sr-only sm:ml-0">
+                                Ver
+                              </span>
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => void deleteNutritionPdf(pdf)}
+                              disabled={isDeleting || deletingNutritionPdfId !== null}
+                              className="inline-flex h-9 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 px-3 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-9 sm:px-0"
+                              aria-label={`Eliminar PDF ${pdf.name}`}
+                              title="Eliminar"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              <span className="ml-2 text-xs font-semibold sm:sr-only sm:ml-0">
+                                {isDeleting ? "Eliminando" : "Eliminar"}
+                              </span>
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
                     {!profile.nutrition.pdfs.length ? (
                       <p className="rounded-xl border border-white/10 bg-black/20 p-3 text-sm text-brand-muted">
                         Sin PDFs generados.
