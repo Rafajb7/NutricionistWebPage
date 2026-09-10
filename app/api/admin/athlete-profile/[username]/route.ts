@@ -4,7 +4,6 @@ import { deleteMemoryCache, getOrSetMemoryCache } from "@/lib/cache/memory-cache
 import { requireAdminSession } from "@/lib/auth/require-session";
 import { getComputedPaymentStatus, todayIsoDate } from "@/lib/finance/calculations";
 import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
-import { listStrengthGoalsForUser, listStrengthMarksForUser } from "@/lib/google/achievements";
 import {
   createCompetitionEvent,
   listCompetitionEventsForUser,
@@ -26,7 +25,6 @@ import {
 import {
   listPeakModeDailyLogsForUser,
   listRevisionRowsForUser,
-  listRoutineLogsForUser,
   readUsersFromSheetCached,
   updateUserInSheet
 } from "@/lib/google/sheets";
@@ -134,10 +132,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
 
   const [
     revisionRowsResult,
-    routineLogsResult,
     competitionsResult,
-    marksResult,
-    goalsResult,
     nutritionPdfsResult,
     nutritionManagementResult,
     nutritionPlansResult,
@@ -147,10 +142,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
     financeResult
   ] = await Promise.allSettled([
     listRevisionRowsForUser(sourceUsername),
-    listRoutineLogsForUser(sourceUsername),
     listCompetitionEventsForUser(sourceUsername, { includePast: true }),
-    listStrengthMarksForUser(sourceUsername),
-    listStrengthGoalsForUser(sourceUsername),
     listNutritionPlanPdfsForUser(sourceUsername),
     listNutritionManagementData(),
     listNutritionPlansForAthlete(sourceUsername),
@@ -182,10 +174,7 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
   }
 
   const revisionRows = readSettled(revisionRowsResult, [], "revisiones");
-  const routineLogs = readSettled(routineLogsResult, [], "rutinas");
   const competitions = readSettled(competitionsResult, [], "competiciones");
-  const marks = readSettled(marksResult, [], "marcas");
-  const goals = readSettled(goalsResult, [], "objetivos");
   const nutritionPdfs = readSettled(nutritionPdfsResult, [], "pdfs nutricionales");
   const nutritionManagement = readSettled(
     nutritionManagementResult,
@@ -271,12 +260,12 @@ async function loadAthleteProfile(username: string, adminUsername: string) {
       mealCompletions: mealCompletions.slice(0, 180)
     },
     tools: {
-      routines: routineLogs,
+      routines: [],
       competitions,
       peakModeLogs,
       achievements: {
-        marks,
-        goals
+        marks: [],
+        goals: []
       }
     },
     finance: {
