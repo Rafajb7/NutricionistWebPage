@@ -9,6 +9,7 @@ export const EMPTY_NUTRITION_TOTALS: NutritionTotals = {
   proteinG: 0,
   carbsG: 0,
   fatG: 0,
+  fiberG: 0,
   sodiumMg: 0,
   waterG: 0,
   caloriesKcal: 0
@@ -32,6 +33,7 @@ export function calculateEntryTotals(entry: Pick<
   | "proteinPer100g"
   | "carbsPer100g"
   | "fatPer100g"
+  | "fiberPer100g"
   | "sodiumPer100g"
   | "waterPer100g"
 > & {
@@ -42,6 +44,7 @@ export function calculateEntryTotals(entry: Pick<
   const proteinG = entry.proteinPer100g * ratio;
   const carbsG = entry.carbsPer100g * ratio;
   const fatG = entry.fatPer100g * ratio;
+  const fiberG = entry.fiberPer100g * ratio;
   const sodiumMg = entry.sodiumPer100g * ratio;
   const waterG = entry.waterPer100g * ratio;
 
@@ -49,6 +52,7 @@ export function calculateEntryTotals(entry: Pick<
     proteinG: roundNutritionValue(proteinG),
     carbsG: roundNutritionValue(carbsG),
     fatG: roundNutritionValue(fatG),
+    fiberG: roundNutritionValue(fiberG),
     sodiumMg: roundNutritionValue(sodiumMg, 0),
     waterG: roundNutritionValue(waterG),
     caloriesKcal: roundNutritionValue(
@@ -66,6 +70,7 @@ export function addNutritionTotals(items: NutritionTotals[]): NutritionTotals {
       proteinG: roundNutritionValue(acc.proteinG + item.proteinG),
       carbsG: roundNutritionValue(acc.carbsG + item.carbsG),
       fatG: roundNutritionValue(acc.fatG + item.fatG),
+      fiberG: roundNutritionValue(acc.fiberG + item.fiberG),
       sodiumMg: roundNutritionValue(acc.sodiumMg + item.sodiumMg, 0),
       waterG: roundNutritionValue(acc.waterG + item.waterG),
       caloriesKcal: roundNutritionValue(acc.caloriesKcal + item.caloriesKcal, 0)

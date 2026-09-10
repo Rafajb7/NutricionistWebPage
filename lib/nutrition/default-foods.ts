@@ -2,8 +2,10 @@ import type { NutritionFood } from "@/lib/nutrition/types";
 
 export type DefaultNutritionFood = Omit<
   NutritionFood,
-  "referenceUnit" | "restrictionTags" | "active" | "createdAt" | "updatedAt"
->;
+  "referenceUnit" | "restrictionTags" | "active" | "createdAt" | "updatedAt" | "fiberPer100g"
+> & {
+  fiberPer100g?: number;
+};
 
 // Seed values are adapted from USDA FoodData Central SR Legacy per-100g nutrients.
 // Mercadona items use public label data; water is estimated from the remaining product mass.

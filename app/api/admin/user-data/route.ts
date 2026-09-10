@@ -21,6 +21,24 @@ function normalizeUsername(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
 }
 
+async function loadAdminUserDataSection<T>(
+  label: string,
+  loader: () => Promise<T>,
+  fallback: T,
+  context: { adminUsername: string; targetUsername: string }
+): Promise<T> {
+  try {
+    return await loader();
+  } catch (error) {
+    logError(`Failed to load ${label} for admin user-data`, {
+      username: context.adminUsername,
+      targetUsername: context.targetUsername,
+      error
+    });
+    return fallback;
+  }
+}
+
 export async function GET(req: NextRequest) {
   const auth = await requireAdminSession();
   if (!auth.session) return auth.response;
@@ -42,27 +60,64 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "User not found." }, { status: 404 });
     }
     const sourceUsername = targetUser.username.trim().replace(/^@/, "");
+    const logContext = {
+      adminUsername: auth.session.username,
+      targetUsername
+    };
 
-    const [revisionRows, routineLogs, competitions, marks, goals, nutritionPlans] =
+    const [
+      revisionRows,
+      routineLogs,
+      competitions,
+      marks,
+      goals,
+      nutritionPlans,
+      peakModeLogs
+    ] =
       await Promise.all([
-        listRevisionRowsForUser(sourceUsername),
-        listRoutineLogsForUser(sourceUsername),
-        listCompetitionEventsForUser(sourceUsername, { includePast: true }),
-        listStrengthMarksForUser(sourceUsername),
-        listStrengthGoalsForUser(sourceUsername),
-        listNutritionPlanPdfsForUser(sourceUsername)
+        loadAdminUserDataSection(
+          "revision rows",
+          () => listRevisionRowsForUser(sourceUsername),
+          [],
+          logContext
+        ),
+        loadAdminUserDataSection(
+          "routine logs",
+          () => listRoutineLogsForUser(sourceUsername),
+          [],
+          logContext
+        ),
+        loadAdminUserDataSection(
+          "competition events",
+          () => listCompetitionEventsForUser(sourceUsername, { includePast: true }),
+          [],
+          logContext
+        ),
+        loadAdminUserDataSection(
+          "strength marks",
+          () => listStrengthMarksForUser(sourceUsername),
+          [],
+          logContext
+        ),
+        loadAdminUserDataSection(
+          "strength goals",
+          () => listStrengthGoalsForUser(sourceUsername),
+          [],
+          logContext
+        ),
+        loadAdminUserDataSection(
+          "nutrition PDFs",
+          () => listNutritionPlanPdfsForUser(sourceUsername),
+          [],
+          logContext
+        ),
+        loadAdminUserDataSection(
+          "peak mode logs",
+          () => listPeakModeDailyLogsForUser(sourceUsername),
+          [],
+          logContext
+        )
       ]);
-
-    let peakModeLogs: Awaited<ReturnType<typeof listPeakModeDailyLogsForUser>> = [];
-    try {
-      peakModeLogs = await listPeakModeDailyLogsForUser(sourceUsername);
-    } catch (error) {
-      logError("Failed to load peak mode logs for admin user-data", {
-        username: auth.session.username,
-        targetUsername,
-        error
-      });
-    }
 
     const revisions = revisionRows
       .map(toRevisionEntry)

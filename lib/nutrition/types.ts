@@ -50,6 +50,7 @@ export type NutritionFood = {
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
+  fiberPer100g: number;
   sodiumPer100g: number;
   waterPer100g: number;
   restrictionTags: NutritionFoodRestrictionTag[];
@@ -112,6 +113,7 @@ export type NutritionPlanFoodAlternative = {
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
+  fiberPer100g: number;
   sodiumPer100g: number;
   waterPer100g: number;
   position: number;
@@ -132,6 +134,7 @@ export type NutritionPlanFoodEntry = {
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
+  fiberPer100g: number;
   sodiumPer100g: number;
   waterPer100g: number;
   position: number;
@@ -230,6 +233,7 @@ export type NutritionTotals = {
   proteinG: number;
   carbsG: number;
   fatG: number;
+  fiberG: number;
   sodiumMg: number;
   waterG: number;
   caloriesKcal: number;

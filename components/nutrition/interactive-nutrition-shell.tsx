@@ -179,6 +179,7 @@ function toEntryLike(alternative: NutritionPlanFoodAlternative): Pick<
   | "proteinPer100g"
   | "carbsPer100g"
   | "fatPer100g"
+  | "fiberPer100g"
   | "sodiumPer100g"
   | "waterPer100g"
 > {
@@ -189,6 +190,7 @@ function toEntryLike(alternative: NutritionPlanFoodAlternative): Pick<
     proteinPer100g: alternative.proteinPer100g,
     carbsPer100g: alternative.carbsPer100g,
     fatPer100g: alternative.fatPer100g,
+    fiberPer100g: alternative.fiberPer100g ?? 0,
     sodiumPer100g: alternative.sodiumPer100g,
     waterPer100g: alternative.waterPer100g
   };

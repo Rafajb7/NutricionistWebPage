@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
@@ -535,6 +535,7 @@ export function AdminShell({ user }: AdminShellProps) {
   const [uploadingPlans, setUploadingPlans] = useState(false);
   const [planFiles, setPlanFiles] = useState<File[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0);
+  const userDataRequestRef = useRef(0);
 
   const filteredUsers = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -656,21 +657,37 @@ export function AdminShell({ user }: AdminShellProps) {
   }, [peakModeLogs, selectedPeakMetric]);
 
   const loadSelectedUserData = useCallback(async (username: string) => {
-    if (!username) { setSelectedData(null); return; }
+    const requestId = userDataRequestRef.current + 1;
+    userDataRequestRef.current = requestId;
+
+    if (!username) {
+      setSelectedData(null);
+      setDataLoading(false);
+      return;
+    }
+
+    setSelectedData(null);
     setDataLoading(true);
     try {
-      const res = await fetch(`/api/admin/user-data?username=${encodeURIComponent(username)}`);
+      const res = await fetch(`/api/admin/user-data?username=${encodeURIComponent(username)}`, {
+        cache: "no-store"
+      });
+      if (requestId !== userDataRequestRef.current) return;
       if (res.status === 401) { window.location.href = "/login"; return; }
       if (res.status === 403) { toast.error("No tienes permisos de administrador."); window.location.href = "/dashboard"; return; }
       const json = (await res.json()) as AdminUserData & { error?: string };
+      if (requestId !== userDataRequestRef.current) return;
       if (!res.ok) throw new Error(json.error ?? "No se pudo cargar la informacion del usuario.");
       setSelectedData(json);
     } catch (error) {
+      if (requestId !== userDataRequestRef.current) return;
       console.error(error);
       toast.error("Error cargando datos del usuario.");
       setSelectedData(null);
     } finally {
-      setDataLoading(false);
+      if (requestId === userDataRequestRef.current) {
+        setDataLoading(false);
+      }
     }
   }, []);
 
@@ -700,10 +717,10 @@ export function AdminShell({ user }: AdminShellProps) {
   }, []);
 
   useEffect(() => {
-    if (selectedUsername && !filteredUsers.some((u) => u.username === selectedUsername)) {
+    if (!usersLoading && selectedUsername && !filteredUsers.some((u) => u.username === selectedUsername)) {
       setSelectedUsername("");
     }
-  }, [filteredUsers, selectedUsername]);
+  }, [filteredUsers, selectedUsername, usersLoading]);
 
   useEffect(() => {
     if (!availableMetricOptions.length) return;

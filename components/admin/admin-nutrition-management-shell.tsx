@@ -54,8 +54,11 @@ import {
   ENERGY_FORMULA_OPTIONS,
   PAL_OPTIONS,
   calculateEnergyNeeds,
-  getDefaultEnergyFormula,
+  getDefaultEnergyFormulas,
   getEnergyFormulaLabel,
+  getEnergyFormulaSelectionLabel,
+  hasValidBodyFatPercent,
+  isBodyFatFormula,
   type EnergyCalculationResult,
   type EnergyFormula,
 } from "@/lib/nutrition/energy-calculator";
@@ -155,6 +158,7 @@ type FoodFormState = {
   proteinPer100g: string;
   carbsPer100g: string;
   fatPer100g: string;
+  fiberPer100g: string;
   sodiumPer100g: string;
   waterPer100g: string;
   restrictionTags: NutritionFoodRestrictionTag[];
@@ -176,12 +180,23 @@ type EnergyCalculatorFormState = {
   heightCm: string;
   bodyFatPercent: string;
   pal: string;
-  formula: EnergyFormula;
+  formulas: EnergyFormula[];
 };
 
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type FoodSortKey = "category" | "kcal";
 type SortDirection = "asc" | "desc";
+type MacroTargetKey = "targetProteinG" | "targetCarbsG" | "targetFatG";
+
+const MACRO_TARGETS: Array<{
+  key: MacroTargetKey;
+  label: string;
+  max: number;
+}> = [
+  { key: "targetProteinG", label: "Proteinas", max: 2000 },
+  { key: "targetCarbsG", label: "Carbohidratos", max: 3000 },
+  { key: "targetFatG", label: "Grasas", max: 1000 },
+];
 
 const EMPTY_FOOD_FORM: FoodFormState = {
   name: "",
@@ -189,6 +204,7 @@ const EMPTY_FOOD_FORM: FoodFormState = {
   proteinPer100g: "",
   carbsPer100g: "",
   fatPer100g: "",
+  fiberPer100g: "",
   sodiumPer100g: "",
   waterPer100g: "",
   restrictionTags: [],
@@ -203,7 +219,7 @@ const EMPTY_ENERGY_FORM: EnergyCalculatorFormState = {
   heightCm: "",
   bodyFatPercent: "",
   pal: String(DEFAULT_ENERGY_PAL),
-  formula: "mifflin_st_jeor",
+  formulas: ["mifflin_st_jeor"],
 };
 
 const CHANGE_REQUEST_POLL_INTERVAL_MS = 2 * 60_000;
@@ -256,6 +272,27 @@ function parseIntegerInput(value: string): number | null {
   if (!sanitized) return null;
   const parsed = Number(sanitized);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function sanitizeDecimalInput(value: string, decimals = 2): string {
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) return "";
+  const cleaned = normalized.replace(/[^\d.]/g, "");
+  if (!cleaned) return "";
+
+  const [rawInteger = "", ...rawDecimalParts] = cleaned.split(".");
+  const integer = rawInteger.replace(/^0+(?=\d)/, "") || (cleaned.startsWith(".") ? "0" : "");
+  if (!rawDecimalParts.length) return integer;
+
+  const decimal = rawDecimalParts.join("").slice(0, decimals);
+  return `${integer || "0"}.${decimal}`;
+}
+
+function parseDecimalInput(value: string): number | null {
+  const sanitized = sanitizeDecimalInput(value);
+  if (!sanitized || sanitized === ".") return null;
+  const parsed = Number(sanitized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function formatIntegerValue(value: number, min = 0, max = 10000): string {
@@ -345,6 +382,15 @@ function formatNumber(value: number, decimals = 1): string {
   }).format(rounded);
 }
 
+function formatMacroRatioValue(targetGrams: number, weightKg: number | null): string {
+  if (weightKg === null || !Number.isFinite(weightKg) || weightKg <= 0) return "";
+  return formatNumber(targetGrams / weightKg, 2);
+}
+
+function getMacroRatioDraftKey(planId: string, key: MacroTargetKey): string {
+  return `${planId}:${key}:gPerKg`;
+}
+
 function parseOptionalNumberInput(value: string): number | null {
   const normalized = value.trim().replace(",", ".");
   if (!normalized) return null;
@@ -391,6 +437,7 @@ function foodToForm(food: NutritionFood): FoodFormState {
     proteinPer100g: String(food.proteinPer100g),
     carbsPer100g: String(food.carbsPer100g),
     fatPer100g: String(food.fatPer100g),
+    fiberPer100g: String(food.fiberPer100g ?? 0),
     sodiumPer100g: String(food.sodiumPer100g),
     waterPer100g: String(food.waterPer100g),
     restrictionTags: inferRestrictionTagsForFood(food),
@@ -404,6 +451,7 @@ function buildFoodPayload(form: FoodFormState) {
     proteinPer100g: normalizeNumberInput(form.proteinPer100g),
     carbsPer100g: normalizeNumberInput(form.carbsPer100g),
     fatPer100g: normalizeNumberInput(form.fatPer100g),
+    fiberPer100g: normalizeNumberInput(form.fiberPer100g),
     sodiumPer100g: normalizeNumberInput(form.sodiumPer100g),
     waterPer100g: normalizeNumberInput(form.waterPer100g),
     restrictionTags: parseRestrictionTags(form.restrictionTags),
@@ -569,6 +617,7 @@ function buildEntryFromFood(
     proteinPer100g: food.proteinPer100g,
     carbsPer100g: food.carbsPer100g,
     fatPer100g: food.fatPer100g,
+    fiberPer100g: food.fiberPer100g ?? 0,
     sodiumPer100g: food.sodiumPer100g,
     waterPer100g: food.waterPer100g,
     position,
@@ -714,6 +763,7 @@ function buildAlternativeFromFood(
     proteinPer100g: food.proteinPer100g,
     carbsPer100g: food.carbsPer100g,
     fatPer100g: food.fatPer100g,
+    fiberPer100g: food.fiberPer100g ?? 0,
     sodiumPer100g: food.sodiumPer100g,
     waterPer100g: food.waterPer100g,
     position,
@@ -751,6 +801,7 @@ function applyChangeRequestToPlanDraft(
           proteinPer100g: requestedFood.proteinPer100g,
           carbsPer100g: requestedFood.carbsPer100g,
           fatPer100g: requestedFood.fatPer100g,
+          fiberPer100g: requestedFood.fiberPer100g ?? 0,
           sodiumPer100g: requestedFood.sodiumPer100g,
           waterPer100g: requestedFood.waterPer100g,
           updatedAt: now,
@@ -939,6 +990,14 @@ function EnergyCalculatorPanel(props: {
   const selectedPal = PAL_OPTIONS.find(
     (option) => String(option.value) === props.form.pal,
   );
+  const bodyFatValue = parseOptionalNumberInput(props.form.bodyFatPercent);
+  const hasUsableBodyFat = hasValidBodyFatPercent(
+    bodyFatValue === 0 ? null : bodyFatValue,
+  );
+  const selectedFormulaSet = new Set(props.form.formulas);
+  const displayedFormulas = props.calculation.usedFormulas.length
+    ? props.calculation.usedFormulas
+    : props.form.formulas;
   const hasCalculation =
     props.calculation.bmrKcal !== null && props.calculation.tdeeKcal !== null;
   const acceptedTarget = props.acceptedTargetKcal > 0;
@@ -971,13 +1030,23 @@ function EnergyCalculatorPanel(props: {
     },
     {
       label: "Formula",
-      value: getEnergyFormulaLabel(props.form.formula),
+      value: getEnergyFormulaSelectionLabel(displayedFormulas),
     },
     {
       label: "PAL",
       value: props.form.pal || "-",
     },
   ];
+  const toggleFormula = (formula: EnergyFormula, checked: boolean) => {
+    const current = props.form.formulas.length
+      ? props.form.formulas
+      : (["mifflin_st_jeor"] satisfies EnergyFormula[]);
+    if (!checked && current.length <= 1 && current.includes(formula)) return;
+    const next = checked
+      ? [...current, formula].filter((item, index, list) => list.indexOf(item) === index)
+      : current.filter((item) => item !== formula);
+    props.onFormChange("formulas", next.length ? next : ["mifflin_st_jeor"]);
+  };
 
   return (
     <section
@@ -1110,24 +1179,41 @@ function EnergyCalculatorPanel(props: {
               className={fieldClass}
             />
           </label>
-          <label className="block text-sm text-brand-muted">
-            Formula TMB
-            <select
-              value={props.form.formula}
-              onChange={(event) =>
-                props.onFormChange("formula", event.target.value as EnergyFormula)
-              }
-              disabled={!props.athlete || props.loading}
-              className={fieldClass}
-            >
-              {ENERGY_FORMULA_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                  {option.requiresBodyFat ? " (% grasa)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="block text-sm text-brand-muted sm:col-span-2 2xl:col-span-2">
+            <span>Formulas TMB</span>
+            <div className="mt-1.5 grid gap-1 rounded-lg border border-white/10 bg-black/20 p-1.5 sm:grid-cols-2">
+              {ENERGY_FORMULA_OPTIONS.map((option) => {
+                const disabledByBodyFat = isBodyFatFormula(option.value) && !hasUsableBodyFat;
+                const checked = selectedFormulaSet.has(option.value) && !disabledByBodyFat;
+                return (
+                  <label
+                    key={option.value}
+                    title={
+                      disabledByBodyFat
+                        ? "Necesita un % de grasa corporal valido"
+                        : option.label
+                    }
+                    className={`flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] transition ${
+                      checked
+                        ? "bg-brand-accent/15 text-brand-text"
+                        : "text-brand-muted"
+                    } ${disabledByBodyFat ? "cursor-not-allowed opacity-45" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!props.athlete || props.loading || disabledByBodyFat}
+                      onChange={(event) => toggleFormula(option.value, event.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-white/20 bg-black/20 accent-brand-accent"
+                    />
+                    <span className="min-w-0 truncate">
+                      {getEnergyFormulaLabel(option.value)}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
           <label className="block text-sm text-brand-muted">
             PAL
             <select
@@ -1288,6 +1374,9 @@ export function AdminNutritionManagementShell({
   const [integerInputDrafts, setIntegerInputDrafts] = useState<
     Record<string, string>
   >({});
+  const [macroRatioInputDrafts, setMacroRatioInputDrafts] = useState<
+    Record<string, string>
+  >({});
   const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(
     null,
   );
@@ -1392,10 +1481,16 @@ export function AdminNutritionManagementShell({
             ? null
             : parseOptionalNumberInput(energyForm.bodyFatPercent),
         pal: parseOptionalNumberInput(energyForm.pal),
-        formula: energyForm.formula,
+        formulas: energyForm.formulas,
       }),
     [energyForm],
   );
+  const macroRatioWeightKg = useMemo(() => {
+    const parsedWeight = parseOptionalNumberInput(energyForm.weightKg);
+    return parsedWeight !== null && Number.isFinite(parsedWeight) && parsedWeight > 0
+      ? parsedWeight
+      : null;
+  }, [energyForm.weightKg]);
 
   const hasPublishedSnapshot = Boolean(
     publishedPlan || plan?.publishedFileId || reviewPlan?.publishedFileId,
@@ -1520,7 +1615,7 @@ export function AdminNutritionManagementShell({
           heightCm: toDecimalInputValue(athleteData?.heightCm ?? null, 1),
           bodyFatPercent: toDecimalInputValue(usableBodyFat, 1),
           pal: String(DEFAULT_ENERGY_PAL),
-          formula: getDefaultEnergyFormula(usableBodyFat),
+          formulas: getDefaultEnergyFormulas(usableBodyFat),
         });
       })
       .catch((error) => {
@@ -1690,6 +1785,7 @@ export function AdminNutritionManagementShell({
       setPlanMode("review");
       setSaveState("idle");
       setIntegerInputDrafts({});
+      setMacroRatioInputDrafts({});
       setMealSelectedOptions({});
       return;
     }
@@ -1697,6 +1793,7 @@ export function AdminNutritionManagementShell({
     let cancelled = false;
     setPlanLoading(true);
     setIntegerInputDrafts({});
+    setMacroRatioInputDrafts({});
     setMealSelectedOptions({});
     fetch(`/api/admin/nutrition-management/plans/${selectedPlanId}`, {
       cache: "no-store",
@@ -1850,6 +1947,46 @@ export function AdminNutritionManagementShell({
     [],
   );
 
+  const getMacroRatioInputValue = useCallback(
+    (planId: string, key: MacroTargetKey, targetGrams: number, weightKg: number | null) => {
+      const draftKey = getMacroRatioDraftKey(planId, key);
+      if (Object.prototype.hasOwnProperty.call(macroRatioInputDrafts, draftKey)) {
+        return macroRatioInputDrafts[draftKey] ?? "";
+      }
+      return formatMacroRatioValue(targetGrams, weightKg);
+    },
+    [macroRatioInputDrafts],
+  );
+
+  const clearMacroRatioInputDraft = useCallback((planId: string, key: MacroTargetKey) => {
+    const draftKey = getMacroRatioDraftKey(planId, key);
+    setMacroRatioInputDrafts((current) => {
+      if (!Object.prototype.hasOwnProperty.call(current, draftKey)) return current;
+      const next = { ...current };
+      delete next[draftKey];
+      return next;
+    });
+  }, []);
+
+  const handleMacroRatioInputChange = useCallback(
+    (
+      planId: string,
+      key: MacroTargetKey,
+      rawValue: string,
+      weightKg: number | null,
+      max: number,
+      onValidValue: (value: number) => void,
+    ) => {
+      const draftKey = getMacroRatioDraftKey(planId, key);
+      const sanitized = sanitizeDecimalInput(rawValue, 2);
+      setMacroRatioInputDrafts((current) => ({ ...current, [draftKey]: sanitized }));
+      const ratio = parseDecimalInput(sanitized);
+      if (ratio === null || ratio < 0 || weightKg === null || weightKg <= 0) return;
+      onValidValue(clampInteger(ratio * weightKg, 0, max));
+    },
+    [],
+  );
+
   const saveCurrentPlan = useCallback(
     async (planToSave?: NutritionPlanFull | null) => {
       const basePlan =
@@ -1885,6 +2022,7 @@ export function AdminNutritionManagementShell({
         setReviewPlan(normalized);
         setPlanMode("review");
         setIntegerInputDrafts({});
+        setMacroRatioInputDrafts({});
         upsertPlanSummary(json.plan);
         setSaveState("saved");
         return normalizePlanGrams(json.plan);
@@ -1949,6 +2087,7 @@ export function AdminNutritionManagementShell({
       setPublishedPlan(null);
       setPlanMode("review");
       setIntegerInputDrafts({});
+      setMacroRatioInputDrafts({});
       setSaveState("saved");
       toast.success("Plan creado.");
     } catch (error) {
@@ -1981,6 +2120,7 @@ export function AdminNutritionManagementShell({
       setPublishedPlan(null);
       setPlanMode("review");
       setIntegerInputDrafts({});
+      setMacroRatioInputDrafts({});
       setSaveState("saved");
       toast.success("Plan duplicado.");
     } catch (error) {
@@ -2013,6 +2153,7 @@ export function AdminNutritionManagementShell({
         setReviewPlan(null);
         setPublishedPlan(null);
         setPlanMode("review");
+        setMacroRatioInputDrafts({});
       }
       toast.success("Plan eliminado.");
     } catch (error) {
@@ -2030,6 +2171,7 @@ export function AdminNutritionManagementShell({
     setPublishedPlan(null);
     setPlanMode("review");
     setIntegerInputDrafts({});
+    setMacroRatioInputDrafts({});
     setSaveState("idle");
   }
 
@@ -2048,6 +2190,7 @@ export function AdminNutritionManagementShell({
     setPublishedPlan(null);
     setPlanMode("review");
     setIntegerInputDrafts({});
+    setMacroRatioInputDrafts({});
     setSaveState("idle");
   }
 
@@ -2167,9 +2310,7 @@ export function AdminNutritionManagementShell({
       ...current,
       [key]: value,
     }));
-    if (key !== "formula") {
-      setEnergyTargetTouched(false);
-    }
+    setEnergyTargetTouched(false);
   }
 
   function updateEnergyTargetDraft(value: string) {
@@ -2206,6 +2347,7 @@ export function AdminNutritionManagementShell({
       setPlanMode("published");
       setPlan(publishedPlan);
       setIntegerInputDrafts({});
+      setMacroRatioInputDrafts({});
       setSaveState((current) => (current === "dirty" ? current : "saved"));
       return;
     }
@@ -2220,6 +2362,7 @@ export function AdminNutritionManagementShell({
     setPlan(editablePlan);
     setPlanMode("review");
     setIntegerInputDrafts({});
+    setMacroRatioInputDrafts({});
     setSaveState((current) => (current === "dirty" ? current : "saved"));
   }
 
@@ -2230,7 +2373,11 @@ export function AdminNutritionManagementShell({
       | "targetFatG"
       | "targetCaloriesKcal",
     value: number,
+    source: "grams" | "ratio" = "grams",
   ) {
+    if (source === "grams" && key !== "targetCaloriesKcal" && plan?.id) {
+      clearMacroRatioInputDraft(plan.id, key);
+    }
     updatePlanDraft((current) => ({
       ...current,
       [key]: clampInteger(
@@ -2803,6 +2950,7 @@ export function AdminNutritionManagementShell({
       setReviewPlan(nextReviewPlan);
       setPlanMode("published");
       setIntegerInputDrafts({});
+      setMacroRatioInputDrafts({});
       upsertPlanSummary(json.plan);
       setSaveState("saved");
       toast.success("Plan publicado.");
@@ -2930,6 +3078,7 @@ export function AdminNutritionManagementShell({
         setPlanMode("published");
         upsertPlanSummary(json.plan);
         setIntegerInputDrafts({});
+        setMacroRatioInputDrafts({});
         setSaveState("saved");
       } else if (shouldReloadDeniedPlan) {
         const planRes = await fetch(
@@ -2962,6 +3111,7 @@ export function AdminNutritionManagementShell({
         setPlan(nextPublishedPlan ?? nextReviewPlan);
         upsertPlanSummary(planJson.plan);
         setIntegerInputDrafts({});
+        setMacroRatioInputDrafts({});
         setSaveState("saved");
       }
       setRequestAdminNotes((current) => {
@@ -3180,6 +3330,12 @@ export function AdminNutritionManagementShell({
                           </strong>
                         </span>
                         <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
+                          Fibra{" "}
+                          <strong className="text-brand-text">
+                            {formatNumber(food.fiberPer100g ?? 0)}
+                          </strong>
+                        </span>
+                        <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
                           Sodio{" "}
                           <strong className="text-brand-text">
                             {formatNumber(food.sodiumPer100g, 0)}
@@ -3233,17 +3389,18 @@ export function AdminNutritionManagementShell({
               <div className="mt-4 hidden overflow-hidden rounded-xl border border-white/10 md:block">
                 <table className="w-full table-fixed text-xs xl:text-[13px]">
                   <colgroup>
-                    <col style={{ width: "20%" }} />
-                    <col style={{ width: "11%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "7%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "18%" }} />
-                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "19%" }} />
                     <col style={{ width: "10%" }} />
+                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "16%" }} />
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "8%" }} />
                   </colgroup>
                   <thead className="bg-black/30 text-[11px] uppercase tracking-[0.08em] text-brand-muted">
                     <tr>
@@ -3279,6 +3436,7 @@ export function AdminNutritionManagementShell({
                       <th className="px-2 py-2 text-right">P</th>
                       <th className="px-2 py-2 text-right">C</th>
                       <th className="px-2 py-2 text-right">G</th>
+                      <th className="px-2 py-2 text-right">Fibra</th>
                       <th className="px-2 py-2 text-right">Sodio</th>
                       <th className="px-2 py-2 text-right">Agua</th>
                       <th className="px-2 py-2 text-left">Etiquetas</th>
@@ -3316,6 +3474,9 @@ export function AdminNutritionManagementShell({
                           </td>
                           <td className="px-2 py-2 text-right text-brand-text">
                             {formatNumber(food.fatPer100g)}
+                          </td>
+                          <td className="px-2 py-2 text-right text-brand-muted">
+                            {formatNumber(food.fiberPer100g ?? 0)}
                           </td>
                           <td className="px-2 py-2 text-right text-brand-muted">
                             {formatNumber(food.sodiumPer100g, 0)}
@@ -3372,7 +3533,7 @@ export function AdminNutritionManagementShell({
                     ) : (
                       <tr>
                         <td
-                          colSpan={11}
+                          colSpan={12}
                           className="px-3 py-8 text-center text-sm text-brand-muted"
                         >
                           No hay alimentos para este filtro.
@@ -3420,6 +3581,7 @@ export function AdminNutritionManagementShell({
                     ["proteinPer100g", "Proteinas g/100g"],
                     ["carbsPer100g", "Carbos g/100g"],
                     ["fatPer100g", "Grasas g/100g"],
+                    ["fiberPer100g", "Fibra g/100g"],
                     ["sodiumPer100g", "Sodio mg/100g"],
                     ["waterPer100g", "Agua g/100g"],
                   ].map(([key, label]) => (
@@ -3901,7 +4063,7 @@ export function AdminNutritionManagementShell({
               ) : (
                 <>
                   <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_repeat(3,minmax(120px,0.5fr))_180px]">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_repeat(3,minmax(160px,0.75fr))_160px]">
                       <label className="block text-sm text-brand-muted">
                         Plan
                         <input
@@ -3913,90 +4075,81 @@ export function AdminNutritionManagementShell({
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                       </label>
-                      <label className="block text-sm text-brand-muted">
-                        Proteinas
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          value={getIntegerInputValue(
-                            `${plan.id}:targetProteinG`,
-                            plan.targetProteinG,
-                            0,
-                            2000,
-                          )}
-                          onChange={(event) =>
-                            handleIntegerInputChange(
-                              `${plan.id}:targetProteinG`,
-                              event.target.value,
-                              0,
-                              2000,
-                              (value) => updateTarget("targetProteinG", value),
-                            )
-                          }
-                          onBlur={() =>
-                            clearIntegerInputDraft(`${plan.id}:targetProteinG`)
-                          }
-                          disabled={isCurrentPlanPublished}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                      </label>
-                      <label className="block text-sm text-brand-muted">
-                        Carbohidratos
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          value={getIntegerInputValue(
-                            `${plan.id}:targetCarbsG`,
-                            plan.targetCarbsG,
-                            0,
-                            3000,
-                          )}
-                          onChange={(event) =>
-                            handleIntegerInputChange(
-                              `${plan.id}:targetCarbsG`,
-                              event.target.value,
-                              0,
-                              3000,
-                              (value) => updateTarget("targetCarbsG", value),
-                            )
-                          }
-                          onBlur={() =>
-                            clearIntegerInputDraft(`${plan.id}:targetCarbsG`)
-                          }
-                          disabled={isCurrentPlanPublished}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                      </label>
-                      <label className="block text-sm text-brand-muted">
-                        Grasas
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          value={getIntegerInputValue(
-                            `${plan.id}:targetFatG`,
-                            plan.targetFatG,
-                            0,
-                            1000,
-                          )}
-                          onChange={(event) =>
-                            handleIntegerInputChange(
-                              `${plan.id}:targetFatG`,
-                              event.target.value,
-                              0,
-                              1000,
-                              (value) => updateTarget("targetFatG", value),
-                            )
-                          }
-                          onBlur={() =>
-                            clearIntegerInputDraft(`${plan.id}:targetFatG`)
-                          }
-                          disabled={isCurrentPlanPublished}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                      </label>
+                      {MACRO_TARGETS.map((macro) => {
+                        const gramsInputKey = `${plan.id}:${macro.key}`;
+                        const targetGrams = plan[macro.key];
+                        return (
+                          <div key={macro.key} className="block text-sm text-brand-muted">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>{macro.label}</span>
+                              <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[10px] text-brand-muted">
+                                g/kg
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(72px,0.78fr)] gap-2">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                aria-label={`${macro.label} en gramos`}
+                                value={getIntegerInputValue(
+                                  gramsInputKey,
+                                  targetGrams,
+                                  0,
+                                  macro.max,
+                                )}
+                                onChange={(event) =>
+                                  handleIntegerInputChange(
+                                    gramsInputKey,
+                                    event.target.value,
+                                    0,
+                                    macro.max,
+                                    (value) => updateTarget(macro.key, value, "grams"),
+                                  )
+                                }
+                                onBlur={() => clearIntegerInputDraft(gramsInputKey)}
+                                disabled={isCurrentPlanPublished}
+                                className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                              />
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                aria-label={`${macro.label} en gramos por kg`}
+                                value={getMacroRatioInputValue(
+                                  plan.id,
+                                  macro.key,
+                                  targetGrams,
+                                  macroRatioWeightKg,
+                                )}
+                                onChange={(event) =>
+                                  handleMacroRatioInputChange(
+                                    plan.id,
+                                    macro.key,
+                                    event.target.value,
+                                    macroRatioWeightKg,
+                                    macro.max,
+                                    (value) => {
+                                      clearIntegerInputDraft(gramsInputKey);
+                                      updateTarget(macro.key, value, "ratio");
+                                    },
+                                  )
+                                }
+                                onBlur={() => clearMacroRatioInputDraft(plan.id, macro.key)}
+                                disabled={isCurrentPlanPublished || macroRatioWeightKg === null}
+                                className="w-full rounded-xl border border-white/10 bg-black/20 px-2.5 py-2.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
+                              />
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-brand-muted">
+                              <span>g totales</span>
+                              <span>
+                                {macroRatioWeightKg
+                                  ? `${formatNumber(macroRatioWeightKg, 1)} kg`
+                                  : "Sin peso"}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
                       <label className="block text-sm text-brand-muted">
                         Estado
                         <select
@@ -4356,6 +4509,11 @@ export function AdminNutritionManagementShell({
                             <SmallTotal
                               label="G"
                               value={totals.fatG}
+                              unit="g"
+                            />
+                            <SmallTotal
+                              label="Fibra"
+                              value={totals.fiberG}
                               unit="g"
                             />
                             <SmallTotal
@@ -4822,6 +4980,15 @@ export function AdminNutritionManagementShell({
                                                   </strong>
                                                 </span>
                                                 <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
+                                                  Fibra{" "}
+                                                  <strong className="text-brand-text">
+                                                    {formatNumber(
+                                                      entryTotals.fiberG,
+                                                    )}{" "}
+                                                    g
+                                                  </strong>
+                                                </span>
+                                                <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
                                                   Sodio{" "}
                                                   <strong className="text-brand-text">
                                                     {formatNumber(
@@ -5169,6 +5336,13 @@ export function AdminNutritionManagementShell({
                                                               )}
                                                             </span>
                                                             <span className="rounded-md bg-black/20 px-2 py-1 text-brand-muted">
+                                                              Fibra{" "}
+                                                              {formatNumber(
+                                                                alternativeTotals.fiberG,
+                                                              )}{" "}
+                                                              g
+                                                            </span>
+                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-muted">
                                                               {formatNumber(
                                                                 alternativeTotals.sodiumMg,
                                                                 0,
@@ -5382,7 +5556,7 @@ export function AdminNutritionManagementShell({
                                     </div>
 
                                     <div className="mt-3 hidden overflow-x-auto rounded-xl border border-white/10 lg:block">
-                                      <table className="min-w-[1080px] w-full text-sm">
+                                      <table className="min-w-[1140px] w-full text-sm">
                                         <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
                                           <tr>
                                             <th className="px-3 py-2 text-left">
@@ -5402,6 +5576,9 @@ export function AdminNutritionManagementShell({
                                             </th>
                                             <th className="px-3 py-2 text-right">
                                               G
+                                            </th>
+                                            <th className="px-3 py-2 text-right">
+                                              Fibra
                                             </th>
                                             <th className="px-3 py-2 text-right">
                                               Sodio
@@ -5624,6 +5801,12 @@ export function AdminNutritionManagementShell({
                                                     {formatNumber(
                                                       entryTotals.fatG,
                                                     )}
+                                                  </td>
+                                                  <td className="px-3 py-2 text-right text-brand-muted">
+                                                    {formatNumber(
+                                                      entryTotals.fiberG,
+                                                    )}{" "}
+                                                    g
                                                   </td>
                                                   <td className="px-3 py-2 text-right text-brand-muted">
                                                     {formatNumber(
@@ -5864,7 +6047,7 @@ export function AdminNutritionManagementShell({
                                                                     </select>
                                                                   </div>
                                                                 </label>
-                                                                <div className="grid flex-[1.8] grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+                                                                <div className="grid flex-[1.8] grid-cols-3 gap-2 text-xs sm:grid-cols-7">
                                                                   <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-text">
                                                                     {formatNumber(
                                                                       alternativeTotals.caloriesKcal,
@@ -5889,6 +6072,13 @@ export function AdminNutritionManagementShell({
                                                                     {formatNumber(
                                                                       alternativeTotals.fatG,
                                                                     )}
+                                                                  </span>
+                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-muted">
+                                                                    Fibra{" "}
+                                                                    {formatNumber(
+                                                                      alternativeTotals.fiberG,
+                                                                    )}{" "}
+                                                                    g
                                                                   </span>
                                                                   <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-muted">
                                                                     {formatNumber(
@@ -6192,6 +6382,7 @@ export function AdminNutritionManagementShell({
                     ["proteinPer100g", "Proteinas"],
                     ["carbsPer100g", "Carbos"],
                     ["fatPer100g", "Grasas"],
+                    ["fiberPer100g", "Fibra"],
                     ["sodiumPer100g", "Sodio"],
                     ["waterPer100g", "Agua"],
                   ].map(([key, label]) => (

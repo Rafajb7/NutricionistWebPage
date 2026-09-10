@@ -82,6 +82,7 @@ export const nutritionFoodInputSchema = z.object({
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
+  fiberPer100g: z.coerce.number().min(0).max(100).optional().default(0),
   sodiumPer100g: z.coerce.number().min(0).max(100000),
   waterPer100g: z.coerce.number().min(0).max(100),
   restrictionTags: z.array(nutritionFoodRestrictionTagSchema).max(40).optional().default([])
@@ -137,6 +138,7 @@ const nutritionPlanAlternativeSchema = z.object({
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
+  fiberPer100g: z.coerce.number().min(0).max(100).optional().default(0),
   sodiumPer100g: z.coerce.number().min(0).max(100000),
   waterPer100g: z.coerce.number().min(0).max(100),
   position: z.coerce.number().int().min(0).max(1000).optional().default(0),
@@ -157,6 +159,7 @@ const nutritionPlanEntrySchema = z.object({
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
+  fiberPer100g: z.coerce.number().min(0).max(100).optional().default(0),
   sodiumPer100g: z.coerce.number().min(0).max(100000),
   waterPer100g: z.coerce.number().min(0).max(100),
   position: z.coerce.number().int().min(0).max(1000).optional().default(0),

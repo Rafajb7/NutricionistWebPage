@@ -1,4 +1,4 @@
-const RETRY_DELAYS_MS = [250, 750, 1500];
+const RETRY_DELAYS_MS = [500, 1500, 3000, 6000, 10000];
 
 function toRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -52,11 +52,17 @@ function isRetriableGoogleApiError(error: unknown): boolean {
     "ratelimitexceeded",
     "userratelimitexceeded",
     "quota exceeded",
+    "service unavailable",
+    "temporarily unavailable",
     "socket hang up",
     "econnreset",
     "etimedout",
     "timeout"
   ].some((pattern) => text.includes(pattern));
+}
+
+export function isGoogleTransientError(error: unknown): boolean {
+  return isRetriableGoogleApiError(error);
 }
 
 export function isGoogleRateLimitError(error: unknown): boolean {

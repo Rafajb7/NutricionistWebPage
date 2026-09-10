@@ -13,8 +13,16 @@ export type EnergyCalculationInput = {
   heightCm: number | null;
   bodyFatPercent: number | null;
   pal: number | null;
-  formula: EnergyFormula;
+  formula?: EnergyFormula;
+  formulas?: EnergyFormula[];
   referenceDate?: Date;
+};
+
+export type EnergyFormulaResult = {
+  formula: EnergyFormula;
+  label: string;
+  bmrKcal: number;
+  tdeeKcal: number;
 };
 
 export type EnergyCalculationResult = {
@@ -25,6 +33,9 @@ export type EnergyCalculationResult = {
   bodyFatPercent: number | null;
   leanMassKg: number | null;
   formula: EnergyFormula;
+  formulas: EnergyFormula[];
+  usedFormulas: EnergyFormula[];
+  formulaResults: EnergyFormulaResult[];
   pal: number | null;
   bmrKcal: number | null;
   tdeeKcal: number | null;
@@ -108,8 +119,18 @@ export function getDefaultEnergyFormula(bodyFatPercent: number | null): EnergyFo
   return hasValidBodyFatPercent(bodyFatPercent) ? "cunningham" : "mifflin_st_jeor";
 }
 
+export function getDefaultEnergyFormulas(bodyFatPercent: number | null): EnergyFormula[] {
+  return [getDefaultEnergyFormula(bodyFatPercent)];
+}
+
 export function getEnergyFormulaLabel(formula: EnergyFormula): string {
   return ENERGY_FORMULA_OPTIONS.find((option) => option.value === formula)?.label ?? formula;
+}
+
+export function getEnergyFormulaSelectionLabel(formulas: EnergyFormula[]): string {
+  const validFormulas: EnergyFormula[] = formulas.length ? formulas : ["mifflin_st_jeor"];
+  if (validFormulas.length === 1) return getEnergyFormulaLabel(validFormulas[0]);
+  return `Media de ${validFormulas.length} formulas`;
 }
 
 function round(value: number, decimals = 0): number {
@@ -117,8 +138,45 @@ function round(value: number, decimals = 0): number {
   return Math.round(value * factor) / factor;
 }
 
-function isBodyFatFormula(formula: EnergyFormula): boolean {
+export function isBodyFatFormula(formula: EnergyFormula): boolean {
   return formula === "cunningham" || formula === "katch_mcardle";
+}
+
+function normalizeFormulaSelection(input: EnergyCalculationInput): EnergyFormula[] {
+  const rawFormulas = input.formulas?.length
+    ? input.formulas
+    : input.formula
+      ? [input.formula]
+      : [getDefaultEnergyFormula(input.bodyFatPercent)];
+  const allowed = new Set(ENERGY_FORMULA_OPTIONS.map((option) => option.value));
+  const unique = rawFormulas.filter(
+    (formula, index, list) => allowed.has(formula) && list.indexOf(formula) === index
+  );
+  return unique.length ? unique : [getDefaultEnergyFormula(input.bodyFatPercent)];
+}
+
+function calculateBmrForFormula(input: {
+  formula: EnergyFormula;
+  sex: AthleteSex;
+  age: number;
+  weightKg: number;
+  heightCm: number;
+  leanMassKg: number | null;
+}): number {
+  if (input.formula === "cunningham") {
+    return 500 + 22 * (input.leanMassKg as number);
+  }
+  if (input.formula === "katch_mcardle") {
+    return 370 + 21.6 * (input.leanMassKg as number);
+  }
+  if (input.formula === "harris_benedict_revised") {
+    return input.sex === "male"
+      ? 88.362 + 13.397 * input.weightKg + 4.799 * input.heightCm - 5.677 * input.age
+      : 447.593 + 9.247 * input.weightKg + 3.098 * input.heightCm - 4.33 * input.age;
+  }
+  return input.sex === "male"
+    ? 10 * input.weightKg + 6.25 * input.heightCm - 5 * input.age + 5
+    : 10 * input.weightKg + 6.25 * input.heightCm - 5 * input.age - 161;
 }
 
 export function calculateEnergyNeeds(input: EnergyCalculationInput): EnergyCalculationResult {
@@ -127,6 +185,7 @@ export function calculateEnergyNeeds(input: EnergyCalculationInput): EnergyCalcu
   const heightCm = input.heightCm;
   const bodyFatPercent = input.bodyFatPercent;
   const pal = input.pal;
+  const selectedFormulas = normalizeFormulaSelection(input);
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -138,8 +197,15 @@ export function calculateEnergyNeeds(input: EnergyCalculationInput): EnergyCalcu
   if (bodyFatPercent !== null && (!Number.isFinite(bodyFatPercent) || bodyFatPercent < 0 || bodyFatPercent > 100)) {
     errors.push("% grasa corporal");
   }
-  if (isBodyFatFormula(input.formula) && !hasValidBodyFatPercent(bodyFatPercent)) {
+  const hasBodyFat = hasValidBodyFatPercent(bodyFatPercent);
+  const usableFormulas = selectedFormulas.filter(
+    (formula) => !isBodyFatFormula(formula) || hasBodyFat
+  );
+  if (!usableFormulas.length) {
     errors.push("% grasa corporal valido para esta formula");
+  }
+  if (usableFormulas.length < selectedFormulas.length) {
+    warnings.push("Se han omitido formulas que requieren % de grasa valido.");
   }
 
   if (age !== null && (age < 12 || age > 90)) warnings.push("Edad fuera del rango habitual de trabajo.");
@@ -169,7 +235,10 @@ export function calculateEnergyNeeds(input: EnergyCalculationInput): EnergyCalcu
       heightCm,
       bodyFatPercent,
       leanMassKg,
-      formula: input.formula,
+      formula: usableFormulas[0] ?? selectedFormulas[0],
+      formulas: selectedFormulas,
+      usedFormulas: [],
+      formulaResults: [],
       pal,
       bmrKcal: null,
       tdeeKcal: null,
@@ -184,24 +253,30 @@ export function calculateEnergyNeeds(input: EnergyCalculationInput): EnergyCalcu
   const resolvedPal = pal as number;
   const resolvedLeanMass = leanMassKg as number | null;
 
-  let bmrKcal: number;
-  if (input.formula === "cunningham") {
-    bmrKcal = 500 + 22 * (resolvedLeanMass as number);
-  } else if (input.formula === "katch_mcardle") {
-    bmrKcal = 370 + 21.6 * (resolvedLeanMass as number);
-  } else if (input.formula === "harris_benedict_revised") {
-    bmrKcal =
-      input.sex === "male"
-        ? 88.362 + 13.397 * resolvedWeight + 4.799 * resolvedHeight - 5.677 * resolvedAge
-        : 447.593 + 9.247 * resolvedWeight + 3.098 * resolvedHeight - 4.33 * resolvedAge;
-  } else {
-    bmrKcal =
-      input.sex === "male"
-        ? 10 * resolvedWeight + 6.25 * resolvedHeight - 5 * resolvedAge + 5
-        : 10 * resolvedWeight + 6.25 * resolvedHeight - 5 * resolvedAge - 161;
-  }
+  const formulaResults = usableFormulas.map((formula) => {
+    const bmrKcal = round(
+      calculateBmrForFormula({
+        formula,
+        sex: input.sex,
+        age: resolvedAge,
+        weightKg: resolvedWeight,
+        heightCm: resolvedHeight,
+        leanMassKg: resolvedLeanMass
+      }),
+      0
+    );
+    return {
+      formula,
+      label: getEnergyFormulaLabel(formula),
+      bmrKcal,
+      tdeeKcal: round(bmrKcal * resolvedPal, 0)
+    };
+  });
 
-  const roundedBmr = round(bmrKcal, 0);
+  const averageBmr = round(
+    formulaResults.reduce((sum, item) => sum + item.bmrKcal, 0) / formulaResults.length,
+    0
+  );
   return {
     age,
     sex: input.sex,
@@ -209,10 +284,13 @@ export function calculateEnergyNeeds(input: EnergyCalculationInput): EnergyCalcu
     heightCm,
     bodyFatPercent,
     leanMassKg,
-    formula: input.formula,
+    formula: usableFormulas[0],
+    formulas: selectedFormulas,
+    usedFormulas: usableFormulas,
+    formulaResults,
     pal,
-    bmrKcal: roundedBmr,
-    tdeeKcal: round(roundedBmr * resolvedPal, 0),
+    bmrKcal: averageBmr,
+    tdeeKcal: round(averageBmr * resolvedPal, 0),
     errors,
     warnings
   };

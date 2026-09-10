@@ -149,7 +149,8 @@ const FOOD_HEADERS = [
   "Activo",
   "Creado",
   "Actualizado",
-  "Etiquetas restricciones"
+  "Etiquetas restricciones",
+  "Fibra g 100g"
 ];
 
 const PLAN_HEADERS = [
@@ -202,7 +203,8 @@ const PLAN_FOOD_HEADERS = [
   "Alternativas json",
   "Unidad cantidad",
   "Gramos unidad",
-  "Opcion comida"
+  "Opcion comida",
+  "Fibra 100g snapshot"
 ];
 
 const VERSION_HEADERS = [
@@ -464,6 +466,7 @@ function sanitizeAlternative(
     proteinPer100g: clampNumber(alternative.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(alternative.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(alternative.fatPer100g, 0, 200),
+    fiberPer100g: clampNumber(alternative.fiberPer100g, 0, 100),
     sodiumPer100g: clampNumber(alternative.sodiumPer100g, 0, 100000),
     waterPer100g: clampNumber(alternative.waterPer100g, 0, 100),
     position: index + 1,
@@ -900,6 +903,7 @@ function parseFood(row: string[]): NutritionFood | null {
     proteinPer100g: parseNumber(row[4]),
     carbsPer100g: parseNumber(row[5]),
     fatPer100g: parseNumber(row[6]),
+    fiberPer100g: clampNumber(parseNumber(row[13]), 0, 100),
     sodiumPer100g: parseNumber(row[7]),
     waterPer100g: parseNumber(row[8]),
     restrictionTags: hasStoredRestrictionTags
@@ -984,6 +988,7 @@ function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanF
           proteinPer100g: clampNumber(parseNumber(record.proteinPer100g), 0, 200),
           carbsPer100g: clampNumber(parseNumber(record.carbsPer100g), 0, 200),
           fatPer100g: clampNumber(parseNumber(record.fatPer100g), 0, 200),
+          fiberPer100g: clampNumber(parseNumber(record.fiberPer100g), 0, 100),
           sodiumPer100g: clampNumber(parseNumber(record.sodiumPer100g), 0, 100000),
           waterPer100g: clampNumber(parseNumber(record.waterPer100g), 0, 100),
           position: Math.max(1, parseInteger(record.position) || index + 1),
@@ -1018,6 +1023,7 @@ function parseEntry(row: string[]): NutritionPlanFoodEntry | null {
     proteinPer100g: parseNumber(row[6]),
     carbsPer100g: parseNumber(row[7]),
     fatPer100g: parseNumber(row[8]),
+    fiberPer100g: clampNumber(parseNumber(row[19]), 0, 100),
     sodiumPer100g: parseNumber(row[9]),
     waterPer100g: parseNumber(row[10]),
     position: parseInteger(row[11]),
@@ -1179,7 +1185,8 @@ function serializeFood(food: NutritionFood): Array<string | number> {
     toSheetBoolean(food.active),
     food.createdAt,
     food.updatedAt,
-    serializeRestrictionTags(food.restrictionTags ?? [])
+    serializeRestrictionTags(food.restrictionTags ?? []),
+    food.fiberPer100g
   ];
 }
 
@@ -1193,6 +1200,7 @@ function buildMissingDefaultFoods(existingFoods: NutritionFood[]): NutritionFood
   ).map((food) => ({
     ...food,
     referenceUnit: "100g",
+    fiberPer100g: clampNumber(food.fiberPer100g ?? 0, 0, 100),
     restrictionTags: inferRestrictionTagsForFood(food),
     active: true,
     createdAt: now,
@@ -1317,6 +1325,7 @@ function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]
         proteinPer100g: alternative.proteinPer100g,
         carbsPer100g: alternative.carbsPer100g,
         fatPer100g: alternative.fatPer100g,
+        fiberPer100g: alternative.fiberPer100g,
         sodiumPer100g: alternative.sodiumPer100g,
         waterPer100g: alternative.waterPer100g,
         position: alternative.position || index + 1,
@@ -1348,7 +1357,8 @@ function serializeEntry(entry: NutritionPlanFoodEntry): Array<string | number> {
     serializeEntryAlternatives(entry.alternatives ?? []),
     parseQuantityUnit(entry.quantityUnit),
     clampUnitWeightG(entry.unitWeightG),
-    clampMealOption(entry.mealOption || 1)
+    clampMealOption(entry.mealOption || 1),
+    entry.fiberPer100g
   ];
 }
 
@@ -2034,6 +2044,7 @@ export async function createNutritionFood(input: {
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
+  fiberPer100g?: number;
   sodiumPer100g: number;
   waterPer100g: number;
   restrictionTags?: NutritionFood["restrictionTags"];
@@ -2055,6 +2066,7 @@ export async function createNutritionFood(input: {
     proteinPer100g: clampNumber(input.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(input.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(input.fatPer100g, 0, 200),
+    fiberPer100g: clampNumber(input.fiberPer100g ?? 0, 0, 100),
     sodiumPer100g: clampNumber(input.sodiumPer100g, 0, 100000),
     waterPer100g: clampNumber(input.waterPer100g, 0, 100),
     restrictionTags:
@@ -2083,6 +2095,7 @@ export async function updateNutritionFood(input: Partial<NutritionFood> & { id: 
     proteinPer100g: clampNumber(input.proteinPer100g ?? current.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(input.carbsPer100g ?? current.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(input.fatPer100g ?? current.fatPer100g, 0, 200),
+    fiberPer100g: clampNumber(input.fiberPer100g ?? current.fiberPer100g, 0, 100),
     sodiumPer100g: clampNumber(input.sodiumPer100g ?? current.sodiumPer100g, 0, 100000),
     waterPer100g: clampNumber(input.waterPer100g ?? current.waterPer100g, 0, 100),
     restrictionTags:
@@ -2302,6 +2315,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
           proteinPer100g: clampNumber(entry.proteinPer100g, 0, 200),
           carbsPer100g: clampNumber(entry.carbsPer100g, 0, 200),
           fatPer100g: clampNumber(entry.fatPer100g, 0, 200),
+          fiberPer100g: clampNumber(entry.fiberPer100g, 0, 100),
           sodiumPer100g: clampNumber(entry.sodiumPer100g, 0, 100000),
           waterPer100g: clampNumber(entry.waterPer100g, 0, 100),
           position,
