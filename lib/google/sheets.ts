@@ -10,6 +10,7 @@ import { getGoogleAuth } from "@/lib/google/auth";
 import {
   isGoogleAlreadyExistsError,
   isGoogleRateLimitError,
+  isGoogleTransientError,
   withGoogleApiRetry
 } from "@/lib/google/retry";
 import {
@@ -995,7 +996,7 @@ export async function readUsersFromSheetCached(options?: {
     return cloneUsers(users);
   } catch (error) {
     const stale = readStaleMemoryCache<AppUser[]>(USERS_SHEET_CACHE_KEY);
-    if (!options?.force && stale && isGoogleRateLimitError(error)) {
+    if (!options?.force && stale && (isGoogleRateLimitError(error) || isGoogleTransientError(error))) {
       writeMemoryCache(USERS_SHEET_CACHE_KEY, stale, options?.ttlMs ?? USERS_SHEET_CACHE_TTL_MS);
       return cloneUsers(stale);
     }

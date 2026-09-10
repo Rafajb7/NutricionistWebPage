@@ -80,6 +80,7 @@ function applyChangeRequestToPlan(
           proteinPer100g: requestedFood.proteinPer100g,
           carbsPer100g: requestedFood.carbsPer100g,
           fatPer100g: requestedFood.fatPer100g,
+          fiberPer100g: requestedFood.fiberPer100g ?? 0,
           sodiumPer100g: requestedFood.sodiumPer100g,
           waterPer100g: requestedFood.waterPer100g,
           updatedAt: now
