@@ -41,7 +41,7 @@ function getErrorText(error: unknown): string {
 
 function isRetriableGoogleApiError(error: unknown): boolean {
   const status = getErrorStatus(error);
-  if (status === 429) return false;
+  if (status === 429) return true;
   if (status && [408, 500, 502, 503, 504].includes(status)) return true;
 
   const text = getErrorText(error);
