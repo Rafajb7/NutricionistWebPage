@@ -16,6 +16,7 @@ import {
   ArrowUp,
   Calculator,
   Check,
+  ClipboardPaste,
   Copy,
   Download,
   Eye,
@@ -78,6 +79,7 @@ import type {
   NutritionAthleteRestrictionType,
   NutritionChangeRequest,
   NutritionFood,
+  NutritionFoodReferenceUnit,
   NutritionFoodRestrictionTag,
   NutritionPlanFoodAlternative,
   NutritionPlanFoodEntry,
@@ -91,7 +93,10 @@ import type {
 } from "@/lib/nutrition/types";
 import {
   getAllowedQuantityUnitsForFood,
+  getFoodBaseQuantityUnit,
+  getFoodReferenceUnitLabel,
   getDefaultQuantityUnitForFood,
+  getEstimatedUnitWeightGForFood,
   getDefaultUnitWeightGForFood,
   getEffectiveQuantityG,
   normalizeQuantityUnitForFood,
@@ -155,16 +160,18 @@ type PlanResponse = {
 type FoodFormState = {
   name: string;
   category: string;
+  referenceUnit: NutritionFoodReferenceUnit;
   proteinPer100g: string;
   carbsPer100g: string;
   fatPer100g: string;
   fiberPer100g: string;
   sodiumPer100g: string;
   waterPer100g: string;
+  unitWeightG: string;
   restrictionTags: NutritionFoodRestrictionTag[];
 };
 
-type NutritionInputFieldKey = Exclude<keyof FoodFormState, "restrictionTags">;
+type NutritionInputFieldKey = Exclude<keyof FoodFormState, "referenceUnit" | "restrictionTags">;
 
 type RestrictionFormState = {
   type: NutritionAthleteRestrictionType;
@@ -201,12 +208,14 @@ const MACRO_TARGETS: Array<{
 const EMPTY_FOOD_FORM: FoodFormState = {
   name: "",
   category: "",
+  referenceUnit: "100g",
   proteinPer100g: "",
   carbsPer100g: "",
   fatPer100g: "",
   fiberPer100g: "",
   sodiumPer100g: "",
   waterPer100g: "",
+  unitWeightG: "",
   restrictionTags: [],
 };
 
@@ -230,9 +239,16 @@ const QUANTITY_UNIT_OPTIONS: Array<{
   label: string;
 }> = [
   { value: "g", label: "g" },
-  { value: "piece", label: "pieza" },
+  { value: "ml", label: "ml" },
+  { value: "piece", label: "unidad" },
   { value: "serving", label: "racion" },
 ];
+
+type CopiedMealOption = {
+  sourceMealName: string;
+  optionNumber: number;
+  entries: NutritionPlanFoodEntry[];
+};
 
 const CHANGE_REQUEST_TYPE_LABELS = {
   food_swap: "Sustitucion de alimento",
@@ -304,7 +320,7 @@ function normalizeQuantityG(value: number): number {
 }
 
 function normalizeQuantityUnit(value: unknown): NutritionQuantityUnit {
-  if (value === "piece" || value === "serving") return value;
+  if (value === "g" || value === "ml" || value === "piece" || value === "serving") return value;
   return "g";
 }
 
@@ -312,7 +328,7 @@ function normalizeUnitWeightG(
   value: unknown,
   unit: NutritionQuantityUnit,
 ): number {
-  if (unit === "g") return 1;
+  if (unit === "g" || unit === "ml") return 1;
   const parsed = typeof value === "number" ? value : Number(value);
   return clampInteger(Number.isFinite(parsed) ? parsed : 150, 1, 10000);
 }
@@ -391,6 +407,68 @@ function getMacroRatioDraftKey(planId: string, key: MacroTargetKey): string {
   return `${planId}:${key}:gPerKg`;
 }
 
+const MACRO_TARGET_MAX_BY_KEY = {
+  targetProteinG: 2000,
+  targetCarbsG: 3000,
+  targetFatG: 1000,
+} satisfies Record<MacroTargetKey, number>;
+
+const MACRO_TARGET_KCAL_BY_KEY = {
+  targetProteinG: ATWATER_KCAL_PER_GRAM.protein,
+  targetCarbsG: ATWATER_KCAL_PER_GRAM.carbs,
+  targetFatG: ATWATER_KCAL_PER_GRAM.fat,
+} satisfies Record<MacroTargetKey, number>;
+
+function isMacroTargetKey(
+  key: MacroTargetKey | "targetCaloriesKcal",
+): key is MacroTargetKey {
+  return key !== "targetCaloriesKcal";
+}
+
+function completeMissingMacroTarget(plan: NutritionPlanFull): {
+  plan: NutritionPlanFull;
+  completedKey: MacroTargetKey | null;
+} {
+  const targetCaloriesKcal = clampInteger(plan.targetCaloriesKcal ?? 0, 0, 20000);
+  if (targetCaloriesKcal <= 0) return { plan, completedKey: null };
+
+  const macroValues = MACRO_TARGETS.map(({ key }) => ({
+    key,
+    value: clampInteger(plan[key], 0, MACRO_TARGET_MAX_BY_KEY[key]),
+  }));
+  const filledMacros = macroValues.filter((item) => item.value > 0);
+  const missingMacros = macroValues.filter((item) => item.value <= 0);
+  if (filledMacros.length !== 2 || missingMacros.length !== 1) {
+    return { plan, completedKey: null };
+  }
+
+  const missingKey = missingMacros[0].key;
+  const usedCalories = filledMacros.reduce(
+    (total, item) => total + item.value * MACRO_TARGET_KCAL_BY_KEY[item.key],
+    0,
+  );
+  const remainingCalories = targetCaloriesKcal - usedCalories;
+  const completedValue = clampInteger(
+    remainingCalories > 0
+      ? remainingCalories / MACRO_TARGET_KCAL_BY_KEY[missingKey]
+      : 0,
+    0,
+    MACRO_TARGET_MAX_BY_KEY[missingKey],
+  );
+
+  if (plan[missingKey] === completedValue) {
+    return { plan, completedKey: null };
+  }
+
+  return {
+    plan: {
+      ...plan,
+      [missingKey]: completedValue,
+    },
+    completedKey: missingKey,
+  };
+}
+
 function parseOptionalNumberInput(value: string): number | null {
   const normalized = value.trim().replace(",", ".");
   if (!normalized) return null;
@@ -434,12 +512,14 @@ function foodToForm(food: NutritionFood): FoodFormState {
   return {
     name: food.name,
     category: food.category,
+    referenceUnit: food.referenceUnit,
     proteinPer100g: String(food.proteinPer100g),
     carbsPer100g: String(food.carbsPer100g),
     fatPer100g: String(food.fatPer100g),
     fiberPer100g: String(food.fiberPer100g ?? 0),
     sodiumPer100g: String(food.sodiumPer100g),
     waterPer100g: String(food.waterPer100g),
+    unitWeightG: food.unitWeightG > 0 ? String(Math.round(food.unitWeightG)) : "",
     restrictionTags: inferRestrictionTagsForFood(food),
   };
 }
@@ -448,12 +528,14 @@ function buildFoodPayload(form: FoodFormState) {
   return {
     name: form.name.trim(),
     category: form.category.trim(),
+    referenceUnit: form.referenceUnit,
     proteinPer100g: normalizeNumberInput(form.proteinPer100g),
     carbsPer100g: normalizeNumberInput(form.carbsPer100g),
     fatPer100g: normalizeNumberInput(form.fatPer100g),
     fiberPer100g: normalizeNumberInput(form.fiberPer100g),
     sodiumPer100g: normalizeNumberInput(form.sodiumPer100g),
     waterPer100g: normalizeNumberInput(form.waterPer100g),
+    unitWeightG: clampInteger(normalizeNumberInput(form.unitWeightG), 0, 10000),
     restrictionTags: parseRestrictionTags(form.restrictionTags),
   };
 }
@@ -466,21 +548,23 @@ function toPlanSummary(plan: NutritionPlanFull): NutritionPlanSummary {
 function getFoodLikeForEntry(
   item: Pick<
     NutritionPlanFoodEntry | NutritionPlanFoodAlternative,
-    "foodId" | "foodName"
+    "foodId" | "foodName" | "unitWeightG"
   >,
   foods: NutritionFood[],
-): Pick<NutritionFood, "id" | "name" | "category"> {
+): Pick<NutritionFood, "id" | "name" | "category" | "referenceUnit" | "unitWeightG"> {
   return (
     foods.find((food) => food.id === item.foodId) ?? {
       id: item.foodId,
       name: item.foodName,
       category: "",
+      referenceUnit: "100g",
+      unitWeightG: item.unitWeightG ?? 0,
     }
   );
 }
 
 function getQuantityUnitOptionsForFood(
-  food: Pick<NutritionFood, "id" | "name" | "category">,
+  food: Pick<NutritionFood, "id" | "name" | "category" | "referenceUnit" | "unitWeightG">,
 ): Array<{ value: NutritionQuantityUnit; label: string }> {
   const allowed = getAllowedQuantityUnitsForFood(food);
   return QUANTITY_UNIT_OPTIONS.filter((option) =>
@@ -492,7 +576,8 @@ function getQuantityUnitLabel(
   unit: NutritionQuantityUnit,
   quantity: number,
 ): string {
-  if (unit === "piece") return quantity === 1 ? "pieza" : "piezas";
+  if (unit === "ml") return "ml";
+  if (unit === "piece") return quantity === 1 ? "unidad" : "unidades";
   if (unit === "serving") return quantity === 1 ? "racion" : "raciones";
   return "g";
 }
@@ -501,10 +586,33 @@ function formatDisplayQuantity(item: {
   quantityG: number;
   quantityUnit?: NutritionQuantityUnit;
   unitWeightG?: number;
+  referenceUnit?: NutritionFoodReferenceUnit;
 }): string {
   const quantity = normalizeQuantityG(item.quantityG);
   const unit = normalizeQuantityUnit(item.quantityUnit);
-  return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(unit, quantity)}`;
+  const baseUnitLabel = item.referenceUnit === "100ml" || unit === "ml" ? "ml" : "g";
+  if (unit === "g" || unit === "ml") {
+    return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(unit, quantity)}`;
+  }
+  const effectiveQuantityG = getEffectiveQuantityG({
+    quantityG: quantity,
+    quantityUnit: unit,
+    unitWeightG: item.unitWeightG,
+  });
+  return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(unit, quantity)} (~${formatNumber(
+    effectiveQuantityG,
+    0,
+  )} ${baseUnitLabel})`;
+}
+
+function hasCustomFoodUnitWeight(food: Pick<NutritionFood, "unitWeightG">): boolean {
+  return Number.isFinite(food.unitWeightG) && food.unitWeightG > 0;
+}
+
+function formatFoodUnitWeight(food: NutritionFood): string {
+  const prefix = hasCustomFoodUnitWeight(food) ? "" : "~";
+  const unit = getFoodBaseQuantityUnit(food);
+  return `${prefix}${formatNumber(getEstimatedUnitWeightGForFood(food), 0)} ${unit}`;
 }
 
 function getUnitAwareQuantityForFood(
@@ -516,6 +624,8 @@ function getUnitAwareQuantityForFood(
     | "proteinPer100g"
     | "carbsPer100g"
     | "fatPer100g"
+    | "referenceUnit"
+    | "unitWeightG"
   >,
   requestedQuantity: number,
 ): {
@@ -525,7 +635,7 @@ function getUnitAwareQuantityForFood(
 } {
   const quantityUnit = getDefaultQuantityUnitForFood(food);
   const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
-  if (quantityUnit === "g") {
+  if (quantityUnit === "g" || quantityUnit === "ml") {
     return {
       quantityG: normalizeQuantityG(requestedQuantity),
       quantityUnit,
@@ -549,7 +659,7 @@ function convertQuantityUnitForFood(
     NutritionPlanFoodEntry | NutritionPlanFoodAlternative,
     "quantityG" | "quantityUnit" | "unitWeightG"
   >,
-  food: Pick<NutritionFood, "id" | "name" | "category">,
+  food: Pick<NutritionFood, "id" | "name" | "category" | "referenceUnit" | "unitWeightG">,
   requestedUnit: NutritionQuantityUnit,
 ): {
   quantityG: number;
@@ -560,7 +670,7 @@ function convertQuantityUnitForFood(
   const quantityUnit = normalizeQuantityUnitForFood(food, requestedUnit);
   const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
   const quantityG =
-    quantityUnit === "g"
+    quantityUnit === "g" || quantityUnit === "ml"
       ? normalizeQuantityG(currentEffectiveG)
       : normalizeQuantityG(currentEffectiveG / unitWeightG);
 
@@ -744,7 +854,7 @@ function buildAlternativeFromFood(
   const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
   const caloriesPerUnit = foodCaloriesPer100g * (unitWeightG / 100);
   const quantityG =
-    quantityUnit === "g"
+    quantityUnit === "g" || quantityUnit === "ml"
       ? targetCalories > 0 && foodCaloriesPer100g > 0
         ? normalizeQuantityG((targetCalories / foodCaloriesPer100g) * 100)
         : normalizeQuantityG(getEffectiveQuantityG(entry))
@@ -968,6 +1078,123 @@ function FoodRestrictionTagPicker(props: {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function MealOptionFoodSearch(props: {
+  search: string;
+  quantity: string;
+  results: NutritionFood[];
+  selectedAthleteRestrictions: NutritionAthleteRestriction[];
+  disabled: boolean;
+  onSearchChange: (value: string) => void;
+  onQuantityChange: (value: string) => void;
+  onQuantityBlur: () => void;
+  onAddFood: (food: NutritionFood) => void;
+  onCreateFood: () => void;
+}) {
+  const query = props.search.trim();
+
+  return (
+    <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(0,1fr)_120px_150px]">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-muted" />
+        <input
+          value={props.search}
+          onChange={(event) => props.onSearchChange(event.target.value)}
+          placeholder="Buscar alimento para esta opcion"
+          disabled={props.disabled}
+          className="w-full rounded-xl border border-white/10 bg-black/20 py-2.5 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        {query ? (
+          <div className="absolute left-0 right-0 top-full z-20 mt-2 max-h-72 overflow-auto rounded-xl border border-white/10 bg-[#111114] p-2 shadow-glow">
+            {props.results.length ? (
+              props.results.map((food) => {
+                const conflict = getRestrictionConflict(
+                  food,
+                  props.selectedAthleteRestrictions,
+                );
+                return (
+                  <button
+                    key={food.id}
+                    type="button"
+                    onClick={() => props.onAddFood(food)}
+                    disabled={props.disabled}
+                    className="flex w-full flex-col items-start gap-1.5 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-row sm:items-center sm:justify-between sm:gap-2"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span
+                        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
+                          conflict
+                            ? "border-red-300/40 bg-red-500/10 text-red-100"
+                            : "border-emerald-300/40 bg-emerald-500/10 text-emerald-100"
+                        }`}
+                        title={
+                          conflict
+                            ? `${getRestrictionTypeLabel(conflict.type)}: ${formatRestrictionLabel(conflict)}`
+                            : "Compatible"
+                        }
+                      >
+                        {conflict ? (
+                          <ThumbsDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ThumbsUp className="h-3.5 w-3.5" />
+                        )}
+                      </span>
+                      <span className="min-w-0 truncate text-brand-text">
+                        {food.name}
+                      </span>
+                    </span>
+                    <span className="text-xs text-brand-muted sm:shrink-0">
+                      1 unidad = {formatFoodUnitWeight(food)}
+                      {" | "}
+                      Kcal/{getFoodReferenceUnitLabel(food)}{" "}
+                      {formatNumber(calculateFoodCaloriesPer100g(food), 0)}
+                      {" | "}
+                      P {formatNumber(food.proteinPer100g)}
+                      {" | "}
+                      C {formatNumber(food.carbsPer100g)}
+                      {" | "}
+                      G {formatNumber(food.fatPer100g)}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <button
+                type="button"
+                onClick={props.onCreateFood}
+                disabled={props.disabled}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4 text-brand-accent" />
+                Crear nuevo alimento
+              </button>
+            )}
+          </div>
+        ) : null}
+      </div>
+      <input
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        aria-label="Cantidad inicial"
+        value={props.quantity}
+        onChange={(event) => props.onQuantityChange(event.target.value)}
+        onBlur={props.onQuantityBlur}
+        disabled={props.disabled}
+        className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+      />
+      <button
+        type="button"
+        onClick={props.onCreateFood}
+        disabled={props.disabled}
+        className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-brand-text transition hover:border-brand-accent/50 hover:bg-brand-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Plus className="h-4 w-4" />
+        Alimento
+      </button>
     </div>
   );
 }
@@ -1342,9 +1569,8 @@ export function AdminNutritionManagementShell({
   const [foodQuantities, setFoodQuantities] = useState<Record<string, string>>(
     {},
   );
-  const [mealSelectedOptions, setMealSelectedOptions] = useState<
-    Record<string, string>
-  >({});
+  const [copiedMealOption, setCopiedMealOption] =
+    useState<CopiedMealOption | null>(null);
   const [alternativeSearches, setAlternativeSearches] = useState<
     Record<string, string>
   >({});
@@ -1467,6 +1693,15 @@ export function AdminNutritionManagementShell({
 
   const planTotals = useMemo<NutritionTotals>(() => {
     return plan ? calculatePlanTotals(plan) : EMPTY_NUTRITION_TOTALS;
+  }, [plan]);
+  const targetMacroCaloriesKcal = useMemo(() => {
+    if (!plan) return 0;
+    return roundNutritionValue(
+      plan.targetProteinG * ATWATER_KCAL_PER_GRAM.protein +
+        plan.targetCarbsG * ATWATER_KCAL_PER_GRAM.carbs +
+        plan.targetFatG * ATWATER_KCAL_PER_GRAM.fat,
+      0,
+    );
   }, [plan]);
 
   const energyCalculation = useMemo(
@@ -1786,7 +2021,6 @@ export function AdminNutritionManagementShell({
       setSaveState("idle");
       setIntegerInputDrafts({});
       setMacroRatioInputDrafts({});
-      setMealSelectedOptions({});
       return;
     }
 
@@ -1794,7 +2028,6 @@ export function AdminNutritionManagementShell({
     setPlanLoading(true);
     setIntegerInputDrafts({});
     setMacroRatioInputDrafts({});
-    setMealSelectedOptions({});
     fetch(`/api/admin/nutrition-management/plans/${selectedPlanId}`, {
       cache: "no-store",
     })
@@ -1941,6 +2174,10 @@ export function AdminNutritionManagementShell({
       const sanitized = sanitizeIntegerInput(rawValue);
       setIntegerInputDrafts((current) => ({ ...current, [key]: sanitized }));
       const parsed = parseIntegerInput(sanitized);
+      if (parsed === null && sanitized === "" && min === 0) {
+        onValidValue(0);
+        return;
+      }
       if (parsed === null || parsed < min) return;
       onValidValue(clampInteger(parsed, min, max));
     },
@@ -1966,6 +2203,24 @@ export function AdminNutritionManagementShell({
       delete next[draftKey];
       return next;
     });
+  }, []);
+
+  const blankMacroTargetInputDrafts = useCallback((planId: string) => {
+    setIntegerInputDrafts((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        MACRO_TARGETS.map((macro) => [`${planId}:${macro.key}`, ""]),
+      ),
+    }));
+    setMacroRatioInputDrafts((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        MACRO_TARGETS.map((macro) => [
+          getMacroRatioDraftKey(planId, macro.key),
+          "",
+        ]),
+      ),
+    }));
   }, []);
 
   const handleMacroRatioInputChange = useCallback(
@@ -2333,7 +2588,22 @@ export function AdminNutritionManagementShell({
       return;
     }
 
-    updatePlanField("targetCaloriesKcal", target);
+    const completion = plan
+      ? completeMissingMacroTarget({
+          ...plan,
+          targetCaloriesKcal: target,
+        })
+      : { completedKey: null };
+    updatePlanDraft((current) =>
+      completeMissingMacroTarget({
+        ...current,
+        targetCaloriesKcal: target,
+      }).plan,
+    );
+    if (completion.completedKey) {
+      clearIntegerInputDraft(`${plan.id}:${completion.completedKey}`);
+      clearMacroRatioInputDraft(plan.id, completion.completedKey);
+    }
     setEnergyTargetTouched(false);
     toast.success("Kcal objetivo aceptadas.");
   }
@@ -2378,20 +2648,48 @@ export function AdminNutritionManagementShell({
     if (source === "grams" && key !== "targetCaloriesKcal" && plan?.id) {
       clearMacroRatioInputDraft(plan.id, key);
     }
+
+    const max = key === "targetCaloriesKcal" ? 20000 : MACRO_TARGET_MAX_BY_KEY[key];
+    const nextValue = clampInteger(value, 0, max);
+    const completion = plan && isMacroTargetKey(key)
+      ? completeMissingMacroTarget({
+          ...plan,
+          [key]: nextValue,
+        })
+      : { completedKey: null };
+
+    updatePlanDraft((current) => {
+      const nextPlan = {
+        ...current,
+        [key]: nextValue,
+      };
+      return isMacroTargetKey(key) ? completeMissingMacroTarget(nextPlan).plan : nextPlan;
+    });
+
+    if (plan?.id && completion.completedKey) {
+      clearIntegerInputDraft(`${plan.id}:${completion.completedKey}`);
+      clearMacroRatioInputDraft(plan.id, completion.completedKey);
+    }
+  }
+
+  function clearMacroTargets() {
+    if (!plan) {
+      toast.error("Selecciona o crea un plan.");
+      return;
+    }
+    if (isCurrentPlanPublished) {
+      toast.error("Cambia a Revision para limpiar los macros.");
+      return;
+    }
+
     updatePlanDraft((current) => ({
       ...current,
-      [key]: clampInteger(
-        value,
-        0,
-        key === "targetCaloriesKcal"
-          ? 20000
-          : key === "targetCarbsG"
-            ? 3000
-            : key === "targetProteinG"
-              ? 2000
-              : 1000,
-      ),
+      targetProteinG: 0,
+      targetCarbsG: 0,
+      targetFatG: 0,
     }));
+    blankMacroTargetInputDrafts(plan.id);
+    toast.success("Macros limpiados.");
   }
 
   function addMeal() {
@@ -2477,6 +2775,85 @@ export function AdminNutritionManagementShell({
       };
       return { ...current, meals: [...current.meals, nextMeal] };
     });
+  }
+
+  function copyMealOption(
+    meal: NutritionPlanFull["meals"][number],
+    optionNumber: number,
+    entries: NutritionPlanFoodEntry[],
+  ) {
+    if (!entries.length) {
+      toast.error("Esta opcion no tiene alimentos para copiar.");
+      return;
+    }
+    setCopiedMealOption({
+      sourceMealName: meal.name,
+      optionNumber,
+      entries: entries.map((entry) => ({
+        ...entry,
+        alternatives: [...(entry.alternatives ?? [])],
+      })),
+    });
+    toast.success(`Opcion ${optionNumber} de ${meal.name} copiada.`);
+  }
+
+  function pasteMealOption(mealId: string, optionNumber: number) {
+    if (!plan || !copiedMealOption) {
+      toast.error("Copia primero una opcion de comida.");
+      return;
+    }
+
+    const targetMeal = plan.meals.find((meal) => meal.id === mealId);
+    const targetEntries =
+      targetMeal?.entries.filter(
+        (entry) => getMealOptionNumber(entry) === optionNumber,
+      ) ?? [];
+    if (
+      targetEntries.length &&
+      !window.confirm("Esta opcion ya tiene alimentos. Reemplazarlos?")
+    ) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    updateMeal(mealId, (meal) => {
+      const clonedEntries = copiedMealOption.entries.map((entry, index) => {
+        const nextEntryId = createClientId();
+        return {
+          ...entry,
+          id: nextEntryId,
+          planId: plan.id,
+          mealId,
+          mealOption: optionNumber,
+          position: index + 1,
+          alternatives: (entry.alternatives ?? []).map(
+            (alternative, alternativeIndex) => ({
+              ...alternative,
+              id: createClientId(),
+              entryId: nextEntryId,
+              position: alternativeIndex + 1,
+              createdAt: now,
+              updatedAt: now,
+            }),
+          ),
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+
+      return {
+        ...meal,
+        entries: [
+          ...meal.entries.filter(
+            (entry) => getMealOptionNumber(entry) !== optionNumber,
+          ),
+          ...clonedEntries,
+        ],
+      };
+    });
+    toast.success(
+      `Pegada la opcion ${copiedMealOption.optionNumber} de ${copiedMealOption.sourceMealName}.`,
+    );
   }
 
   async function cloneMenusFromPlan(mode: "replace" | "append") {
@@ -3257,7 +3634,7 @@ export function AdminNutritionManagementShell({
             <Skeleton className="h-[620px] w-full rounded-2xl" />
           </section>
         ) : activePanel === "foods" ? (
-          <section className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,0.9fr)]">
+          <section className="grid gap-4 xl:grid-cols-[minmax(0,2.35fr)_minmax(280px,0.75fr)]">
             <div className="min-w-0 rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <h2 className="text-lg font-semibold text-brand-text">
@@ -3303,6 +3680,12 @@ export function AdminNutritionManagementShell({
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                         <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
+                          Base{" "}
+                          <strong className="text-brand-text">
+                            {getFoodReferenceUnitLabel(food)}
+                          </strong>
+                        </span>
+                        <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
                           Kcal{" "}
                           <strong className="text-brand-text">
                             {formatNumber(
@@ -3333,6 +3716,12 @@ export function AdminNutritionManagementShell({
                           Fibra{" "}
                           <strong className="text-brand-text">
                             {formatNumber(food.fiberPer100g ?? 0)}
+                          </strong>
+                        </span>
+                        <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
+                          Unidad{" "}
+                          <strong className="text-brand-text">
+                            {formatFoodUnitWeight(food)}
                           </strong>
                         </span>
                         <span className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-brand-muted">
@@ -3389,18 +3778,20 @@ export function AdminNutritionManagementShell({
               <div className="mt-4 hidden overflow-hidden rounded-xl border border-white/10 md:block">
                 <table className="w-full table-fixed text-xs xl:text-[13px]">
                   <colgroup>
-                    <col style={{ width: "19%" }} />
-                    <col style={{ width: "10%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "7%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "16%" }} />
-                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "17%" }} />
                     <col style={{ width: "8%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "14%" }} />
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "7%" }} />
                   </colgroup>
                   <thead className="bg-black/30 text-[11px] uppercase tracking-[0.08em] text-brand-muted">
                     <tr>
@@ -3419,6 +3810,7 @@ export function AdminNutritionManagementShell({
                           )}
                         </button>
                       </th>
+                      <th className="px-2 py-2 text-right">Base</th>
                       <th className="px-2 py-2 text-right">
                         <button
                           type="button"
@@ -3433,6 +3825,7 @@ export function AdminNutritionManagementShell({
                           )}
                         </button>
                       </th>
+                      <th className="px-2 py-2 text-right">Unidad</th>
                       <th className="px-2 py-2 text-right">P</th>
                       <th className="px-2 py-2 text-right">C</th>
                       <th className="px-2 py-2 text-right">G</th>
@@ -3460,11 +3853,20 @@ export function AdminNutritionManagementShell({
                           >
                             {food.category || "-"}
                           </td>
+                          <td className="px-2 py-2 text-right text-brand-muted">
+                            {getFoodReferenceUnitLabel(food)}
+                          </td>
                           <td className="px-2 py-2 text-right text-brand-text">
                             {formatNumber(
                               calculateFoodCaloriesPer100g(food),
                               0,
                             )}
+                          </td>
+                          <td
+                            className="px-2 py-2 text-right text-brand-muted"
+                            title="Cantidad estimada por unidad"
+                          >
+                            {formatFoodUnitWeight(food)}
                           </td>
                           <td className="px-2 py-2 text-right text-brand-text">
                             {formatNumber(food.proteinPer100g)}
@@ -3533,7 +3935,7 @@ export function AdminNutritionManagementShell({
                     ) : (
                       <tr>
                         <td
-                          colSpan={12}
+                          colSpan={14}
                           className="px-3 py-8 text-center text-sm text-brand-muted"
                         >
                           No hay alimentos para este filtro.
@@ -3576,14 +3978,54 @@ export function AdminNutritionManagementShell({
                     className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                   />
                 </label>
+                <label className="block text-sm text-brand-muted">
+                  Base nutricional
+                  <select
+                    value={foodForm.referenceUnit}
+                    onChange={(event) =>
+                      setFoodForm((current) => ({
+                        ...current,
+                        referenceUnit: event.target.value as NutritionFoodReferenceUnit,
+                      }))
+                    }
+                    className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    <option value="100g">Macros por 100 g</option>
+                    <option value="100ml">Macros por 100 ml</option>
+                  </select>
+                </label>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {[
-                    ["proteinPer100g", "Proteinas g/100g"],
-                    ["carbsPer100g", "Carbos g/100g"],
-                    ["fatPer100g", "Grasas g/100g"],
-                    ["fiberPer100g", "Fibra g/100g"],
-                    ["sodiumPer100g", "Sodio mg/100g"],
-                    ["waterPer100g", "Agua g/100g"],
+                    [
+                      "proteinPer100g",
+                      `Proteinas g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "carbsPer100g",
+                      `Carbos g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "fatPer100g",
+                      `Grasas g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "fiberPer100g",
+                      `Fibra g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "sodiumPer100g",
+                      `Sodio mg/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "waterPer100g",
+                      `Agua g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "unitWeightG",
+                      foodForm.referenceUnit === "100ml"
+                        ? "ml por unidad"
+                        : "g por unidad",
+                    ],
                   ].map(([key, label]) => (
                     <label key={key} className="block text-sm text-brand-muted">
                       {label}
@@ -4063,7 +4505,7 @@ export function AdminNutritionManagementShell({
               ) : (
                 <>
                   <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_repeat(3,minmax(160px,0.75fr))_160px]">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_repeat(3,minmax(160px,0.75fr))_180px]">
                       <label className="block text-sm text-brand-muted">
                         Plan
                         <input
@@ -4150,23 +4592,43 @@ export function AdminNutritionManagementShell({
                           </div>
                         );
                       })}
-                      <label className="block text-sm text-brand-muted">
-                        Estado
-                        <select
-                          value={planMode}
-                          onChange={(event) =>
-                            handlePlanModeChange(
-                              event.target.value as NutritionPlanStatus,
-                            )
-                          }
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                        >
-                          <option value="review">Revision</option>
-                          {hasPublishedSnapshot ? (
-                            <option value="published">Publicado</option>
-                          ) : null}
-                        </select>
-                      </label>
+                      <div className="block text-sm text-brand-muted">
+                        <span>Estado</span>
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={clearMacroTargets}
+                            disabled={isCurrentPlanPublished}
+                            aria-label="Limpiar macros"
+                            title="Limpiar macros"
+                            className="inline-flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                          <select
+                            value={planMode}
+                            onChange={(event) =>
+                              handlePlanModeChange(
+                                event.target.value as NutritionPlanStatus,
+                              )
+                            }
+                            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                          >
+                            <option value="review">Revision</option>
+                            {hasPublishedSnapshot ? (
+                              <option value="published">Publicado</option>
+                            ) : null}
+                          </select>
+                        </div>
+                        <div className="mt-2 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2">
+                          <p className="text-[10px] uppercase tracking-[0.14em] text-brand-muted">
+                            Kcal actuales
+                          </p>
+                          <p className="mt-0.5 text-sm font-bold text-brand-text">
+                            {formatNumber(targetMacroCaloriesKcal, 0)} kcal
+                          </p>
+                        </div>
+                      </div>
                     </div>
 
                     {isCurrentPlanPublished ? (
@@ -4367,34 +4829,6 @@ export function AdminNutritionManagementShell({
                     {plan.meals.map((meal, mealIndex) => {
                       const totals = calculateMealTotals(meal.entries);
                       const mealOptionGroups = getMealOptionGroups(meal);
-                      const availableOptionNumbers = mealOptionGroups.map(
-                        (group) => group.optionNumber,
-                      );
-                      const selectedOptionCandidate = normalizeMealOption(
-                        mealSelectedOptions[meal.id] ?? 1,
-                      );
-                      const selectedOptionNumber =
-                        availableOptionNumbers.includes(selectedOptionCandidate)
-                          ? selectedOptionCandidate
-                          : 1;
-                      const optionKey = buildMealOptionKey(
-                        meal.id,
-                        selectedOptionNumber,
-                      );
-                      const search = foodSearches[optionKey] ?? "";
-                      const results = search.trim()
-                        ? activeFoods
-                            .filter(
-                              (food) =>
-                                food.name
-                                  .toLowerCase()
-                                  .includes(search.trim().toLowerCase()) ||
-                                food.category
-                                  .toLowerCase()
-                                  .includes(search.trim().toLowerCase()),
-                            )
-                            .slice(0, 8)
-                        : [];
 
                       return (
                         <article
@@ -4543,158 +4977,6 @@ export function AdminNutritionManagementShell({
                             />
                           </label>
 
-                          <div className="mt-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_110px_120px_150px]">
-                            <div className="relative">
-                              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-muted" />
-                              <input
-                                value={search}
-                                onChange={(event) =>
-                                  setFoodSearches((current) => ({
-                                    ...current,
-                                    [optionKey]: event.target.value,
-                                  }))
-                                }
-                                placeholder="Buscar alimento"
-                                disabled={isCurrentPlanPublished}
-                                className="w-full rounded-xl border border-white/10 bg-black/20 py-2.5 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                              />
-                              {search.trim() ? (
-                                <div className="absolute left-0 right-0 top-full z-20 mt-2 max-h-72 overflow-auto rounded-xl border border-white/10 bg-[#111114] p-2 shadow-glow">
-                                  {results.length ? (
-                                    results.map((food) => {
-                                      const conflict = getRestrictionConflict(
-                                        food,
-                                        selectedAthleteRestrictions,
-                                      );
-                                      return (
-                                        <button
-                                          key={food.id}
-                                          type="button"
-                                          onClick={() =>
-                                            addFoodToMeal(
-                                              meal.id,
-                                              food,
-                                              selectedOptionNumber,
-                                            )
-                                          }
-                                          disabled={isCurrentPlanPublished}
-                                          className="flex w-full flex-col items-start gap-1.5 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-row sm:items-center sm:justify-between sm:gap-2"
-                                        >
-                                          <span className="flex min-w-0 items-center gap-2">
-                                            <span
-                                              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
-                                                conflict
-                                                  ? "border-red-300/40 bg-red-500/10 text-red-100"
-                                                  : "border-emerald-300/40 bg-emerald-500/10 text-emerald-100"
-                                              }`}
-                                              title={
-                                                conflict
-                                                  ? `${getRestrictionTypeLabel(conflict.type)}: ${formatRestrictionLabel(conflict)}`
-                                                  : "Compatible"
-                                              }
-                                            >
-                                              {conflict ? (
-                                                <ThumbsDown className="h-3.5 w-3.5" />
-                                              ) : (
-                                                <ThumbsUp className="h-3.5 w-3.5" />
-                                              )}
-                                            </span>
-                                            <span className="min-w-0 truncate text-brand-text">
-                                              {food.name}
-                                            </span>
-                                          </span>
-                                          <span className="text-xs text-brand-muted sm:shrink-0">
-                                            Kcal{" "}
-                                            {formatNumber(
-                                              calculateFoodCaloriesPer100g(
-                                                food,
-                                              ),
-                                              0,
-                                            )}{" "}
-                                            | P{" "}
-                                            {formatNumber(food.proteinPer100g)}{" "}
-                                            | C{" "}
-                                            {formatNumber(food.carbsPer100g)} |
-                                            G {formatNumber(food.fatPer100g)}
-                                          </span>
-                                        </button>
-                                      );
-                                    })
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        startQuickFood(
-                                          meal.id,
-                                          selectedOptionNumber,
-                                        )
-                                      }
-                                      disabled={isCurrentPlanPublished}
-                                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                      <Plus className="h-4 w-4 text-brand-accent" />
-                                      Crear nuevo alimento
-                                    </button>
-                                  )}
-                                </div>
-                              ) : null}
-                            </div>
-                            <select
-                              value={selectedOptionNumber}
-                              onChange={(event) =>
-                                setMealSelectedOptions((current) => ({
-                                  ...current,
-                                  [meal.id]: event.target.value,
-                                }))
-                              }
-                              disabled={isCurrentPlanPublished}
-                              className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                              aria-label="Opcion de comida"
-                            >
-                              {availableOptionNumbers.map((optionNumber) => (
-                                <option key={optionNumber} value={optionNumber}>
-                                  Opcion {optionNumber}
-                                </option>
-                              ))}
-                            </select>
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              pattern="[0-9]*"
-                              aria-label="Cantidad"
-                              value={foodQuantities[optionKey] ?? "100"}
-                              onChange={(event) =>
-                                setFoodQuantities((current) => ({
-                                  ...current,
-                                  [optionKey]: sanitizeIntegerInput(
-                                    event.target.value,
-                                  ),
-                                }))
-                              }
-                              onBlur={() =>
-                                setFoodQuantities((current) => ({
-                                  ...current,
-                                  [optionKey]: current[optionKey]?.trim()
-                                    ? current[optionKey]
-                                    : "100",
-                                }))
-                              }
-                              disabled={isCurrentPlanPublished}
-                              className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                            />
-                            <button
-                              type="button"
-                              onClick={() =>
-                                startQuickFood(meal.id, selectedOptionNumber)
-                              }
-                              disabled={isCurrentPlanPublished}
-                              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-brand-text transition hover:border-brand-accent/50 hover:bg-brand-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <Plus className="h-4 w-4" />
-                              Alimento
-                            </button>
-                          </div>
-
                           <div className="mt-4 space-y-3">
                             {mealOptionGroups.map(
                               ({ optionNumber, entries }) => {
@@ -4705,6 +4987,27 @@ export function AdminNutritionManagementShell({
                                 const referenceTotals =
                                   calculateMealOptionTotals(meal.entries, 1);
                                 const isReferenceOption = optionNumber === 1;
+                                const optionKey = buildMealOptionKey(
+                                  meal.id,
+                                  optionNumber,
+                                );
+                                const search = foodSearches[optionKey] ?? "";
+                                const normalizedSearch = search
+                                  .trim()
+                                  .toLowerCase();
+                                const results = normalizedSearch
+                                  ? activeFoods
+                                      .filter(
+                                        (food) =>
+                                          food.name
+                                            .toLowerCase()
+                                            .includes(normalizedSearch) ||
+                                          food.category
+                                            .toLowerCase()
+                                            .includes(normalizedSearch),
+                                      )
+                                      .slice(0, 8)
+                                  : [];
 
                                 return (
                                   <div
@@ -4768,6 +5071,47 @@ export function AdminNutritionManagementShell({
                                               referenceTotals.fatG
                                           }
                                         />
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            copyMealOption(
+                                              meal,
+                                              optionNumber,
+                                              entries,
+                                            )
+                                          }
+                                          disabled={
+                                            isCurrentPlanPublished ||
+                                            !entries.length
+                                          }
+                                          className="inline-flex aspect-square h-8 w-8 items-center justify-center rounded-lg border border-white/15 text-brand-text transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                                          aria-label={`Copiar opcion ${optionNumber}`}
+                                          title="Copiar opcion"
+                                        >
+                                          <Copy className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            pasteMealOption(
+                                              meal.id,
+                                              optionNumber,
+                                            )
+                                          }
+                                          disabled={
+                                            isCurrentPlanPublished ||
+                                            !copiedMealOption
+                                          }
+                                          className="inline-flex aspect-square h-8 w-8 items-center justify-center rounded-lg border border-brand-accent/35 bg-brand-accent/10 text-brand-text transition hover:bg-brand-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                          aria-label={`Pegar en opcion ${optionNumber}`}
+                                          title={
+                                            copiedMealOption
+                                              ? `Pegar ${copiedMealOption.sourceMealName} opcion ${copiedMealOption.optionNumber}`
+                                              : "Pegar opcion"
+                                          }
+                                        >
+                                          <ClipboardPaste className="h-3.5 w-3.5" />
+                                        </button>
                                         {!isReferenceOption ? (
                                           <button
                                             type="button"
@@ -4827,6 +5171,47 @@ export function AdminNutritionManagementShell({
                                         />
                                       </div>
                                     ) : null}
+
+                                    <MealOptionFoodSearch
+                                      search={search}
+                                      quantity={foodQuantities[optionKey] ?? "100"}
+                                      results={results}
+                                      selectedAthleteRestrictions={
+                                        selectedAthleteRestrictions
+                                      }
+                                      disabled={isCurrentPlanPublished}
+                                      onSearchChange={(value) =>
+                                        setFoodSearches((current) => ({
+                                          ...current,
+                                          [optionKey]: value,
+                                        }))
+                                      }
+                                      onQuantityChange={(value) =>
+                                        setFoodQuantities((current) => ({
+                                          ...current,
+                                          [optionKey]:
+                                            sanitizeIntegerInput(value),
+                                        }))
+                                      }
+                                      onQuantityBlur={() =>
+                                        setFoodQuantities((current) => ({
+                                          ...current,
+                                          [optionKey]: current[optionKey]?.trim()
+                                            ? current[optionKey]
+                                            : "100",
+                                        }))
+                                      }
+                                      onAddFood={(food) =>
+                                        addFoodToMeal(
+                                          meal.id,
+                                          food,
+                                          optionNumber,
+                                        )
+                                      }
+                                      onCreateFood={() =>
+                                        startQuickFood(meal.id, optionNumber)
+                                      }
+                                    />
 
                                     <div className="mt-3 space-y-3 lg:hidden">
                                       {entries.length ? (
@@ -4921,7 +5306,11 @@ export function AdminNutritionManagementShell({
                                                       </p>
                                                       <p className="mt-1 text-xs text-brand-muted">
                                                         {formatDisplayQuantity(
-                                                          entry,
+                                                          {
+                                                            ...entry,
+                                                            referenceUnit:
+                                                              entryFood.referenceUnit,
+                                                          },
                                                         )}
                                                       </p>
                                                     </div>
@@ -5502,14 +5891,16 @@ export function AdminNutritionManagementShell({
                                                                           suggestedQuantity,
                                                                         quantityUnit,
                                                                         unitWeightG,
+                                                                        referenceUnit:
+                                                                          food.referenceUnit,
                                                                       },
                                                                     )}{" "}
                                                                     -{" "}
                                                                     {formatNumber(
                                                                       foodCaloriesPer100g,
                                                                       0,
-                                                                    )}{" "}
-                                                                    kcal/100g
+                                                                  )}{" "}
+                                                                  kcal/{getFoodReferenceUnitLabel(food)}
                                                                   </span>
                                                                 </button>
                                                               );
@@ -6265,6 +6656,8 @@ export function AdminNutritionManagementShell({
                                                                                 suggestedQuantity,
                                                                               quantityUnit,
                                                                               unitWeightG,
+                                                                              referenceUnit:
+                                                                                food.referenceUnit,
                                                                             },
                                                                           )}{" "}
                                                                           -{" "}
@@ -6272,7 +6665,7 @@ export function AdminNutritionManagementShell({
                                                                             foodCaloriesPer100g,
                                                                             0,
                                                                           )}{" "}
-                                                                          kcal/100g
+                                                                          kcal/{getFoodReferenceUnitLabel(food)}
                                                                         </span>
                                                                       </button>
                                                                     );
@@ -6377,14 +6770,54 @@ export function AdminNutritionManagementShell({
                     className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                   />
                 </label>
+                <label className="block text-sm text-brand-muted">
+                  Base nutricional
+                  <select
+                    value={foodForm.referenceUnit}
+                    onChange={(event) =>
+                      setFoodForm((current) => ({
+                        ...current,
+                        referenceUnit: event.target.value as NutritionFoodReferenceUnit,
+                      }))
+                    }
+                    className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    <option value="100g">Macros por 100 g</option>
+                    <option value="100ml">Macros por 100 ml</option>
+                  </select>
+                </label>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {[
-                    ["proteinPer100g", "Proteinas"],
-                    ["carbsPer100g", "Carbos"],
-                    ["fatPer100g", "Grasas"],
-                    ["fiberPer100g", "Fibra"],
-                    ["sodiumPer100g", "Sodio"],
-                    ["waterPer100g", "Agua"],
+                    [
+                      "proteinPer100g",
+                      `Proteinas g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "carbsPer100g",
+                      `Carbos g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "fatPer100g",
+                      `Grasas g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "fiberPer100g",
+                      `Fibra g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "sodiumPer100g",
+                      `Sodio mg/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "waterPer100g",
+                      `Agua g/${foodForm.referenceUnit === "100ml" ? "100ml" : "100g"}`,
+                    ],
+                    [
+                      "unitWeightG",
+                      foodForm.referenceUnit === "100ml"
+                        ? "ml por unidad"
+                        : "g por unidad",
+                    ],
                   ].map(([key, label]) => (
                     <label key={key} className="block text-sm text-brand-muted">
                       {label}

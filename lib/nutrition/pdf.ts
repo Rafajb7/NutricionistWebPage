@@ -118,12 +118,12 @@ function normalizePdfQuantityG(value: number): number {
 }
 
 function normalizePdfQuantityUnit(value: unknown): NutritionQuantityUnit {
-  if (value === "piece" || value === "serving") return value;
+  if (value === "g" || value === "ml" || value === "piece" || value === "serving") return value;
   return "g";
 }
 
 function normalizePdfUnitWeightG(value: unknown, unit: NutritionQuantityUnit): number {
-  if (unit === "g") return 1;
+  if (unit === "g" || unit === "ml") return 1;
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return 150;
   return Math.min(10000, Math.max(1, Math.round(parsed)));
@@ -190,7 +190,8 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
 }
 
 function getQuantityUnitLabel(unit: NutritionQuantityUnit, value: number): string {
-  if (unit === "piece") return value === 1 ? "pieza" : "piezas";
+  if (unit === "ml") return "ml";
+  if (unit === "piece") return value === 1 ? "unidad" : "unidades";
   if (unit === "serving") return value === 1 ? "racion" : "raciones";
   return "g";
 }

@@ -59,7 +59,7 @@ function applyChangeRequestToPlan(
   const quantityUnit = getDefaultQuantityUnitForFood(requestedFood);
   const unitWeightG = getDefaultUnitWeightGForFood(requestedFood, quantityUnit);
   const quantityG =
-    quantityUnit === "g"
+    quantityUnit === "g" || quantityUnit === "ml"
       ? normalizeQuantity(request.requestedQuantityG)
       : normalizeQuantity(request.requestedQuantityG / unitWeightG);
 

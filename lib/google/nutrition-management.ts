@@ -18,6 +18,7 @@ import {
 } from "@/lib/nutrition/restrictions";
 import {
   getDefaultUnitWeightGForFood,
+  normalizeFoodReferenceUnit,
   normalizeQuantityUnitForFood
 } from "@/lib/nutrition/quantity-units";
 import type {
@@ -141,16 +142,17 @@ const FOOD_HEADERS = [
   "Nombre",
   "Categoria",
   "Unidad referencia",
-  "Proteinas g 100g",
-  "Carbohidratos g 100g",
-  "Grasas g 100g",
-  "Sodio mg 100g",
-  "Agua g 100g",
+  "Proteinas g 100 ref",
+  "Carbohidratos g 100 ref",
+  "Grasas g 100 ref",
+  "Sodio mg 100 ref",
+  "Agua g 100 ref",
   "Activo",
   "Creado",
   "Actualizado",
   "Etiquetas restricciones",
-  "Fibra g 100g"
+  "Fibra g 100 ref",
+  "Cantidad por unidad"
 ];
 
 const PLAN_HEADERS = [
@@ -190,21 +192,21 @@ const PLAN_FOOD_HEADERS = [
   "Meal id",
   "Food id catalogo",
   "Nombre alimento",
-  "Cantidad g",
-  "Proteinas 100g snapshot",
-  "Carbohidratos 100g snapshot",
-  "Grasas 100g snapshot",
-  "Sodio 100g snapshot",
-  "Agua 100g snapshot",
+  "Cantidad",
+  "Proteinas 100 ref snapshot",
+  "Carbohidratos 100 ref snapshot",
+  "Grasas 100 ref snapshot",
+  "Sodio 100 ref snapshot",
+  "Agua 100 ref snapshot",
   "Orden",
   "Texto personalizado",
   "Creado",
   "Actualizado",
   "Alternativas json",
   "Unidad cantidad",
-  "Gramos unidad",
+  "Cantidad unidad",
   "Opcion comida",
-  "Fibra 100g snapshot"
+  "Fibra 100 ref snapshot"
 ];
 
 const VERSION_HEADERS = [
@@ -347,7 +349,20 @@ function parseStatus(value: unknown): NutritionPlanStatus {
 
 function parseQuantityUnit(value: unknown): NutritionQuantityUnit {
   const normalized = normalizeTextKey(String(value ?? ""));
-  if (normalized === "piece" || normalized === "pieza" || normalized === "piezas") return "piece";
+  if (
+    normalized === "ml" ||
+    normalized === "mililitro" ||
+    normalized === "mililitros" ||
+    normalized === "100ml" ||
+    normalized === "100 ml"
+  ) return "ml";
+  if (
+    normalized === "piece" ||
+    normalized === "pieza" ||
+    normalized === "piezas" ||
+    normalized === "unidad" ||
+    normalized === "unidades"
+  ) return "piece";
   if (
     normalized === "serving" ||
     normalized === "racion" ||
@@ -458,7 +473,7 @@ function sanitizeAlternative(
     quantityG: clampQuantityG(alternative.quantityG),
     quantityUnit,
     unitWeightG:
-      quantityUnit === "g"
+      quantityUnit === "g" || quantityUnit === "ml"
         ? 1
         : clampUnitWeightG(alternative.unitWeightG) > 1
           ? clampUnitWeightG(alternative.unitWeightG)
@@ -899,13 +914,14 @@ function parseFood(row: string[]): NutritionFood | null {
     id,
     name,
     category,
-    referenceUnit: "100g",
+    referenceUnit: normalizeFoodReferenceUnit(row[3], { id, name, category }),
     proteinPer100g: parseNumber(row[4]),
     carbsPer100g: parseNumber(row[5]),
     fatPer100g: parseNumber(row[6]),
     fiberPer100g: clampNumber(parseNumber(row[13]), 0, 100),
     sodiumPer100g: parseNumber(row[7]),
     waterPer100g: parseNumber(row[8]),
+    unitWeightG: clampInteger(parseNumber(row[14]), 0, 10000),
     restrictionTags: hasStoredRestrictionTags
       ? storedRestrictionTags
       : inferRestrictionTagsForFood({ name, category }),
@@ -1186,7 +1202,8 @@ function serializeFood(food: NutritionFood): Array<string | number> {
     food.createdAt,
     food.updatedAt,
     serializeRestrictionTags(food.restrictionTags ?? []),
-    food.fiberPer100g
+    food.fiberPer100g,
+    clampInteger(food.unitWeightG ?? 0, 0, 10000)
   ];
 }
 
@@ -1199,8 +1216,9 @@ function buildMissingDefaultFoods(existingFoods: NutritionFood[]): NutritionFood
     (food) => !existingIds.has(food.id) && !existingNames.has(normalizeTextKey(food.name))
   ).map((food) => ({
     ...food,
-    referenceUnit: "100g",
+    referenceUnit: food.referenceUnit ?? normalizeFoodReferenceUnit(undefined, food),
     fiberPer100g: clampNumber(food.fiberPer100g ?? 0, 0, 100),
+    unitWeightG: clampInteger(food.unitWeightG ?? 0, 0, 10000),
     restrictionTags: inferRestrictionTagsForFood(food),
     active: true,
     createdAt: now,
@@ -1222,9 +1240,15 @@ async function ensureDefaultFoods(dataset: NutritionDataset): Promise<NutritionD
 function getFoodLikeForEntry(
   entry: Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, "foodId" | "foodName">,
   foodsById: Map<string, NutritionFood>
-): Pick<NutritionFood, "id" | "name" | "category"> {
+): Pick<NutritionFood, "id" | "name" | "category" | "referenceUnit" | "unitWeightG"> {
   const food = foodsById.get(entry.foodId);
-  return food ?? { id: entry.foodId, name: entry.foodName, category: "" };
+  return food ?? {
+    id: entry.foodId,
+    name: entry.foodName,
+    category: "",
+    referenceUnit: "100g",
+    unitWeightG: 0
+  };
 }
 
 function normalizeAlternativeQuantityMetadata(
@@ -1237,7 +1261,7 @@ function normalizeAlternativeQuantityMetadata(
     ...alternative,
     quantityUnit: unit,
     unitWeightG:
-      unit === "g"
+      unit === "g" || unit === "ml"
         ? 1
         : alternative.unitWeightG > 1
           ? clampUnitWeightG(alternative.unitWeightG)
@@ -1255,7 +1279,7 @@ function normalizeEntryQuantityMetadata(
     ...entry,
     quantityUnit: unit,
     unitWeightG:
-      unit === "g"
+      unit === "g" || unit === "ml"
         ? 1
         : entry.unitWeightG > 1
           ? clampUnitWeightG(entry.unitWeightG)
@@ -2041,12 +2065,14 @@ export async function resolveNutritionChangeRequest(input: {
 export async function createNutritionFood(input: {
   name: string;
   category?: string;
+  referenceUnit?: NutritionFood["referenceUnit"];
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
   fiberPer100g?: number;
   sodiumPer100g: number;
   waterPer100g: number;
+  unitWeightG?: number;
   restrictionTags?: NutritionFood["restrictionTags"];
 }): Promise<NutritionFood> {
   const dataset = await readNutritionDataset({ force: true });
@@ -2062,13 +2088,18 @@ export async function createNutritionFood(input: {
     id: randomUUID(),
     name,
     category: input.category?.trim() ?? "",
-    referenceUnit: "100g",
+    referenceUnit: normalizeFoodReferenceUnit(input.referenceUnit, {
+      id: "",
+      name,
+      category: input.category?.trim() ?? ""
+    }),
     proteinPer100g: clampNumber(input.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(input.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(input.fatPer100g, 0, 200),
     fiberPer100g: clampNumber(input.fiberPer100g ?? 0, 0, 100),
     sodiumPer100g: clampNumber(input.sodiumPer100g, 0, 100000),
     waterPer100g: clampNumber(input.waterPer100g, 0, 100),
+    unitWeightG: clampInteger(input.unitWeightG ?? 0, 0, 10000),
     restrictionTags:
       input.restrictionTags === undefined
         ? inferRestrictionTagsForFood({ name, category: input.category?.trim() ?? "" })
@@ -2092,12 +2123,18 @@ export async function updateNutritionFood(input: Partial<NutritionFood> & { id: 
     ...current,
     name: sanitizeName(input.name ?? current.name, current.name),
     category: input.category?.trim() ?? current.category,
+    referenceUnit: normalizeFoodReferenceUnit(input.referenceUnit ?? current.referenceUnit, {
+      id: current.id,
+      name: input.name ?? current.name,
+      category: input.category?.trim() ?? current.category
+    }),
     proteinPer100g: clampNumber(input.proteinPer100g ?? current.proteinPer100g, 0, 200),
     carbsPer100g: clampNumber(input.carbsPer100g ?? current.carbsPer100g, 0, 200),
     fatPer100g: clampNumber(input.fatPer100g ?? current.fatPer100g, 0, 200),
     fiberPer100g: clampNumber(input.fiberPer100g ?? current.fiberPer100g, 0, 100),
     sodiumPer100g: clampNumber(input.sodiumPer100g ?? current.sodiumPer100g, 0, 100000),
     waterPer100g: clampNumber(input.waterPer100g ?? current.waterPer100g, 0, 100),
+    unitWeightG: clampInteger(input.unitWeightG ?? current.unitWeightG ?? 0, 0, 10000),
     restrictionTags:
       input.restrictionTags !== undefined
         ? parseRestrictionTags(input.restrictionTags)
@@ -2307,7 +2344,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
           quantityG: clampQuantityG(entry.quantityG),
           quantityUnit,
           unitWeightG:
-            quantityUnit === "g"
+            quantityUnit === "g" || quantityUnit === "ml"
               ? 1
               : clampUnitWeightG(entry.unitWeightG) > 1
                 ? clampUnitWeightG(entry.unitWeightG)
