@@ -1,10 +1,18 @@
-import type { NutritionFood } from "@/lib/nutrition/types";
+import type { NutritionFood, NutritionFoodReferenceUnit } from "@/lib/nutrition/types";
 
 export type DefaultNutritionFood = Omit<
   NutritionFood,
-  "referenceUnit" | "restrictionTags" | "active" | "createdAt" | "updatedAt" | "fiberPer100g"
+  | "referenceUnit"
+  | "restrictionTags"
+  | "active"
+  | "createdAt"
+  | "updatedAt"
+  | "fiberPer100g"
+  | "unitWeightG"
 > & {
   fiberPer100g?: number;
+  referenceUnit?: NutritionFoodReferenceUnit;
+  unitWeightG?: number;
 };
 
 // Seed values are adapted from USDA FoodData Central SR Legacy per-100g nutrients.
@@ -100,8 +108,8 @@ export const DEFAULT_NUTRITION_FOODS: DefaultNutritionFood[] = [
   { id: "default-169414", name: "Semillas de lino", category: "Frutos secos y semillas", proteinPer100g: 18.3, carbsPer100g: 28.9, fatPer100g: 42.2, sodiumPer100g: 30, waterPer100g: 7 },
   { id: "default-170562", name: "Pipas de girasol", category: "Frutos secos y semillas", proteinPer100g: 20.8, carbsPer100g: 20, fatPer100g: 51.5, sodiumPer100g: 9, waterPer100g: 4.7 },
   { id: "default-173410", name: "Mantequilla salada", category: "Grasas", proteinPer100g: 0.8, carbsPer100g: 0.1, fatPer100g: 81.1, sodiumPer100g: 643, waterPer100g: 16.2 },
-  { id: "default-172217", name: "Leche entera", category: "Huevos y lacteos", proteinPer100g: 3.1, carbsPer100g: 4.8, fatPer100g: 3.3, sodiumPer100g: 43, waterPer100g: 88.1 },
-  { id: "default-173432", name: "Leche desnatada", category: "Huevos y lacteos", proteinPer100g: 3.4, carbsPer100g: 4.9, fatPer100g: 0.2, sodiumPer100g: 42, waterPer100g: 90.8 },
+  { id: "default-172217", name: "Leche entera", category: "Huevos y lacteos", referenceUnit: "100ml", proteinPer100g: 3.1, carbsPer100g: 4.8, fatPer100g: 3.3, sodiumPer100g: 43, waterPer100g: 88.1 },
+  { id: "default-173432", name: "Leche desnatada", category: "Huevos y lacteos", referenceUnit: "100ml", proteinPer100g: 3.4, carbsPer100g: 4.9, fatPer100g: 0.2, sodiumPer100g: 42, waterPer100g: 90.8 },
   { id: "default-170894", name: "Yogur griego natural 0%", category: "Huevos y lacteos", proteinPer100g: 10.2, carbsPer100g: 3.6, fatPer100g: 0.4, sodiumPer100g: 36, waterPer100g: 85.1 },
   { id: "default-170903", name: "Yogur griego natural bajo en grasa", category: "Huevos y lacteos", proteinPer100g: 9.9, carbsPer100g: 3.9, fatPer100g: 1.9, sodiumPer100g: 34, waterPer100g: 83.6 },
   { id: "default-173417", name: "Queso cottage 1%", category: "Huevos y lacteos", proteinPer100g: 12.4, carbsPer100g: 2.7, fatPer100g: 1, sodiumPer100g: 406, waterPer100g: 82.5 },
@@ -189,8 +197,8 @@ export const DEFAULT_NUTRITION_FOODS: DefaultNutritionFood[] = [
   { id: "default-169412", name: "Semillas de sesamo", category: "Frutos secos y semillas", proteinPer100g: 20.4, carbsPer100g: 11.7, fatPer100g: 61.2, sodiumPer100g: 47, waterPer100g: 3.8 },
   { id: "default-170189", name: "Tahini", category: "Frutos secos y semillas", proteinPer100g: 17, carbsPer100g: 21.2, fatPer100g: 53.8, sodiumPer100g: 115, waterPer100g: 3 },
   { id: "default-170169", name: "Coco fresco", category: "Frutas", proteinPer100g: 3.3, carbsPer100g: 15.2, fatPer100g: 33.5, sodiumPer100g: 20, waterPer100g: 47 },
-  { id: "default-170172", name: "Leche de coco", category: "Grasas", proteinPer100g: 2.3, carbsPer100g: 5.5, fatPer100g: 23.8, sodiumPer100g: 15, waterPer100g: 67.6 },
-  { id: "default-170872", name: "Leche semidesnatada 1%", category: "Huevos y lacteos", proteinPer100g: 3.4, carbsPer100g: 5, fatPer100g: 1, sodiumPer100g: 44, waterPer100g: 89.9 },
+  { id: "default-170172", name: "Leche de coco", category: "Grasas", referenceUnit: "100ml", proteinPer100g: 2.3, carbsPer100g: 5.5, fatPer100g: 23.8, sodiumPer100g: 15, waterPer100g: 67.6 },
+  { id: "default-170872", name: "Leche semidesnatada 1%", category: "Huevos y lacteos", referenceUnit: "100ml", proteinPer100g: 3.4, carbsPer100g: 5, fatPer100g: 1, sodiumPer100g: 44, waterPer100g: 89.9 },
   { id: "default-171284", name: "Yogur natural entero", category: "Huevos y lacteos", proteinPer100g: 3.5, carbsPer100g: 4.7, fatPer100g: 3.2, sodiumPer100g: 46, waterPer100g: 87.9 },
   { id: "default-170887", name: "Yogur natural desnatado", category: "Huevos y lacteos", proteinPer100g: 5.7, carbsPer100g: 7.7, fatPer100g: 0.2, sodiumPer100g: 77, waterPer100g: 85.2 },
   { id: "default-171248", name: "Ricotta semidesnatada", category: "Huevos y lacteos", proteinPer100g: 11.4, carbsPer100g: 5.1, fatPer100g: 7.9, sodiumPer100g: 99, waterPer100g: 74.4 },
@@ -201,7 +209,7 @@ export const DEFAULT_NUTRITION_FOODS: DefaultNutritionFood[] = [
   { id: "default-173181", name: "Proteina de soja en polvo", category: "Suplementos", proteinPer100g: 55.6, carbsPer100g: 28.9, fatPer100g: 5.6, sodiumPer100g: 733, waterPer100g: 4.1 },
   { id: "default-174276", name: "Aislado de proteina de soja", category: "Suplementos", proteinPer100g: 88.3, carbsPer100g: 0, fatPer100g: 3.4, sodiumPer100g: 1005, waterPer100g: 5 },
   { id: "default-169599", name: "Gelatina neutra en polvo", category: "Suplementos", proteinPer100g: 85.6, carbsPer100g: 0, fatPer100g: 0.1, sodiumPer100g: 196, waterPer100g: 13 },
-  { id: "mercadona-claras-huevo-pasteurizadas", name: "Claras de huevo pasteurizadas (Mercadona)", category: "Mercadona", proteinPer100g: 11, carbsPer100g: 0.5, fatPer100g: 0.5, sodiumPer100g: 176, waterPer100g: 87.5 },
+  { id: "mercadona-claras-huevo-pasteurizadas", name: "Claras de huevo pasteurizadas (Mercadona)", category: "Mercadona", referenceUnit: "100ml", proteinPer100g: 11, carbsPer100g: 0.5, fatPer100g: 0.5, sodiumPer100g: 176, waterPer100g: 87.5 },
   { id: "mercadona-queso-fresco-batido-0", name: "Queso fresco batido 0% (Mercadona)", category: "Mercadona", proteinPer100g: 8, carbsPer100g: 3.5, fatPer100g: 0.1, sodiumPer100g: 40, waterPer100g: 88.3 },
   { id: "mercadona-yogur-griego-ligero-natural", name: "Yogur griego ligero natural (Mercadona)", category: "Mercadona", proteinPer100g: 5.8, carbsPer100g: 4.7, fatPer100g: 2, sodiumPer100g: 64, waterPer100g: 86.9 },
   { id: "mercadona-yogur-griego-natural", name: "Yogur griego natural (Mercadona)", category: "Mercadona", proteinPer100g: 3.9, carbsPer100g: 3.9, fatPer100g: 10.8, sodiumPer100g: 48, waterPer100g: 81.3 },

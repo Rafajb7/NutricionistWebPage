@@ -127,14 +127,15 @@ function formatTotals(totals: NutritionTotals): string {
 }
 
 function normalizeQuantityUnit(value: unknown): NutritionQuantityUnit {
-  if (value === "piece" || value === "serving") return value;
+  if (value === "g" || value === "ml" || value === "piece" || value === "serving") return value;
   return "g";
 }
 
 function formatQuantity(value: number, unit: NutritionQuantityUnit | undefined): string {
   const quantity = Math.max(1, Math.round(Number.isFinite(value) ? value : 1));
   const normalizedUnit = normalizeQuantityUnit(unit);
-  if (normalizedUnit === "piece") return `${quantity} ${quantity === 1 ? "pieza" : "piezas"}`;
+  if (normalizedUnit === "ml") return `${quantity} ml`;
+  if (normalizedUnit === "piece") return `${quantity} ${quantity === 1 ? "unidad" : "unidades"}`;
   if (normalizedUnit === "serving") return `${quantity} ${quantity === 1 ? "racion" : "raciones"}`;
   return `${quantity} g`;
 }
@@ -212,7 +213,7 @@ function getEquivalentQuantity(food: NutritionFood, originalCaloriesKcal: number
   const quantityUnit = getDefaultQuantityUnitForFood(food);
   const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
   const quantityG =
-    quantityUnit === "g"
+    quantityUnit === "g" || quantityUnit === "ml"
       ? (originalCaloriesKcal / kcalPer100g) * 100
       : originalCaloriesKcal / (kcalPer100g * (unitWeightG / 100));
 

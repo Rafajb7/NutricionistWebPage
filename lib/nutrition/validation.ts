@@ -12,7 +12,14 @@ const nutritionUnitWeightSchema = z.preprocess((value) => {
   return Number.isFinite(parsed) ? Math.round(parsed) : value;
 }, z.number().int().min(1).max(10000).optional().default(1));
 
-const nutritionQuantityUnitSchema = z.enum(["g", "piece", "serving"]).optional().default("g");
+const nutritionFoodUnitWeightSchema = z.preprocess((value) => {
+  const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : value;
+}, z.number().int().min(0).max(10000).optional().default(0));
+
+const nutritionFoodReferenceUnitSchema = z.enum(["100g", "100ml"]).optional().default("100g");
+
+const nutritionQuantityUnitSchema = z.enum(["g", "ml", "piece", "serving"]).optional().default("g");
 
 const nutritionFoodRestrictionTagSchema = z.enum([
   "gluten",
@@ -79,12 +86,14 @@ const nutritionAthleteRestrictionKeySchema = z.enum([
 export const nutritionFoodInputSchema = z.object({
   name: z.string().min(1).max(160),
   category: z.string().max(120).optional().default(""),
+  referenceUnit: nutritionFoodReferenceUnitSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
   carbsPer100g: z.coerce.number().min(0).max(200),
   fatPer100g: z.coerce.number().min(0).max(200),
   fiberPer100g: z.coerce.number().min(0).max(100).optional().default(0),
   sodiumPer100g: z.coerce.number().min(0).max(100000),
   waterPer100g: z.coerce.number().min(0).max(100),
+  unitWeightG: nutritionFoodUnitWeightSchema,
   restrictionTags: z.array(nutritionFoodRestrictionTagSchema).max(40).optional().default([])
 });
 

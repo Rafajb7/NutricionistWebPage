@@ -2,7 +2,9 @@ export type NutritionPlanStatus = "review" | "published";
 
 export type NutritionMacroKey = "protein" | "carbs" | "fat";
 
-export type NutritionQuantityUnit = "g" | "piece" | "serving";
+export type NutritionFoodReferenceUnit = "100g" | "100ml";
+
+export type NutritionQuantityUnit = "g" | "ml" | "piece" | "serving";
 
 export type AthleteRoadmapStepStatus = "completed" | "current" | "pending";
 
@@ -46,13 +48,14 @@ export type NutritionFood = {
   id: string;
   name: string;
   category: string;
-  referenceUnit: "100g";
+  referenceUnit: NutritionFoodReferenceUnit;
   proteinPer100g: number;
   carbsPer100g: number;
   fatPer100g: number;
   fiberPer100g: number;
   sodiumPer100g: number;
   waterPer100g: number;
+  unitWeightG: number;
   restrictionTags: NutritionFoodRestrictionTag[];
   active: boolean;
   createdAt: string;
