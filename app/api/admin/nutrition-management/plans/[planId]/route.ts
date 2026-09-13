@@ -17,6 +17,9 @@ type RouteContext = {
   }>;
 };
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 function isValidId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,}$/.test(value);
 }

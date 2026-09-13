@@ -864,6 +864,49 @@ async function updateWorksheetRowById(
   return true;
 }
 
+async function updateWorksheetRowsById(
+  worksheetName: string,
+  headers: string[],
+  updates: Array<{ id: string; rowValues: Array<string | number> }>
+): Promise<Set<string>> {
+  const validUpdates = updates.filter((update) => update.id && update.rowValues.length);
+  if (!validUpdates.length) return new Set();
+
+  const rows = await readWorksheetRowsWithNumbers(worksheetName, headers);
+  const rowNumberById = new Map(
+    rows.map((item) => [String(item.row[0] ?? "").trim(), item.rowNumber])
+  );
+  const info = await ensureNutritionSheetsReady();
+  const sheets = await getSheetsClient();
+  const endCol = indexToA1Column(headers.length - 1);
+  const updatedIds = new Set<string>();
+  const data = validUpdates.flatMap((update) => {
+    const rowNumber = rowNumberById.get(update.id);
+    if (!rowNumber) return [];
+    updatedIds.add(update.id);
+    return [
+      {
+        range: `'${worksheetName}'!A${rowNumber}:${endCol}${rowNumber}`,
+        values: [update.rowValues]
+      }
+    ];
+  });
+
+  if (!data.length) return updatedIds;
+
+  await withGoogleApiRetry(() =>
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: info.spreadsheetId,
+      requestBody: {
+        valueInputOption: "RAW",
+        data
+      }
+    })
+  );
+  invalidateWorksheetCaches(worksheetName);
+  return updatedIds;
+}
+
 async function deleteWorksheetRowsWhere(
   worksheetName: string,
   headers: string[],
@@ -2385,17 +2428,27 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
   const entriesToAppend = entries.filter((entry) => !existingEntryIds.has(entry.id));
   const entriesToUpdate = entries.filter((entry) => existingEntryIds.has(entry.id));
 
-  await Promise.all([
-    updateWorksheetRowById(WORKSHEETS.plans, PLAN_HEADERS, plan.id, serializePlan(plan)),
+  const [updatedPlanIds] = await Promise.all([
+    updateWorksheetRowsById(WORKSHEETS.plans, PLAN_HEADERS, [
+      { id: plan.id, rowValues: serializePlan(plan) }
+    ]),
     appendWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, mealsToAppend.map(serializeMeal)),
     appendWorksheetRows(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, entriesToAppend.map(serializeEntry)),
-    ...mealsToUpdate.map((meal) =>
-      updateWorksheetRowById(WORKSHEETS.meals, MEAL_HEADERS, meal.id, serializeMeal(meal))
+    updateWorksheetRowsById(
+      WORKSHEETS.meals,
+      MEAL_HEADERS,
+      mealsToUpdate.map((meal) => ({ id: meal.id, rowValues: serializeMeal(meal) }))
     ),
-    ...entriesToUpdate.map((entry) =>
-      updateWorksheetRowById(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, entry.id, serializeEntry(entry))
+    updateWorksheetRowsById(
+      WORKSHEETS.planFoods,
+      PLAN_FOOD_HEADERS,
+      entriesToUpdate.map((entry) => ({ id: entry.id, rowValues: serializeEntry(entry) }))
     )
   ]);
+
+  if (!updatedPlanIds.has(plan.id)) {
+    return null;
+  }
 
   await Promise.all([
     deleteWorksheetRowsWhere(
