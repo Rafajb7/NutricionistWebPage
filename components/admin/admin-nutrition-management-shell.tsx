@@ -290,27 +290,6 @@ function parseIntegerInput(value: string): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function sanitizeDecimalInput(value: string, decimals = 2): string {
-  const normalized = value.trim().replace(",", ".");
-  if (!normalized) return "";
-  const cleaned = normalized.replace(/[^\d.]/g, "");
-  if (!cleaned) return "";
-
-  const [rawInteger = "", ...rawDecimalParts] = cleaned.split(".");
-  const integer = rawInteger.replace(/^0+(?=\d)/, "") || (cleaned.startsWith(".") ? "0" : "");
-  if (!rawDecimalParts.length) return integer;
-
-  const decimal = rawDecimalParts.join("").slice(0, decimals);
-  return `${integer || "0"}.${decimal}`;
-}
-
-function parseDecimalInput(value: string): number | null {
-  const sanitized = sanitizeDecimalInput(value);
-  if (!sanitized || sanitized === ".") return null;
-  const parsed = Number(sanitized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function formatIntegerValue(value: number, min = 0, max = 10000): string {
   return String(clampInteger(value, min, max));
 }
@@ -2223,7 +2202,7 @@ export function AdminNutritionManagementShell({
     }));
   }, []);
 
-  const handleMacroRatioInputChange = useCallback(
+  const commitMacroRatioInput = useCallback(
     (
       planId: string,
       key: MacroTargetKey,
@@ -2232,14 +2211,17 @@ export function AdminNutritionManagementShell({
       max: number,
       onValidValue: (value: number) => void,
     ) => {
-      const draftKey = getMacroRatioDraftKey(planId, key);
-      const sanitized = sanitizeDecimalInput(rawValue, 2);
-      setMacroRatioInputDrafts((current) => ({ ...current, [draftKey]: sanitized }));
-      const ratio = parseDecimalInput(sanitized);
-      if (ratio === null || ratio < 0 || weightKg === null || weightKg <= 0) return;
+      if (!Object.prototype.hasOwnProperty.call(
+        macroRatioInputDrafts, getMacroRatioDraftKey(planId, key),
+      )) return;
+      clearMacroRatioInputDraft(planId, key);
+      const normalized = rawValue.trim().replace(",", ".");
+      if (!normalized || normalized === ".") return;
+      const ratio = Number(normalized);
+      if (!Number.isFinite(ratio) || ratio < 0 || weightKg === null || weightKg <= 0) return;
       onValidValue(clampInteger(ratio * weightKg, 0, max));
     },
-    [],
+    [clearMacroRatioInputDraft, macroRatioInputDrafts],
   );
 
   const saveCurrentPlan = useCallback(
@@ -4563,8 +4545,21 @@ export function AdminNutritionManagementShell({
                                   targetGrams,
                                   macroRatioWeightKg,
                                 )}
-                                onChange={(event) =>
-                                  handleMacroRatioInputChange(
+                                onChange={(event) => {
+                                  const rawValue = event.target.value;
+                                  // Keep partial decimals and the caret intact while editing.
+                                  if (!/^\d*(?:[.,]\d{0,2})?$/.test(rawValue)) return;
+                                  const draftKey = getMacroRatioDraftKey(plan.id, macro.key);
+                                  setMacroRatioInputDrafts((current) => ({
+                                    ...current,
+                                    [draftKey]: rawValue,
+                                  }));
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") event.currentTarget.blur();
+                                }}
+                                onBlur={(event) =>
+                                  commitMacroRatioInput(
                                     plan.id,
                                     macro.key,
                                     event.target.value,
@@ -4576,7 +4571,6 @@ export function AdminNutritionManagementShell({
                                     },
                                   )
                                 }
-                                onBlur={() => clearMacroRatioInputDraft(plan.id, macro.key)}
                                 disabled={isCurrentPlanPublished || macroRatioWeightKg === null}
                                 className="w-full rounded-xl border border-white/10 bg-black/20 px-2.5 py-2.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
                               />
