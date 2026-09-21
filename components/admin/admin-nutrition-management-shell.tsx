@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
+import { getEquivalentFoodQuantity, updateEntryAlternatives } from "@/lib/nutrition/alternatives";
 import {
   Fragment,
   useCallback,
@@ -92,6 +94,8 @@ import type {
   NutritionChangeRequestType,
 } from "@/lib/nutrition/types";
 import {
+  normalizeFoodQuantity,
+  formatFoodQuantity,
   getAllowedQuantityUnitsForFood,
   getFoodBaseQuantityUnit,
   getFoodReferenceUnitLabel,
@@ -294,8 +298,8 @@ function formatIntegerValue(value: number, min = 0, max = 10000): string {
   return String(clampInteger(value, min, max));
 }
 
-function normalizeQuantityG(value: number): number {
-  return clampInteger(value, 1, 10000);
+function normalizeQuantityG(value: number, unit?: NutritionQuantityUnit): number {
+  return normalizeFoodQuantity(value, unit);
 }
 
 function normalizeQuantityUnit(value: unknown): NutritionQuantityUnit {
@@ -337,7 +341,7 @@ function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
       entries: (Array.isArray(meal.entries) ? meal.entries : [])
         .map((entry) => ({
           ...entry,
-          quantityG: normalizeQuantityG(entry.quantityG),
+          quantityG: normalizeQuantityG(entry.quantityG, entry.quantityUnit),
           quantityUnit: normalizeQuantityUnit(entry.quantityUnit),
           unitWeightG: normalizeUnitWeightG(
             entry.unitWeightG,
@@ -349,7 +353,7 @@ function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
             : []
           ).map((alternative) => ({
             ...alternative,
-            quantityG: normalizeQuantityG(alternative.quantityG),
+            quantityG: normalizeQuantityG(alternative.quantityG, alternative.quantityUnit),
             quantityUnit: normalizeQuantityUnit(alternative.quantityUnit),
             unitWeightG: normalizeUnitWeightG(
               alternative.unitWeightG,
@@ -567,18 +571,18 @@ function formatDisplayQuantity(item: {
   unitWeightG?: number;
   referenceUnit?: NutritionFoodReferenceUnit;
 }): string {
-  const quantity = normalizeQuantityG(item.quantityG);
+  const quantity = normalizeQuantityG(item.quantityG, item.quantityUnit);
   const unit = normalizeQuantityUnit(item.quantityUnit);
   const baseUnitLabel = item.referenceUnit === "100ml" || unit === "ml" ? "ml" : "g";
   if (unit === "g" || unit === "ml") {
-    return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(unit, quantity)}`;
+    return `${formatFoodQuantity(quantity, unit)} ${getQuantityUnitLabel(unit, quantity)}`;
   }
   const effectiveQuantityG = getEffectiveQuantityG({
     quantityG: quantity,
     quantityUnit: unit,
     unitWeightG: item.unitWeightG,
   });
-  return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(unit, quantity)} (~${formatNumber(
+  return `${formatFoodQuantity(quantity, unit)} ${getQuantityUnitLabel(unit, quantity)} (~${formatNumber(
     effectiveQuantityG,
     0,
   )} ${baseUnitLabel})`;
@@ -627,7 +631,7 @@ function getUnitAwareQuantityForFood(
       ? requestedQuantity
       : requestedQuantity / unitWeightG;
   return {
-    quantityG: normalizeQuantityG(requestedUnits),
+    quantityG: normalizeQuantityG(requestedUnits, quantityUnit),
     quantityUnit,
     unitWeightG,
   };
@@ -651,7 +655,7 @@ function convertQuantityUnitForFood(
   const quantityG =
     quantityUnit === "g" || quantityUnit === "ml"
       ? normalizeQuantityG(currentEffectiveG)
-      : normalizeQuantityG(currentEffectiveG / unitWeightG);
+      : normalizeQuantityG(currentEffectiveG / unitWeightG, quantityUnit);
 
   return { quantityG, quantityUnit, unitWeightG };
 }
@@ -827,19 +831,9 @@ function buildAlternativeFromFood(
   position: number,
 ): NutritionPlanFoodAlternative {
   const now = new Date().toISOString();
-  const targetCalories = calculateEntryTotals(entry).caloriesKcal;
-  const foodCaloriesPer100g = calculateFoodCaloriesPer100g(food);
   const quantityUnit = getDefaultQuantityUnitForFood(food);
   const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
-  const caloriesPerUnit = foodCaloriesPer100g * (unitWeightG / 100);
-  const quantityG =
-    quantityUnit === "g" || quantityUnit === "ml"
-      ? targetCalories > 0 && foodCaloriesPer100g > 0
-        ? normalizeQuantityG((targetCalories / foodCaloriesPer100g) * 100)
-        : normalizeQuantityG(getEffectiveQuantityG(entry))
-      : targetCalories > 0 && caloriesPerUnit > 0
-        ? normalizeQuantityG(targetCalories / caloriesPerUnit)
-        : 1;
+  const quantityG = getEquivalentFoodQuantity(entry, { ...food, quantityUnit, unitWeightG });
 
   return {
     id: createClientId(),
@@ -1156,11 +1150,14 @@ function MealOptionFoodSearch(props: {
       </div>
       <input
         type="text"
-        inputMode="numeric"
-        pattern="[0-9]*"
+        inputMode="decimal"
         aria-label="Cantidad inicial"
         value={props.quantity}
-        onChange={(event) => props.onQuantityChange(event.target.value)}
+        onChange={(event) => {
+          if (/^\d*(?:[.,]\d{0,2})?$/.test(event.target.value)) {
+            props.onQuantityChange(event.target.value);
+          }
+        }}
         onBlur={props.onQuantityBlur}
         disabled={props.disabled}
         className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
@@ -2958,11 +2955,8 @@ export function AdminNutritionManagementShell({
   ) {
     if (!plan) return;
     const optionKey = buildMealOptionKey(mealId, optionNumber);
-    const quantity = clampInteger(
-      parseIntegerInput(foodQuantities[optionKey] || "100") ?? 100,
-      1,
-      10000,
-    );
+    const parsedQuantity = normalizeNumberInput(foodQuantities[optionKey] || "100");
+    const quantity = parsedQuantity > 0 ? Math.min(10000, parsedQuantity) : 100;
     updateMeal(mealId, (meal) => ({
       ...meal,
       entries: [
@@ -3052,7 +3046,7 @@ export function AdminNutritionManagementShell({
     updateMeal(mealId, (meal) => ({
       ...meal,
       entries: meal.entries.map((entry) =>
-        entry.id === entryId ? updater(entry) : entry,
+        entry.id === entryId ? updateEntryAlternatives(entry, updater(entry)) : entry,
       ),
     }));
   }
@@ -5183,8 +5177,7 @@ export function AdminNutritionManagementShell({
                                       onQuantityChange={(value) =>
                                         setFoodQuantities((current) => ({
                                           ...current,
-                                          [optionKey]:
-                                            sanitizeIntegerInput(value),
+                                          [optionKey]: value,
                                         }))
                                       }
                                       onQuantityBlur={() =>
@@ -5395,41 +5388,17 @@ export function AdminNutritionManagementShell({
                                               <div className="mt-3 grid grid-cols-2 gap-2">
                                                 <label className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted">
                                                   Cantidad
-                                                  <input
-                                                    type="text"
-                                                    inputMode="numeric"
-                                                    pattern="[0-9]*"
-                                                    value={getIntegerInputValue(
-                                                      `${entry.id}:quantityG`,
-                                                      entry.quantityG,
-                                                      1,
-                                                      10000,
-                                                    )}
-                                                    onChange={(event) =>
-                                                      handleIntegerInputChange(
-                                                        `${entry.id}:quantityG`,
-                                                        event.target.value,
-                                                        1,
-                                                        10000,
-                                                        (value) =>
-                                                          updateEntry(
-                                                            meal.id,
-                                                            entry.id,
-                                                            (current) => ({
-                                                              ...current,
-                                                              quantityG: value,
-                                                            }),
-                                                          ),
-                                                      )
+                                                  <NutritionQuantityInput
+                                                    key={`${entry.id}:${entryQuantityUnit}`}
+                                                    value={entry.quantityG}
+                                                    unit={entryQuantityUnit}
+                                                    onChange={(value) =>
+                                                      updateEntry(meal.id, entry.id, (current) => ({
+                                                        ...current,
+                                                        quantityG: value,
+                                                      }))
                                                     }
-                                                    onBlur={() =>
-                                                      clearIntegerInputDraft(
-                                                        `${entry.id}:quantityG`,
-                                                      )
-                                                    }
-                                                    disabled={
-                                                      isCurrentPlanPublished
-                                                    }
+                                                    disabled={isCurrentPlanPublished}
                                                     className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                                   />
                                                 </label>
@@ -5590,48 +5559,17 @@ export function AdminNutritionManagementShell({
                                                           <div className="mt-3 grid grid-cols-2 gap-2">
                                                             <label className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted">
                                                               Cantidad
-                                                              <input
-                                                                type="text"
-                                                                inputMode="numeric"
-                                                                pattern="[0-9]*"
-                                                                value={getIntegerInputValue(
-                                                                  `${alternative.id}:quantityG`,
-                                                                  alternative.quantityG,
-                                                                  1,
-                                                                  10000,
-                                                                )}
-                                                                onChange={(
-                                                                  event,
-                                                                ) =>
-                                                                  handleIntegerInputChange(
-                                                                    `${alternative.id}:quantityG`,
-                                                                    event.target
-                                                                      .value,
-                                                                    1,
-                                                                    10000,
-                                                                    (value) =>
-                                                                      updateAlternative(
-                                                                        meal.id,
-                                                                        entry.id,
-                                                                        alternative.id,
-                                                                        (
-                                                                          current,
-                                                                        ) => ({
-                                                                          ...current,
-                                                                          quantityG:
-                                                                            value,
-                                                                        }),
-                                                                      ),
-                                                                  )
+                                                              <NutritionQuantityInput
+                                                                key={`${alternative.id}:${alternativeQuantityUnit}`}
+                                                                value={alternative.quantityG}
+                                                                unit={alternativeQuantityUnit}
+                                                                onChange={(value) =>
+                                                                  updateAlternative(meal.id, entry.id, alternative.id, (current) => ({
+                                                                    ...current,
+                                                                    quantityG: value,
+                                                                  }))
                                                                 }
-                                                                onBlur={() =>
-                                                                  clearIntegerInputDraft(
-                                                                    `${alternative.id}:quantityG`,
-                                                                  )
-                                                                }
-                                                                disabled={
-                                                                  isCurrentPlanPublished
-                                                                }
+                                                                disabled={isCurrentPlanPublished}
                                                                 className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                                               />
                                                             </label>
@@ -5788,10 +5726,6 @@ export function AdminNutritionManagementShell({
                                                         <div className="mt-2 max-h-52 overflow-y-auto rounded-lg border border-white/10 bg-black/80 p-1 shadow-xl">
                                                           {alternativeResults.map(
                                                             (food) => {
-                                                              const foodCaloriesPer100g =
-                                                                calculateFoodCaloriesPer100g(
-                                                                  food,
-                                                                );
                                                               const conflict =
                                                                 getRestrictionConflict(
                                                                   food,
@@ -5806,36 +5740,7 @@ export function AdminNutritionManagementShell({
                                                                   food,
                                                                   quantityUnit,
                                                                 );
-                                                              const caloriesPerUnit =
-                                                                foodCaloriesPer100g *
-                                                                (unitWeightG /
-                                                                  100);
-                                                              const suggestedQuantity =
-                                                                quantityUnit ===
-                                                                "g"
-                                                                  ? entryTotals.caloriesKcal >
-                                                                      0 &&
-                                                                    foodCaloriesPer100g >
-                                                                      0
-                                                                    ? normalizeQuantityG(
-                                                                        (entryTotals.caloriesKcal /
-                                                                          foodCaloriesPer100g) *
-                                                                          100,
-                                                                      )
-                                                                    : normalizeQuantityG(
-                                                                        getEffectiveQuantityG(
-                                                                          entry,
-                                                                        ),
-                                                                      )
-                                                                  : entryTotals.caloriesKcal >
-                                                                        0 &&
-                                                                      caloriesPerUnit >
-                                                                        0
-                                                                    ? normalizeQuantityG(
-                                                                        entryTotals.caloriesKcal /
-                                                                          caloriesPerUnit,
-                                                                      )
-                                                                    : 1;
+                                                              const suggestedQuantity = getEquivalentFoodQuantity(entry, { ...food, quantityUnit, unitWeightG });
 
                                                               return (
                                                                 <button
@@ -5891,7 +5796,7 @@ export function AdminNutritionManagementShell({
                                                                     )}{" "}
                                                                     -{" "}
                                                                     {formatNumber(
-                                                                      foodCaloriesPer100g,
+                                                                      calculateFoodCaloriesPer100g(food),
                                                                       0,
                                                                   )}{" "}
                                                                   kcal/{getFoodReferenceUnitLabel(food)}
@@ -6088,42 +5993,17 @@ export function AdminNutritionManagementShell({
                                                   </td>
                                                   <td className="px-3 py-2 text-right">
                                                     <div className="ml-auto flex justify-end gap-1">
-                                                      <input
-                                                        type="text"
-                                                        inputMode="numeric"
-                                                        pattern="[0-9]*"
-                                                        value={getIntegerInputValue(
-                                                          `${entry.id}:quantityG`,
-                                                          entry.quantityG,
-                                                          1,
-                                                          10000,
-                                                        )}
-                                                        onChange={(event) =>
-                                                          handleIntegerInputChange(
-                                                            `${entry.id}:quantityG`,
-                                                            event.target.value,
-                                                            1,
-                                                            10000,
-                                                            (value) =>
-                                                              updateEntry(
-                                                                meal.id,
-                                                                entry.id,
-                                                                (current) => ({
-                                                                  ...current,
-                                                                  quantityG:
-                                                                    value,
-                                                                }),
-                                                              ),
-                                                          )
+                                                      <NutritionQuantityInput
+                                                        key={`${entry.id}:${entryQuantityUnit}`}
+                                                        value={entry.quantityG}
+                                                        unit={entryQuantityUnit}
+                                                        onChange={(value) =>
+                                                          updateEntry(meal.id, entry.id, (current) => ({
+                                                            ...current,
+                                                            quantityG: value,
+                                                          }))
                                                         }
-                                                        onBlur={() =>
-                                                          clearIntegerInputDraft(
-                                                            `${entry.id}:quantityG`,
-                                                          )
-                                                        }
-                                                        disabled={
-                                                          isCurrentPlanPublished
-                                                        }
+                                                        disabled={isCurrentPlanPublished}
                                                         className="w-20 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                                       />
                                                       <select
@@ -6329,51 +6209,17 @@ export function AdminNutritionManagementShell({
                                                                 <label className="w-full text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted lg:w-52">
                                                                   Cantidad
                                                                   <div className="mt-1 flex gap-1">
-                                                                    <input
-                                                                      type="text"
-                                                                      inputMode="numeric"
-                                                                      pattern="[0-9]*"
-                                                                      value={getIntegerInputValue(
-                                                                        `${alternative.id}:quantityG`,
-                                                                        alternative.quantityG,
-                                                                        1,
-                                                                        10000,
-                                                                      )}
-                                                                      onChange={(
-                                                                        event,
-                                                                      ) =>
-                                                                        handleIntegerInputChange(
-                                                                          `${alternative.id}:quantityG`,
-                                                                          event
-                                                                            .target
-                                                                            .value,
-                                                                          1,
-                                                                          10000,
-                                                                          (
-                                                                            value,
-                                                                          ) =>
-                                                                            updateAlternative(
-                                                                              meal.id,
-                                                                              entry.id,
-                                                                              alternative.id,
-                                                                              (
-                                                                                current,
-                                                                              ) => ({
-                                                                                ...current,
-                                                                                quantityG:
-                                                                                  value,
-                                                                              }),
-                                                                            ),
-                                                                        )
+                                                                    <NutritionQuantityInput
+                                                                      key={`${alternative.id}:${alternativeQuantityUnit}`}
+                                                                      value={alternative.quantityG}
+                                                                      unit={alternativeQuantityUnit}
+                                                                      onChange={(value) =>
+                                                                        updateAlternative(meal.id, entry.id, alternative.id, (current) => ({
+                                                                          ...current,
+                                                                          quantityG: value,
+                                                                        }))
                                                                       }
-                                                                      onBlur={() =>
-                                                                        clearIntegerInputDraft(
-                                                                          `${alternative.id}:quantityG`,
-                                                                        )
-                                                                      }
-                                                                      disabled={
-                                                                        isCurrentPlanPublished
-                                                                      }
+                                                                      disabled={isCurrentPlanPublished}
                                                                       className="w-20 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
                                                                     />
                                                                     <select
@@ -6551,10 +6397,6 @@ export function AdminNutritionManagementShell({
                                                               <div className="mt-2 max-h-52 overflow-y-auto rounded-lg border border-white/10 bg-black/80 p-1 shadow-xl">
                                                                 {alternativeResults.map(
                                                                   (food) => {
-                                                                    const foodCaloriesPer100g =
-                                                                      calculateFoodCaloriesPer100g(
-                                                                        food,
-                                                                      );
                                                                     const conflict =
                                                                       getRestrictionConflict(
                                                                         food,
@@ -6569,36 +6411,7 @@ export function AdminNutritionManagementShell({
                                                                         food,
                                                                         quantityUnit,
                                                                       );
-                                                                    const caloriesPerUnit =
-                                                                      foodCaloriesPer100g *
-                                                                      (unitWeightG /
-                                                                        100);
-                                                                    const suggestedQuantity =
-                                                                      quantityUnit ===
-                                                                      "g"
-                                                                        ? entryTotals.caloriesKcal >
-                                                                            0 &&
-                                                                          foodCaloriesPer100g >
-                                                                            0
-                                                                          ? normalizeQuantityG(
-                                                                              (entryTotals.caloriesKcal /
-                                                                                foodCaloriesPer100g) *
-                                                                                100,
-                                                                            )
-                                                                          : normalizeQuantityG(
-                                                                              getEffectiveQuantityG(
-                                                                                entry,
-                                                                              ),
-                                                                            )
-                                                                        : entryTotals.caloriesKcal >
-                                                                              0 &&
-                                                                            caloriesPerUnit >
-                                                                              0
-                                                                          ? normalizeQuantityG(
-                                                                              entryTotals.caloriesKcal /
-                                                                                caloriesPerUnit,
-                                                                            )
-                                                                          : 1;
+                                                                    const suggestedQuantity = getEquivalentFoodQuantity(entry, { ...food, quantityUnit, unitWeightG });
 
                                                                     return (
                                                                       <button
@@ -6656,7 +6469,7 @@ export function AdminNutritionManagementShell({
                                                                           )}{" "}
                                                                           -{" "}
                                                                           {formatNumber(
-                                                                            foodCaloriesPer100g,
+                                                                            calculateFoodCaloriesPer100g(food),
                                                                             0,
                                                                           )}{" "}
                                                                           kcal/{getFoodReferenceUnitLabel(food)}

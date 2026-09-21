@@ -1,3 +1,4 @@
+import { normalizeFoodQuantity, formatFoodQuantity } from "@/lib/nutrition/quantity-units";
 import fs from "node:fs";
 import path from "node:path";
 import PDFDocument from "pdfkit";
@@ -112,11 +113,6 @@ function getVisibleMeals(plan: NutritionPlanFull): NutritionPlanFull["meals"] {
   return [...plan.meals].sort((a, b) => a.position - b.position);
 }
 
-function normalizePdfQuantityG(value: number): number {
-  if (!Number.isFinite(value)) return 1;
-  return Math.min(10000, Math.max(1, Math.round(value)));
-}
-
 function normalizePdfQuantityUnit(value: unknown): NutritionQuantityUnit {
   if (value === "g" || value === "ml" || value === "piece" || value === "serving") return value;
   return "g";
@@ -163,7 +159,7 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
             ...entry,
             foodName: entry.foodName ?? "",
             customText: entry.customText ?? "",
-            quantityG: normalizePdfQuantityG(entry.quantityG),
+            quantityG: normalizeFoodQuantity(entry.quantityG, entry.quantityUnit),
             quantityUnit,
             unitWeightG: normalizePdfUnitWeightG(entry.unitWeightG, quantityUnit),
             mealOption: normalizePdfMealOption(entry.mealOption),
@@ -173,7 +169,7 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
                 ...alternative,
                 foodName: alternative.foodName ?? "",
                 customText: alternative.customText ?? "",
-                quantityG: normalizePdfQuantityG(alternative.quantityG),
+                quantityG: normalizeFoodQuantity(alternative.quantityG, alternative.quantityUnit),
                 quantityUnit: alternativeQuantityUnit,
                 unitWeightG: normalizePdfUnitWeightG(alternative.unitWeightG, alternativeQuantityUnit)
               };
@@ -199,8 +195,8 @@ function getQuantityUnitLabel(unit: NutritionQuantityUnit, value: number): strin
 function formatQuantity(
   item: Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, "quantityG" | "quantityUnit">
 ): string {
-  const quantity = normalizePdfQuantityG(item.quantityG);
-  return `${formatNumber(quantity, 0)} ${getQuantityUnitLabel(normalizePdfQuantityUnit(item.quantityUnit), quantity)}`;
+  const quantity = normalizeFoodQuantity(item.quantityG, item.quantityUnit);
+  return `${formatFoodQuantity(quantity, item.quantityUnit)} ${getQuantityUnitLabel(normalizePdfQuantityUnit(item.quantityUnit), quantity)}`;
 }
 
 function getNiceAxisMax(value: number): number {

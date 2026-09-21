@@ -1,11 +1,12 @@
 import { z } from "zod";
+import { normalizeFoodQuantity } from "@/lib/nutrition/quantity-units";
 
 const isoDateSchema = z.string().max(80).optional().default("");
 
-const nutritionQuantityGramsSchema = z.preprocess((value) => {
+const nutritionQuantitySchema = z.preprocess((value) => {
   const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
-  return Number.isFinite(parsed) ? Math.round(parsed) : value;
-}, z.number().int().min(1).max(10000));
+  return Number.isFinite(parsed) ? parsed : value;
+}, z.number().min(0.01).max(10000));
 
 const nutritionUnitWeightSchema = z.preprocess((value) => {
   const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
@@ -141,7 +142,7 @@ const nutritionPlanAlternativeSchema = z.object({
   entryId: z.string().max(120).optional().default(""),
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
-  quantityG: nutritionQuantityGramsSchema,
+  quantityG: nutritionQuantitySchema,
   quantityUnit: nutritionQuantityUnitSchema,
   unitWeightG: nutritionUnitWeightSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
@@ -154,7 +155,10 @@ const nutritionPlanAlternativeSchema = z.object({
   customText: z.string().max(240).optional().default(""),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema
-});
+}).transform((item) => ({
+  ...item,
+  quantityG: normalizeFoodQuantity(item.quantityG, item.quantityUnit),
+}));
 
 const nutritionPlanEntrySchema = z.object({
   id: z.string().max(120).optional().default(""),
@@ -162,7 +166,7 @@ const nutritionPlanEntrySchema = z.object({
   mealId: z.string().max(120).optional().default(""),
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
-  quantityG: nutritionQuantityGramsSchema,
+  quantityG: nutritionQuantitySchema,
   quantityUnit: nutritionQuantityUnitSchema,
   unitWeightG: nutritionUnitWeightSchema,
   proteinPer100g: z.coerce.number().min(0).max(200),
@@ -177,7 +181,10 @@ const nutritionPlanEntrySchema = z.object({
   alternatives: z.array(nutritionPlanAlternativeSchema).max(20).optional().default([]),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema
-});
+}).transform((item) => ({
+  ...item,
+  quantityG: normalizeFoodQuantity(item.quantityG, item.quantityUnit),
+}));
 
 const nutritionPlanMealSchema = z.object({
   id: z.string().max(120).optional().default(""),
