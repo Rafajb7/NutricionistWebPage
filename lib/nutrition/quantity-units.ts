@@ -14,6 +14,23 @@ type QuantityLike = Pick<NutritionPlanFoodEntry | NutritionPlanFoodAlternative, 
   unitWeightG?: number;
 };
 
+export function allowsFractionalQuantity(unit: NutritionQuantityUnit | undefined): boolean {
+  return unit === "piece" || unit === "serving";
+}
+
+export function normalizeFoodQuantity(value: number, unit?: NutritionQuantityUnit): number {
+  const factor = allowsFractionalQuantity(unit) ? 100 : 1;
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(10000, Math.max(1 / factor, Math.round((value + Number.EPSILON) * factor) / factor));
+}
+
+export function formatFoodQuantity(value: number, unit?: NutritionQuantityUnit): string {
+  return new Intl.NumberFormat("es-ES", {
+    useGrouping: false,
+    maximumFractionDigits: allowsFractionalQuantity(unit) ? 2 : 0,
+  }).format(normalizeFoodQuantity(value, unit));
+}
+
 export const GENERIC_FRUIT_SERVING_FOOD_ID = "default-racion-fruta";
 export const GENERIC_VEGETABLE_SERVING_FOOD_ID = "default-racion-verdura";
 export const FRUIT_SERVING_WEIGHT_G = 150;

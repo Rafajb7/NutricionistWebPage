@@ -17,6 +17,7 @@ import {
   serializeRestrictionTags
 } from "@/lib/nutrition/restrictions";
 import {
+  normalizeFoodQuantity,
   getDefaultUnitWeightGForFood,
   normalizeFoodReferenceUnit,
   normalizeQuantityUnitForFood
@@ -470,7 +471,7 @@ function sanitizeAlternative(
     entryId,
     foodId: alternative.foodId,
     foodName: sanitizeName(alternative.foodName, "Alternativa").slice(0, 160),
-    quantityG: clampQuantityG(alternative.quantityG),
+    quantityG: normalizeFoodQuantity(alternative.quantityG, quantityUnit),
     quantityUnit,
     unitWeightG:
       quantityUnit === "g" || quantityUnit === "ml"
@@ -1041,7 +1042,7 @@ function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanF
           entryId,
           foodId: String(record.foodId ?? "").trim(),
           foodName: foodName.slice(0, 160),
-          quantityG: clampQuantityG(parseNumber(record.quantityG)),
+          quantityG: normalizeFoodQuantity(parseNumber(record.quantityG), parseQuantityUnit(record.quantityUnit)),
           quantityUnit: parseQuantityUnit(record.quantityUnit),
           unitWeightG: clampUnitWeightG(parseNumber(record.unitWeightG)),
           proteinPer100g: clampNumber(parseNumber(record.proteinPer100g), 0, 200),
@@ -1076,7 +1077,7 @@ function parseEntry(row: string[]): NutritionPlanFoodEntry | null {
     mealId,
     foodId: String(row[3] ?? "").trim(),
     foodName,
-    quantityG: clampQuantityG(parseNumber(row[5])),
+    quantityG: normalizeFoodQuantity(parseNumber(row[5]), parseQuantityUnit(row[16])),
     quantityUnit: parseQuantityUnit(row[16]),
     unitWeightG: clampUnitWeightG(parseNumber(row[17])),
     proteinPer100g: parseNumber(row[6]),
@@ -1386,7 +1387,7 @@ function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]
         entryId: alternative.entryId,
         foodId: alternative.foodId,
         foodName: alternative.foodName,
-        quantityG: clampQuantityG(alternative.quantityG),
+        quantityG: normalizeFoodQuantity(alternative.quantityG, alternative.quantityUnit),
         quantityUnit: parseQuantityUnit(alternative.quantityUnit),
         unitWeightG: clampUnitWeightG(alternative.unitWeightG),
         proteinPer100g: alternative.proteinPer100g,
@@ -1411,7 +1412,7 @@ function serializeEntry(entry: NutritionPlanFoodEntry): Array<string | number> {
     entry.mealId,
     entry.foodId,
     entry.foodName,
-    clampQuantityG(entry.quantityG),
+    normalizeFoodQuantity(entry.quantityG, entry.quantityUnit),
     entry.proteinPer100g,
     entry.carbsPer100g,
     entry.fatPer100g,
@@ -2384,7 +2385,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
           mealId: savedMealId,
           foodId: entry.foodId,
           foodName: sanitizeName(entry.foodName, "Alimento").slice(0, 160),
-          quantityG: clampQuantityG(entry.quantityG),
+          quantityG: normalizeFoodQuantity(entry.quantityG, quantityUnit),
           quantityUnit,
           unitWeightG:
             quantityUnit === "g" || quantityUnit === "ml"

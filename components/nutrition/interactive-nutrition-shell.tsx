@@ -27,6 +27,8 @@ import {
   calculatePlanTotals
 } from "@/lib/nutrition/calculations";
 import {
+  normalizeFoodQuantity,
+  formatFoodQuantity,
   getDefaultQuantityUnitForFood,
   getDefaultUnitWeightGForFood
 } from "@/lib/nutrition/quantity-units";
@@ -132,12 +134,13 @@ function normalizeQuantityUnit(value: unknown): NutritionQuantityUnit {
 }
 
 function formatQuantity(value: number, unit: NutritionQuantityUnit | undefined): string {
-  const quantity = Math.max(1, Math.round(Number.isFinite(value) ? value : 1));
+  const quantity = normalizeFoodQuantity(value, unit);
+  const label = formatFoodQuantity(quantity, unit);
   const normalizedUnit = normalizeQuantityUnit(unit);
-  if (normalizedUnit === "ml") return `${quantity} ml`;
-  if (normalizedUnit === "piece") return `${quantity} ${quantity === 1 ? "unidad" : "unidades"}`;
-  if (normalizedUnit === "serving") return `${quantity} ${quantity === 1 ? "racion" : "raciones"}`;
-  return `${quantity} g`;
+  if (normalizedUnit === "ml") return `${label} ml`;
+  if (normalizedUnit === "piece") return `${label} ${quantity === 1 ? "unidad" : "unidades"}`;
+  if (normalizedUnit === "serving") return `${label} ${quantity === 1 ? "racion" : "raciones"}`;
+  return `${label} g`;
 }
 
 function normalizeMealOption(value: unknown): number {
