@@ -4,11 +4,14 @@ import { requireAdminSession } from "@/lib/auth/require-session";
 import {
   buildNutritionPlanPdfFileName,
   getNutritionPlanById,
-  markNutritionPlanPublished
+  markNutritionPlanPublished,
+  NutritionPlanSnapshotTooLargeError,
+  serializeNutritionPlanSnapshot
 } from "@/lib/google/nutrition-management";
 import { upsertNutritionPlanPdfForUser } from "@/lib/google/drive";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
 import { getNutritionPdfSupportingData } from "@/lib/nutrition/pdf-supporting-data";
+import { isGoogleRateLimitError, isGoogleTransientError } from "@/lib/google/retry";
 import { logError, logInfo } from "@/lib/logger";
 
 type RouteContext = {
@@ -46,8 +49,11 @@ export async function POST(req: Request, context: RouteContext) {
     const plan = await getNutritionPlanById(planId);
     if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
 
+    // Validate the snapshot size before uploading or replacing the athlete's Drive PDF.
+    serializeNutritionPlanSnapshot(plan);
+
     const options = await parsePdfOptions(req);
-    const { comparisonPlans, roadmapSteps } = await getNutritionPdfSupportingData(plan, {
+    const { comparisonPlans, roadmapSteps, partial } = await getNutritionPdfSupportingData(plan, {
       username: auth.session.username,
       planId,
       action: "publish"
@@ -85,6 +91,7 @@ export async function POST(req: Request, context: RouteContext) {
 
     return NextResponse.json({
       ok: true,
+      partial,
       plan: published,
       file: uploaded
     });
@@ -94,6 +101,27 @@ export async function POST(req: Request, context: RouteContext) {
       planId,
       error
     });
-    return NextResponse.json({ error: "No se pudo publicar el PDF nutricional." }, { status: 500 });
+    if (error instanceof NutritionPlanSnapshotTooLargeError) {
+      return NextResponse.json(
+        { error: "El plan es demasiado grande para publicar su historial. Reduce el número de alternativas o divide el contenido entre varios planes. Puedes descargar el PDF de revisión.", code: "PLAN_TOO_LARGE" },
+        { status: 413 }
+      );
+    }
+    if (isGoogleRateLimitError(error)) {
+      return NextResponse.json(
+        { error: "Google ha limitado temporalmente las solicitudes. No se ha podido confirmar la publicación del PDF; inténtalo de nuevo en unos segundos.", code: "GOOGLE_RATE_LIMIT" },
+        { status: 429, headers: { "Retry-After": "30" } }
+      );
+    }
+    if (isGoogleTransientError(error)) {
+      return NextResponse.json(
+        { error: "Google no está disponible temporalmente. No se ha podido confirmar la publicación del PDF; inténtalo de nuevo en unos segundos.", code: "GOOGLE_UNAVAILABLE" },
+        { status: 503 }
+      );
+    }
+    return NextResponse.json(
+      { error: "No se pudo publicar el PDF nutricional.", code: "PDF_PUBLISH_FAILED" },
+      { status: 500 }
+    );
   }
 }

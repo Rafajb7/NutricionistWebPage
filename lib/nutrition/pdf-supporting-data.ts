@@ -7,16 +7,36 @@ import type { AthleteRoadmapStep, NutritionPlanFull } from "@/lib/nutrition/type
 
 type PdfSupportingDataContext = Record<string, unknown>;
 
+// Optional PDF sections must not hold up a download when Google is unavailable.
+const SUPPORTING_DATA_TIMEOUT_MS = 2000;
+
+async function withSupportingDataDeadline<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error("Nutrition PDF supporting data timed out."));
+        }, SUPPORTING_DATA_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getNutritionPdfSupportingData(
   plan: NutritionPlanFull,
   context: PdfSupportingDataContext = {}
 ): Promise<{
   comparisonPlans: NutritionPlanFull[];
   roadmapSteps: AthleteRoadmapStep[];
+  partial: boolean;
 }> {
   const [comparisonPlansResult, roadmapStepsResult] = await Promise.allSettled([
-    listNutritionPlansForAthlete(plan.athleteUsername),
-    getAthleteRoadmapSteps(plan.athleteUsername)
+    withSupportingDataDeadline(listNutritionPlansForAthlete(plan.athleteUsername)),
+    withSupportingDataDeadline(getAthleteRoadmapSteps(plan.athleteUsername))
   ]);
 
   const comparisonPlans =
@@ -41,5 +61,9 @@ export async function getNutritionPdfSupportingData(
     });
   }
 
-  return { comparisonPlans, roadmapSteps };
+  return {
+    comparisonPlans,
+    roadmapSteps,
+    partial: comparisonPlansResult.status === "rejected" || roadmapStepsResult.status === "rejected"
+  };
 }

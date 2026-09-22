@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { google } from "googleapis";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { google, type sheets_v4 } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
 import {
@@ -865,49 +866,6 @@ async function updateWorksheetRowById(
   return true;
 }
 
-async function updateWorksheetRowsById(
-  worksheetName: string,
-  headers: string[],
-  updates: Array<{ id: string; rowValues: Array<string | number> }>
-): Promise<Set<string>> {
-  const validUpdates = updates.filter((update) => update.id && update.rowValues.length);
-  if (!validUpdates.length) return new Set();
-
-  const rows = await readWorksheetRowsWithNumbers(worksheetName, headers);
-  const rowNumberById = new Map(
-    rows.map((item) => [String(item.row[0] ?? "").trim(), item.rowNumber])
-  );
-  const info = await ensureNutritionSheetsReady();
-  const sheets = await getSheetsClient();
-  const endCol = indexToA1Column(headers.length - 1);
-  const updatedIds = new Set<string>();
-  const data = validUpdates.flatMap((update) => {
-    const rowNumber = rowNumberById.get(update.id);
-    if (!rowNumber) return [];
-    updatedIds.add(update.id);
-    return [
-      {
-        range: `'${worksheetName}'!A${rowNumber}:${endCol}${rowNumber}`,
-        values: [update.rowValues]
-      }
-    ];
-  });
-
-  if (!data.length) return updatedIds;
-
-  await withGoogleApiRetry(() =>
-    sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: info.spreadsheetId,
-      requestBody: {
-        valueInputOption: "RAW",
-        data
-      }
-    })
-  );
-  invalidateWorksheetCaches(worksheetName);
-  return updatedIds;
-}
-
 async function deleteWorksheetRowsWhere(
   worksheetName: string,
   headers: string[],
@@ -944,6 +902,108 @@ async function deleteWorksheetRowsWhere(
 
   invalidateWorksheetCaches(worksheetName);
   return rowsToDelete.length;
+}
+
+// Keep the summary, meals and foods in one Sheets transaction. Independent writes
+// can otherwise leave a half-saved plan when a quota or network error occurs.
+async function writeNutritionPlanRows(input: {
+  planId: string;
+  planRow: Array<string | number>;
+  mealRows?: Array<Array<string | number>>;
+  entryRows?: Array<Array<string | number>>;
+  versionRows?: Array<Array<string | number>>;
+}): Promise<boolean> {
+  const info = await ensureNutritionSheetsReady();
+  const sheets = await getSheetsClient();
+  const worksheets = [
+    { title: WORKSHEETS.plans, headers: PLAN_HEADERS, rows: [input.planRow], planIdColumn: 0, replace: true },
+    ...(input.mealRows ? [{ title: WORKSHEETS.meals, headers: MEAL_HEADERS, rows: input.mealRows, planIdColumn: 1, replace: true }] : []),
+    ...(input.entryRows ? [{ title: WORKSHEETS.planFoods, headers: PLAN_FOOD_HEADERS, rows: input.entryRows, planIdColumn: 1, replace: true }] : []),
+    ...(input.versionRows ? [{ title: WORKSHEETS.versions, headers: VERSION_HEADERS, rows: input.versionRows, planIdColumn: 1, replace: false }] : [])
+  ];
+  const metadata = await withGoogleApiRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId: info.spreadsheetId,
+      fields: "sheets.properties.sheetId,sheets.properties.title"
+    })
+  );
+  const sheetIds = new Map(
+    (metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title, sheet.properties?.sheetId])
+  );
+
+  try {
+    return await withGoogleApiRetry(async () => {
+      // Re-read before EVERY retry: a timed-out write may already have succeeded.
+      // Replaying appendCells blindly would duplicate meals and foods.
+      const response = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: info.spreadsheetId,
+        ranges: worksheets.map(({ title, headers }) => `'${title}'!A2:${indexToA1Column(headers.length - 1)}`),
+        valueRenderOption: "FORMATTED_VALUE",
+        dateTimeRenderOption: "FORMATTED_STRING"
+      }, { retry: false });
+      const storedRows = worksheets.map((_, index) =>
+        (response.data.valueRanges?.[index]?.values as string[][] | undefined) ?? []
+      );
+      if (!storedRows[0].some((row) => String(row[0] ?? "").trim() === input.planId)) {
+        return false;
+      }
+
+      const requests: sheets_v4.Schema$Request[] = [];
+      worksheets.forEach((worksheet, worksheetIndex) => {
+        const sheetId = sheetIds.get(worksheet.title);
+        if (sheetId === undefined || sheetId === null) {
+          throw new Error(`Worksheet "${worksheet.title}" not found.`);
+        }
+        const pendingRows = new Map(worksheet.rows.map((row) => [String(row[0]), row]));
+        storedRows[worksheetIndex].forEach((row, rowIndex) => {
+          if (String(row[worksheet.planIdColumn] ?? "").trim() !== input.planId) return;
+          const id = String(row[0] ?? "").trim();
+          const nextRow = pendingRows.get(id);
+          if (!nextRow && !worksheet.replace) return;
+          pendingRows.delete(id);
+          requests.push({
+            updateCells: {
+              range: {
+                sheetId,
+                startRowIndex: rowIndex + 1,
+                endRowIndex: rowIndex + 2,
+                startColumnIndex: 0,
+                endColumnIndex: worksheet.headers.length
+              },
+              rows: nextRow ? [{ values: nextRow.map(toSheetCell) }] : [],
+              fields: "userEnteredValue"
+            }
+          });
+        });
+        if (pendingRows.size) {
+          requests.push({
+            appendCells: {
+              sheetId,
+              rows: Array.from(pendingRows.values(), (row) => ({ values: row.map(toSheetCell) })),
+              fields: "userEnteredValue"
+            }
+          });
+        }
+      });
+
+      // Removed rows are cleared, not shifted, so concurrent saves of other plans
+      // do not change the row positions used by this transaction.
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: info.spreadsheetId,
+        requestBody: { requests }
+      }, { retry: false });
+      return true;
+    });
+  } finally {
+    // A network failure does not tell us whether Google committed the request.
+    invalidateNutritionDatasetCache();
+  }
+}
+
+function toSheetCell(value: string | number): sheets_v4.Schema$CellData {
+  return {
+    userEnteredValue: typeof value === "number" ? { numberValue: value } : { stringValue: value }
+  };
 }
 
 function parseFood(row: string[]): NutritionFood | null {
@@ -1633,7 +1693,12 @@ function buildFullPlan(dataset: NutritionDataset, plan: NutritionPlanSummary): N
 
 function parsePlanSnapshot(version: StoredNutritionPlanVersion): NutritionPlanFull | null {
   try {
-    const parsed = JSON.parse(version.snapshotJson) as NutritionPlanFull;
+    const snapshotJson = version.snapshotJson.startsWith("gzip:v1:")
+      ? gunzipSync(Buffer.from(version.snapshotJson.slice("gzip:v1:".length), "base64"), {
+          maxOutputLength: 64 * 1024 * 1024
+        }).toString("utf8")
+      : version.snapshotJson;
+    const parsed = JSON.parse(snapshotJson) as NutritionPlanFull;
     if (!parsed || typeof parsed !== "object" || !parsed.id || !Array.isArray(parsed.meals)) {
       return null;
     }
@@ -2365,7 +2430,7 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
   const entries: NutritionPlanFoodEntry[] = input.meals.flatMap((meal, mealIndex) => {
     const savedMealId = meals[mealIndex]?.id ?? meal.id;
     const optionPositions = new Map<number, number>();
-    return (Array.isArray(meal.entries) ? meal.entries : [])
+    return [...(Array.isArray(meal.entries) ? meal.entries : [])]
       .sort((a, b) => {
         const optionDiff = clampMealOption(a.mealOption || 1) - clampMealOption(b.mealOption || 1);
         if (optionDiff !== 0) return optionDiff;
@@ -2415,54 +2480,13 @@ export async function saveNutritionPlan(input: NutritionPlanFull): Promise<Nutri
   plans[planIndex] = plan;
   const otherMeals = dataset.meals.filter((meal) => meal.planId !== plan.id);
   const otherEntries = dataset.entries.filter((entry) => entry.planId !== plan.id);
-  const existingMealIds = new Set(
-    dataset.meals.filter((meal) => meal.planId === plan.id).map((meal) => meal.id)
-  );
-  const existingEntryIds = new Set(
-    dataset.entries.filter((entry) => entry.planId === plan.id).map((entry) => entry.id)
-  );
-  const nextMealIds = new Set(meals.map((meal) => meal.id));
-  const nextEntryIds = new Set(entries.map((entry) => entry.id));
-
-  const mealsToAppend = meals.filter((meal) => !existingMealIds.has(meal.id));
-  const mealsToUpdate = meals.filter((meal) => existingMealIds.has(meal.id));
-  const entriesToAppend = entries.filter((entry) => !existingEntryIds.has(entry.id));
-  const entriesToUpdate = entries.filter((entry) => existingEntryIds.has(entry.id));
-
-  const [updatedPlanIds] = await Promise.all([
-    updateWorksheetRowsById(WORKSHEETS.plans, PLAN_HEADERS, [
-      { id: plan.id, rowValues: serializePlan(plan) }
-    ]),
-    appendWorksheetRows(WORKSHEETS.meals, MEAL_HEADERS, mealsToAppend.map(serializeMeal)),
-    appendWorksheetRows(WORKSHEETS.planFoods, PLAN_FOOD_HEADERS, entriesToAppend.map(serializeEntry)),
-    updateWorksheetRowsById(
-      WORKSHEETS.meals,
-      MEAL_HEADERS,
-      mealsToUpdate.map((meal) => ({ id: meal.id, rowValues: serializeMeal(meal) }))
-    ),
-    updateWorksheetRowsById(
-      WORKSHEETS.planFoods,
-      PLAN_FOOD_HEADERS,
-      entriesToUpdate.map((entry) => ({ id: entry.id, rowValues: serializeEntry(entry) }))
-    )
-  ]);
-
-  if (!updatedPlanIds.has(plan.id)) {
-    return null;
-  }
-
-  await Promise.all([
-    deleteWorksheetRowsWhere(
-      WORKSHEETS.meals,
-      MEAL_HEADERS,
-      (row) => String(row[1] ?? "").trim() === plan.id && !nextMealIds.has(String(row[0] ?? "").trim())
-    ),
-    deleteWorksheetRowsWhere(
-      WORKSHEETS.planFoods,
-      PLAN_FOOD_HEADERS,
-      (row) => String(row[1] ?? "").trim() === plan.id && !nextEntryIds.has(String(row[0] ?? "").trim())
-    )
-  ]);
+  const saved = await writeNutritionPlanRows({
+    planId: plan.id,
+    planRow: serializePlan(plan),
+    mealRows: meals.map(serializeMeal),
+    entryRows: entries.map(serializeEntry)
+  });
+  if (!saved) return null;
 
   return buildFullPlan(
     {
@@ -2597,12 +2621,31 @@ export function buildNutritionPlanPdfFileName(plan: NutritionPlanFull): string {
   return `${base || "plan nutricional"}.pdf`;
 }
 
+export class NutritionPlanSnapshotTooLargeError extends Error {
+  constructor() {
+    super("El plan contiene demasiados datos para publicar su versión. Reduce las opciones o divídelo en varios planes.");
+    this.name = "NutritionPlanSnapshotTooLargeError";
+  }
+}
+
+export function serializeNutritionPlanSnapshot(plan: NutritionPlanFull): string {
+  const json = JSON.stringify(plan);
+  if (json.length <= 45_000) return json;
+
+  // A Sheets cell accepts at most 50,000 characters. Meal options and alternatives
+  // can exceed this with ordinary plans; their repeated JSON keys compress well.
+  const compressed = `gzip:v1:${gzipSync(json).toString("base64")}`;
+  if (compressed.length > 50_000) throw new NutritionPlanSnapshotTooLargeError();
+  return compressed;
+}
+
 export async function markNutritionPlanPublished(input: {
   planId: string;
   driveFileId: string;
   fileName: string;
   snapshot: NutritionPlanFull;
 }): Promise<NutritionPlanFull | null> {
+  const snapshotJson = serializeNutritionPlanSnapshot(input.snapshot);
   const dataset = await readNutritionDataset({ force: true });
   const planIndex = dataset.plans.findIndex((plan) => plan.id === input.planId);
   if (planIndex < 0) return null;
@@ -2628,12 +2671,16 @@ export async function markNutritionPlanPublished(input: {
     fileName: input.fileName
   };
 
-  await Promise.all([
-    updateWorksheetRowById(WORKSHEETS.plans, PLAN_HEADERS, updatedPlan.id, serializePlan(updatedPlan)),
-    appendWorksheetRows(WORKSHEETS.versions, VERSION_HEADERS, [
-      serializeVersion(version, JSON.stringify(input.snapshot))
-    ])
-  ]);
+  const saved = await writeNutritionPlanRows({
+    planId: updatedPlan.id,
+    planRow: serializePlan(updatedPlan),
+    versionRows: [serializeVersion(version, snapshotJson)]
+  });
+  if (!saved) return null;
 
-  return getNutritionPlanById(input.planId);
+  return buildFullPlan({
+    ...dataset,
+    plans: dataset.plans.map((plan) => plan.id === updatedPlan.id ? updatedPlan : plan),
+    versions: [...dataset.versions, { ...version, snapshotJson }]
+  }, updatedPlan);
 }

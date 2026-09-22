@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import {
   buildNutritionPlanPdfFileName,
@@ -7,6 +8,8 @@ import {
 } from "@/lib/google/nutrition-management";
 import { renderNutritionPlanPdf } from "@/lib/nutrition/pdf";
 import { getNutritionPdfSupportingData } from "@/lib/nutrition/pdf-supporting-data";
+import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
+import { isGoogleRateLimitError, isGoogleTransientError } from "@/lib/google/retry";
 import { logError } from "@/lib/logger";
 
 type RouteContext = {
@@ -22,20 +25,11 @@ function isValidId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,}$/.test(value);
 }
 
-async function parsePdfOptions(req: Request): Promise<{
-  includeMacros: boolean;
-  mode: "review" | "published";
-}> {
-  try {
-    const body = (await req.json()) as { includeMacros?: unknown; mode?: unknown };
-    return {
-      includeMacros: body.includeMacros !== false,
-      mode: body.mode === "published" ? "published" : "review"
-    };
-  } catch {
-    return { includeMacros: true, mode: "review" };
-  }
-}
+const pdfOptionsSchema = z.object({
+  includeMacros: z.boolean().optional().default(true),
+  mode: z.enum(["review", "published"]).optional().default("review"),
+  plan: nutritionPlanSaveSchema.optional()
+});
 
 export async function POST(req: Request, context: RouteContext) {
   const auth = await requireAdminSession();
@@ -47,14 +41,34 @@ export async function POST(req: Request, context: RouteContext) {
   }
 
   try {
-    const options = await parsePdfOptions(req);
+    const parsed = pdfOptionsSchema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Revisa los datos del plan antes de generar el PDF.", code: "INVALID_PLAN" },
+        { status: 400 }
+      );
+    }
+    const options = parsed.data;
+    if (options.plan && (
+      options.mode !== "review" || options.plan.id !== planId || options.plan.status !== "review"
+    )) {
+      return NextResponse.json(
+        { error: "El borrador no corresponde al plan solicitado.", code: "INVALID_PLAN" },
+        { status: 400 }
+      );
+    }
+
+    // A review PDF can use the validated editor contents even if saving to Google failed.
+    // Published PDFs always come from persisted published data.
     const plan =
       options.mode === "published"
-        ? (await getPublishedNutritionPlanSnapshot(planId)) ?? (await getNutritionPlanById(planId))
-        : await getNutritionPlanById(planId);
-    if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
+        ? await getPublishedNutritionPlanSnapshot(planId)
+        : options.plan ?? await getNutritionPlanById(planId);
+    if (!plan || (options.mode === "published" && plan.status !== "published")) {
+      return NextResponse.json({ error: "No se encontró el plan solicitado." }, { status: 404 });
+    }
 
-    const { comparisonPlans, roadmapSteps } = await getNutritionPdfSupportingData(plan, {
+    const { comparisonPlans, roadmapSteps, partial } = await getNutritionPdfSupportingData(plan, {
       username: auth.session.username,
       planId,
       action: "preview"
@@ -70,6 +84,7 @@ export async function POST(req: Request, context: RouteContext) {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="${fileName}"`,
+        "X-Nutrition-Pdf-Partial": String(partial),
         "Cache-Control": "no-store"
       }
     });
@@ -79,6 +94,21 @@ export async function POST(req: Request, context: RouteContext) {
       planId,
       error
     });
-    return NextResponse.json({ error: "Could not generate PDF." }, { status: 500 });
+    if (isGoogleRateLimitError(error)) {
+      return NextResponse.json(
+        { error: "Google ha limitado temporalmente las solicitudes. Inténtalo de nuevo en unos segundos.", code: "GOOGLE_RATE_LIMIT" },
+        { status: 429, headers: { "Retry-After": "30" } }
+      );
+    }
+    if (isGoogleTransientError(error)) {
+      return NextResponse.json(
+        { error: "Google no está disponible temporalmente. Inténtalo de nuevo en unos segundos.", code: "GOOGLE_UNAVAILABLE" },
+        { status: 503 }
+      );
+    }
+    return NextResponse.json(
+      { error: "No se pudo generar el PDF nutricional. Puedes volver a intentarlo.", code: "PDF_GENERATION_FAILED" },
+      { status: 500 }
+    );
   }
 }
