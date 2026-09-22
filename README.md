@@ -214,6 +214,42 @@ Incluye unit tests para:
 
 ## Despliegue en Vercel
 
+### Recuperacion de borradores nutricionales
+
+El editor conserva automaticamente los cambios pendientes en el almacenamiento
+local del navegador, separados por administrador, plan y sesion de edicion. Al
+volver a la herramienta, ofrece recuperar o descartar las copias pendientes. La
+copia recuperada se sustituye por una copia de la sesion activa, que se elimina
+cuando el servidor confirma el guardado. Un fallo al guardar nunca debe borrar
+una copia mas reciente ni sustituir cambios hechos durante la solicitud.
+
+Los planes en revision se guardan automaticamente en el servidor cada 30 segundos
+si hay cambios pendientes. El temporizador no se reinicia mientras se escribe y
+comparte la proteccion contra solicitudes simultaneas con el guardado manual.
+No guarda durante una carga o publicacion, ni modifica planes publicados. Si
+Google falla, conserva la copia local y reintenta en el siguiente intervalo sin
+repetir el mismo aviso continuamente. Los campos incompletos se mantienen en la
+copia local hasta que el plan sea valido para guardar.
+
+Esta proteccion funciona en Vercel sin escribir archivos temporales en la funcion.
+Solo esta disponible en el mismo navegador y origen; borrar sus datos elimina las
+copias locales. Los botones de descargar e importar permiten conservar un archivo
+JSON o trasladarlo a otro dispositivo. Si el navegador bloquea el almacenamiento
+o se queda sin espacio, el editor avisa para descargar una copia.
+
+El PDF de revision se genera desde el borrador del editor sin exigir un guardado
+previo en Google. La publicacion sigue requiriendo guardar el plan. Si fallan los
+datos complementarios del PDF, se genera el contenido principal y se muestra un
+aviso. El guardado de resumen, comidas y alimentos usa una unica transaccion de
+Sheets; Drive y Sheets siguen siendo servicios independientes al publicar.
+
+Los errores de guardado se registran con un codigo: `INVALID_PLAN`,
+`GOOGLE_RATE_LIMIT`, `GOOGLE_UNAVAILABLE` o `SAVE_FAILED`. Para diagnosticar un
+incidente, buscar `Failed to save nutrition plan` o `Invalid nutrition plan save
+payload` en los logs de Vercel y correlacionar `planId`, hora y codigo.
+
+### Publicar la aplicacion
+
 1. Sube repo a GitHub.
 2. Importa proyecto en Vercel.
 3. Configura al menos `SESSION_SECRET` y las credenciales de Google (env vars o `credentials.json`).

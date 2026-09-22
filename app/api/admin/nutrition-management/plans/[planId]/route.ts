@@ -8,6 +8,7 @@ import {
   saveNutritionPlan
 } from "@/lib/google/nutrition-management";
 import { deleteDriveFileById } from "@/lib/google/drive";
+import { isGoogleRateLimitError, isGoogleTransientError } from "@/lib/google/retry";
 import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
 import { logError, logInfo } from "@/lib/logger";
 
@@ -56,13 +57,28 @@ export async function PUT(req: Request, context: RouteContext) {
   }
 
   try {
-    const parsed = nutritionPlanSaveSchema.safeParse(await req.json());
+    let payload: unknown;
+    try {
+      payload = await req.json();
+    } catch {
+      return NextResponse.json(
+        { error: "No se pudieron leer los datos del plan. Vuelve a intentar guardarlo.", code: "INVALID_PLAN" },
+        { status: 400 }
+      );
+    }
+    const parsed = nutritionPlanSaveSchema.safeParse(payload);
     if (!parsed.success || parsed.data.id !== planId) {
-      return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+      const fields = parsed.success ? ["id"] : parsed.error.issues.map((issue) => issue.path.join("."));
+      logError("Invalid nutrition plan save payload", { username: auth.session.username, planId, fields });
+      return NextResponse.json({
+        error: "Revisa los datos del plan: hay campos vacíos o valores fuera de los límites permitidos.",
+        code: "INVALID_PLAN",
+        fields
+      }, { status: 400 });
     }
 
     const plan = await saveNutritionPlan(parsed.data);
-    if (!plan) return NextResponse.json({ error: "Plan not found." }, { status: 404 });
+    if (!plan) return NextResponse.json({ error: "No se encontró el plan nutricional.", code: "PLAN_NOT_FOUND" }, { status: 404 });
 
     logInfo("Nutrition plan saved", {
       username: auth.session.username,
@@ -71,8 +87,21 @@ export async function PUT(req: Request, context: RouteContext) {
     });
     return NextResponse.json({ ok: true, plan });
   } catch (error) {
-    logError("Failed to save nutrition plan", { username: auth.session.username, planId, error });
-    return NextResponse.json({ error: "Could not save nutrition plan." }, { status: 500 });
+    const rateLimited = isGoogleRateLimitError(error);
+    const temporarilyUnavailable = isGoogleTransientError(error);
+    const code = rateLimited ? "GOOGLE_RATE_LIMIT" : temporarilyUnavailable ? "GOOGLE_UNAVAILABLE" : "SAVE_FAILED";
+    logError("Failed to save nutrition plan", { username: auth.session.username, planId, code, error });
+    return NextResponse.json({
+      error: rateLimited
+        ? "Google ha limitado temporalmente las solicitudes. Espera un momento y vuelve a guardar."
+        : temporarilyUnavailable
+          ? "No se pudo conectar con Google para guardar el plan. Vuelve a intentarlo en unos instantes."
+          : "No se pudo guardar el plan nutricional. Vuelve a intentarlo.",
+      code
+    }, {
+      status: rateLimited ? 429 : temporarilyUnavailable ? 503 : 500,
+      headers: temporarilyUnavailable ? { "Retry-After": rateLimited ? "30" : "5" } : undefined
+    });
   }
 }
 

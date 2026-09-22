@@ -1,6 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { NutritionDraftRecoveryPanel } from "@/components/admin/nutrition-draft-recovery-panel";
+import { useNutritionDraftRecovery } from "@/components/admin/use-nutrition-draft-recovery";
+import { isNutritionDraftPlan, type NutritionDraftRecovery } from "@/lib/nutrition/draft-recovery";
+import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
 import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
 import { getEquivalentFoodQuantity, updateEntryAlternatives } from "@/lib/nutrition/alternatives";
 import {
@@ -195,6 +199,7 @@ type EnergyCalculatorFormState = {
 };
 
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+const PLAN_AUTOSAVE_INTERVAL_MS = 30_000;
 type FoodSortKey = "category" | "kcal";
 type SortDirection = "asc" | "desc";
 type MacroTargetKey = "targetProteinG" | "targetCarbsG" | "targetFatG";
@@ -1537,6 +1542,17 @@ export function AdminNutritionManagementShell({
   const [loading, setLoading] = useState(true);
   const [planLoading, setPlanLoading] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [savingPlanId, setSavingPlanId] = useState<string | null>(null);
+  const [saveFailureMessage, setSaveFailureMessage] = useState<string | null>(null);
+  const [autosaveMessage, setAutosaveMessage] = useState<string | null>(null);
+  const lastAutomaticErrorRef = useRef<string | null>(null);
+  const saveInFlightRef = useRef(false);
+  const restoredPlanIdRef = useRef<string | null>(null);
+  const [recoveryVersion, setRecoveryVersion] = useState(0);
+  const {
+    drafts: recoveryDrafts, backupUnavailable, sessionId: recoverySessionId,
+    protectDraft, removeDraft, removePlanDrafts,
+  } = useNutritionDraftRecovery(user.username);
   const [activePanel, setActivePanel] = useState<"plans" | "foods">("plans");
   const [athleteFilter, setAthleteFilter] = useState("");
   const [planNameDraft, setPlanNameDraft] = useState("Dia de entrenamiento");
@@ -1595,6 +1611,9 @@ export function AdminNutritionManagementShell({
     foodId: "",
     notes: "",
   });
+
+  const editorRef = useRef({ plan, reviewPlan, planMode, selectedPlanId, saveState, loading, planLoading, publishing });
+  editorRef.current = { plan, reviewPlan, planMode, selectedPlanId, saveState, loading, planLoading, publishing };
 
   const selectedAthleteInfo = useMemo(
     () =>
@@ -1989,6 +2008,14 @@ export function AdminNutritionManagementShell({
   }, [cloneablePlans, selectedClonePlanId]);
 
   useEffect(() => {
+    setSaveFailureMessage(null);
+    setAutosaveMessage(null);
+    lastAutomaticErrorRef.current = null;
+    if (restoredPlanIdRef.current === selectedPlanId) {
+      restoredPlanIdRef.current = null;
+      setPlanLoading(false);
+      return;
+    }
     if (!selectedPlanId) {
       setPlan(null);
       setReviewPlan(null);
@@ -2067,13 +2094,15 @@ export function AdminNutritionManagementShell({
             nextPublishedPlan && nextSaveState === "saved"
               ? "published"
               : "review";
+          // Apply the loaded plan's status before its content to avoid backing up
+          // server data as if it were unsaved work from the previous selection.
+          setSaveState(nextSaveState);
           setReviewPlan(nextReviewPlan);
           setPublishedPlan(nextPublishedPlan);
           setPlanMode(nextMode);
           setPlan(
             nextMode === "published" ? nextPublishedPlan : nextReviewPlan,
           );
-          setSaveState(nextSaveState);
         }
       })
       .catch((error) => {
@@ -2091,17 +2120,38 @@ export function AdminNutritionManagementShell({
     return () => {
       cancelled = true;
     };
-  }, [selectedPlanId]);
+  }, [selectedPlanId, recoveryVersion]);
 
   useEffect(() => {
-    if (saveState !== "dirty") return;
+    if (!["dirty", "error", "saving"].includes(saveState)) return;
+    const editable = planMode === "published" ? reviewPlan : plan;
+    if (editable && editable.id === selectedPlanId) protectDraft(editable);
+  }, [plan, reviewPlan, planMode, selectedPlanId, saveState, protectDraft]);
+
+  useEffect(() => {
+    if (!["dirty", "error", "saving"].includes(saveState)) return;
+    const persistLatest = () => {
+      const current = editorRef.current;
+      const editable = current.planMode === "published" ? current.reviewPlan : current.plan;
+      if (editable && editable.id === current.selectedPlanId) protectDraft(editable);
+    };
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      persistLatest();
       event.preventDefault();
       event.returnValue = "";
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") persistLatest();
+    };
     window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [saveState]);
+    window.addEventListener("pagehide", persistLatest);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("pagehide", persistLatest);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [saveState, protectDraft]);
 
   const updatePlanDraft = useCallback(
     (updater: (current: NutritionPlanFull) => NutritionPlanFull) => {
@@ -2222,53 +2272,179 @@ export function AdminNutritionManagementShell({
   );
 
   const saveCurrentPlan = useCallback(
-    async (planToSave?: NutritionPlanFull | null) => {
-      const basePlan =
-        planMode === "published" ? reviewPlan : (planToSave ?? plan);
-      const target = basePlan
-        ? normalizePlanGrams({ ...basePlan, status: "review" })
-        : null;
-      if (!target) return null;
-
-      setSaveState("saving");
-      try {
-        const res = await fetch(
-          `/api/admin/nutrition-management/plans/${target.id}`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(target),
-          },
-        );
-        const json = (await res.json()) as {
-          plan?: NutritionPlanFull;
-          error?: string;
-        };
-        if (!res.ok || !json.plan) {
-          throw new Error(json.error ?? "No se pudo guardar.");
-        }
-
-        const normalized = normalizePlanGrams({
-          ...json.plan,
-          status: "review",
-        });
-        setPlan(normalized);
-        setReviewPlan(normalized);
-        setPlanMode("review");
-        setIntegerInputDrafts({});
-        setMacroRatioInputDrafts({});
-        upsertPlanSummary(json.plan);
-        setSaveState("saved");
-        return normalizePlanGrams(json.plan);
-      } catch (error) {
-        console.error(error);
-        toast.error("No se pudo guardar el borrador.");
-        setSaveState("error");
+    async (planToSave?: NutritionPlanFull | null, options: { automatic?: boolean } = {}) => {
+      if (saveInFlightRef.current) return null;
+      const basePlan = planMode === "published" ? reviewPlan : (planToSave ?? plan);
+      if (!basePlan) return null;
+      const target = normalizePlanGrams({ ...basePlan, status: "review" });
+      const submittedContent = JSON.stringify(basePlan);
+      const protectedCopy = protectDraft(basePlan);
+      // Incomplete fields remain locally protected until they are ready to save.
+      if (options.automatic && !nutritionPlanSaveSchema.safeParse(target).success) {
+        setAutosaveMessage("Autoguardado pendiente: revisa los campos incompletos o los valores del plan.");
         return null;
       }
+      setAutosaveMessage(null);
+      saveInFlightRef.current = true;
+      setSavingPlanId(target.id);
+      setSaveFailureMessage(null);
+      setSaveState("saving");
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 65000);
+      try {
+        const res = await fetch(`/api/admin/nutrition-management/plans/${target.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(target),
+          signal: controller.signal,
+        });
+        const json = (await res.json().catch(() => null)) as {
+          plan?: NutritionPlanFull; error?: string;
+        } | null;
+        if (!res.ok || !json?.plan) {
+          const fallback = res.status === 401
+            ? "La sesion ha caducado. Inicia sesion de nuevo para guardar."
+            : res.status === 429
+              ? "Google ha limitado temporalmente las solicitudes. Espera un momento y vuelve a guardar."
+              : res.status === 413
+                ? "El plan es demasiado grande para enviarlo al servidor."
+                : "El servidor no pudo guardar el borrador. Vuelve a intentarlo en unos instantes.";
+          throw new Error(res.status === 401 ? fallback : (json?.error ?? fallback));
+        }
+        const normalized = normalizePlanGrams({ ...json.plan, status: "review" });
+        lastAutomaticErrorRef.current = null;
+        upsertPlanSummary(json.plan);
+        if (protectedCopy) removeDraft(protectedCopy);
+        const current = editorRef.current;
+        if (current.selectedPlanId !== target.id) return null;
+        const editable = current.planMode === "published" ? current.reviewPlan : current.plan;
+        if (JSON.stringify(editable) !== submittedContent) {
+          if (editable) protectDraft(editable);
+          setSaveState("dirty");
+          if (!options.automatic) {
+            toast.success("Se guardo la version enviada. Hay cambios posteriores pendientes de guardar.");
+          }
+          return null;
+        }
+        // Stop local protection before applying server metadata to a saved plan.
+        setSaveState("saved");
+        setReviewPlan(normalized);
+        if (current.planMode === "review") {
+          setPlan(normalized);
+          // An automatic save must not erase a decimal still being typed.
+          if (!options.automatic) {
+            setIntegerInputDrafts({});
+            setMacroRatioInputDrafts({});
+          }
+        }
+        return normalized;
+      } catch (error) {
+        console.error(error);
+        const detail = controller.signal.aborted
+          ? "El servidor ha tardado demasiado en responder. Puedes volver a intentar guardar."
+          : error instanceof TypeError
+            ? "No se pudo conectar con el servidor. Comprueba tu conexion y vuelve a guardar."
+            : error instanceof Error ? error.message : "No se pudo guardar el borrador.";
+        const current = editorRef.current;
+        const editable = current.planMode === "published" ? current.reviewPlan : current.plan;
+        const backup = editable?.id === target.id ? protectDraft(editable) : protectedCopy;
+        const message = `${detail} ${backup
+          ? "Tu borrador tiene una copia en este navegador y podras recuperarlo al volver."
+          : "Descarga una copia del borrador antes de cerrar la pagina."}`;
+        const errorKey = `${target.id}:${message}`;
+        if (!options.automatic || lastAutomaticErrorRef.current !== errorKey) {
+          toast.error(message, { duration: 10000 });
+        }
+        if (options.automatic) lastAutomaticErrorRef.current = errorKey;
+        if (current.selectedPlanId === target.id) {
+          setSaveFailureMessage(message);
+          setSaveState("error");
+        }
+        return null;
+      } finally {
+        window.clearTimeout(timeout);
+        saveInFlightRef.current = false;
+        setSavingPlanId(null);
+      }
     },
-    [plan, planMode, reviewPlan, upsertPlanSummary],
+    [plan, planMode, reviewPlan, upsertPlanSummary, protectDraft, removeDraft],
   );
+
+  const saveCurrentPlanRef = useRef(saveCurrentPlan);
+  saveCurrentPlanRef.current = saveCurrentPlan;
+
+  useEffect(() => {
+    if (!selectedPlanId) return;
+    // Keep a fixed cadence: typing updates the snapshot, not the 30-second timer.
+    const intervalId = window.setInterval(() => {
+      const current = editorRef.current;
+      if (current.loading || current.planLoading || current.publishing || saveInFlightRef.current) return;
+      if (current.planMode !== "review" || !["dirty", "error"].includes(current.saveState)) return;
+      if (!current.plan || current.plan.id !== current.selectedPlanId) return;
+      void saveCurrentPlanRef.current(current.plan, { automatic: true });
+    }, PLAN_AUTOSAVE_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [selectedPlanId]);
+
+  function restoreDraft(draftPlan: NutritionPlanFull, source?: NutritionDraftRecovery) {
+    const current = editorRef.current;
+    if (current.loading || current.planLoading || current.publishing || saveInFlightRef.current) {
+      toast.error("Espera a que termine la operacion actual y vuelve a recuperar la copia.");
+      return;
+    }
+    const previous = current.planMode === "published" ? current.reviewPlan : current.plan;
+    if (previous && ["dirty", "error", "saving"].includes(current.saveState) && !protectDraft(previous)) {
+      toast.error("Descarga una copia del trabajo actual antes de recuperar otro borrador.");
+      return;
+    }
+    // A new editor session keeps any displaced, unsaved work available to recover.
+    recoverySessionId.current = crypto.randomUUID();
+    const restored = normalizePlanGrams({ ...draftPlan, status: "review" });
+    // Protect the active copy before consuming the recovery offered to the user.
+    const protectedCopy = protectDraft(restored);
+    if (source && protectedCopy && source.sessionId !== protectedCopy.sessionId) removeDraft(source);
+    restoredPlanIdRef.current = restored.id;
+    setRecoveryVersion((version) => version + 1);
+    setSelectedAthlete(restored.athleteUsername);
+    setSelectedPlanId(restored.id);
+    setReviewPlan(restored);
+    setPlan(restored);
+    setPublishedPlan(null);
+    setPlanMode("review");
+    setPlanLoading(false);
+    setActivePanel("plans");
+    setIntegerInputDrafts({});
+    setMacroRatioInputDrafts({});
+    setSaveFailureMessage(null);
+    setSaveState("dirty");
+    upsertPlanSummary(restored);
+    toast.success("Borrador recuperado. Revisa el contenido y pulsa Guardar borrador para guardarlo en el servidor.");
+  }
+
+  function downloadDraftCopy() {
+    const editable = planMode === "published" ? reviewPlan : plan;
+    if (!editable) return;
+    const blob = new Blob([JSON.stringify({ version: 1, plan: editable })], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `borrador-nutricional-${editable.id}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function importDraftCopy(file: File | undefined) {
+    if (!file) return;
+    try {
+      if (file.size > 8 * 1024 * 1024) throw new Error("La copia es demasiado grande.");
+      const data: unknown = JSON.parse(await file.text());
+      const draftPlan = data && typeof data === "object" && "plan" in data ? data.plan : null;
+      if (!isNutritionDraftPlan(draftPlan)) throw new Error("El archivo no contiene un borrador nutricional valido.");
+      restoreDraft(draftPlan);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo cargar la copia.");
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -2379,6 +2555,7 @@ export function AdminNutritionManagementShell({
       const json = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(json.error ?? "No se pudo eliminar.");
 
+      removePlanDrafts(planId);
       setPlans((current) => current.filter((item) => item.id !== planId));
       if (selectedPlanId === planId) {
         const nextPlan = plansForAthlete.find((item) => item.id !== planId);
@@ -2597,7 +2774,7 @@ export function AdminNutritionManagementShell({
       setPlan(publishedPlan);
       setIntegerInputDrafts({});
       setMacroRatioInputDrafts({});
-      setSaveState((current) => (current === "dirty" ? current : "saved"));
+      setSaveState((current) => (["dirty", "error", "saving"].includes(current) ? current : "saved"));
       return;
     }
 
@@ -2612,7 +2789,7 @@ export function AdminNutritionManagementShell({
     setPlanMode("review");
     setIntegerInputDrafts({});
     setMacroRatioInputDrafts({});
-    setSaveState((current) => (current === "dirty" ? current : "saved"));
+    setSaveState((current) => (["dirty", "error", "saving"].includes(current) ? current : "saved"));
   }
 
   function updateTarget(
@@ -3230,9 +3407,8 @@ export function AdminNutritionManagementShell({
     if (!plan) return;
     setPreviewLoading(true);
     try {
-      const saved =
-        planMode === "published" ? plan : await saveCurrentPlan(plan);
-      if (!saved) return;
+      const saved = normalizePlanGrams(plan);
+      if (planMode === "review" && saveState !== "saved") protectDraft(saved);
       const res = await fetch(
         `/api/admin/nutrition-management/plans/${saved.id}/pdf`,
         {
@@ -3241,6 +3417,7 @@ export function AdminNutritionManagementShell({
           body: JSON.stringify({
             includeMacros: pdfIncludeMacros,
             mode: planMode,
+            ...(planMode === "review" ? { plan: { ...saved, status: "review" } } : {}),
           }),
         },
       );
@@ -3249,6 +3426,9 @@ export function AdminNutritionManagementShell({
         throw new Error(json.error ?? "No se pudo generar PDF.");
       }
 
+      if (res.headers.get("X-Nutrition-Pdf-Partial") === "true") {
+        toast.warning("PDF generado con el plan actual. No se pudieron cargar algunos datos complementarios.");
+      }
       const blob = await res.blob();
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       const url = URL.createObjectURL(blob);
@@ -3286,6 +3466,7 @@ export function AdminNutritionManagementShell({
         plan?: NutritionPlanFull;
         file?: { id: string; name: string };
         error?: string;
+        partial?: boolean;
       };
       if (!res.ok || !json.plan)
         throw new Error(json.error ?? "No se pudo publicar.");
@@ -3298,6 +3479,19 @@ export function AdminNutritionManagementShell({
         ...json.plan,
         status: "review",
       });
+      upsertPlanSummary(json.plan);
+      const current = editorRef.current;
+      if (current.selectedPlanId !== saved.id) {
+        toast.success("Plan publicado.");
+        return;
+      }
+      if (JSON.stringify(current.reviewPlan) !== JSON.stringify(saved)) {
+        setPublishedPlan(nextPublishedPlan);
+        if (current.reviewPlan) protectDraft(current.reviewPlan);
+        setSaveState("dirty");
+        toast.success("Se publico la version guardada. Tus cambios posteriores siguen pendientes en Revision.");
+        return;
+      }
       setPlan(nextPublishedPlan);
       setPublishedPlan(nextPublishedPlan);
       setReviewPlan(nextReviewPlan);
@@ -3307,6 +3501,7 @@ export function AdminNutritionManagementShell({
       upsertPlanSummary(json.plan);
       setSaveState("saved");
       toast.success("Plan publicado.");
+      if (json.partial) toast.warning("El PDF no incluye algunos datos complementarios que no se pudieron cargar.");
     } catch (error) {
       console.error(error);
       toast.error(
@@ -3496,8 +3691,14 @@ export function AdminNutritionManagementShell({
     setFoodForm({ ...EMPTY_FOOD_FORM, name: search });
   }
 
+  const recoveryContent = JSON.stringify(planMode === "published" ? reviewPlan : plan);
+  const availableRecoveryDrafts = recoveryDrafts.filter((draft) =>
+    draft.sessionId !== recoverySessionId.current || draft.plan.id !== selectedPlanId ||
+    JSON.stringify(draft.plan) !== recoveryContent,
+  );
+
   const saveLabel =
-    saveState === "saving"
+    savingPlanId === plan?.id
       ? "Guardando..."
       : saveState === "dirty"
         ? "Cambios pendientes"
@@ -3603,6 +3804,24 @@ export function AdminNutritionManagementShell({
             </div>
           </div>
         </section>
+
+        {plan && planMode === "review" ? (
+          <p role="status" className={`text-xs ${autosaveMessage ? "text-amber-200" : "text-brand-muted"}`}>
+            {autosaveMessage ?? "Autoguardado cada 30 segundos cuando hay cambios pendientes."}
+          </p>
+        ) : null}
+
+        <NutritionDraftRecoveryPanel
+          drafts={availableRecoveryDrafts}
+          disabled={loading || planLoading || Boolean(savingPlanId) || publishing}
+          canDownload={Boolean(planMode === "published" ? reviewPlan : plan)}
+          backupUnavailable={backupUnavailable}
+          error={saveFailureMessage}
+          onRestore={(draft) => restoreDraft(draft.plan, draft)}
+          onDiscard={removeDraft}
+          onDownload={downloadDraftCopy}
+          onImport={(file) => void importDraftCopy(file)}
+        />
 
         {loading ? (
           <section className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
@@ -4790,7 +5009,7 @@ export function AdminNutritionManagementShell({
                         <BrandButton
                           onClick={() => void saveCurrentPlan(plan)}
                           disabled={
-                            saveState === "saving" || isCurrentPlanPublished
+                            Boolean(savingPlanId) || publishing || isCurrentPlanPublished
                           }
                           className="w-full sm:w-auto"
                         >
@@ -4799,7 +5018,7 @@ export function AdminNutritionManagementShell({
                         </BrandButton>
                         <BrandButton
                           onClick={generatePreview}
-                          disabled={previewLoading || saveState === "saving"}
+                          disabled={previewLoading || publishing}
                           className="w-full sm:w-auto"
                         >
                           {previewLoading ? (
@@ -6689,7 +6908,7 @@ export function AdminNutritionManagementShell({
                   </a>
                   <BrandButton
                     onClick={publishPlan}
-                    disabled={publishing || planMode === "published"}
+                    disabled={publishing || Boolean(savingPlanId) || planMode === "published"}
                     className="w-full whitespace-normal sm:w-auto"
                   >
                     {publishing ? (

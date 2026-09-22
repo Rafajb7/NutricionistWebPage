@@ -29,19 +29,30 @@ function getErrorText(error: unknown): string {
   const record = toRecord(error);
   const response = getNestedRecord(error, "response");
   const data = response?.data;
+  const googleError = toRecord(toRecord(data)?.error);
+  const reasons = Array.isArray(googleError?.errors)
+    ? googleError.errors.flatMap((item) => {
+        const detail = toRecord(item);
+        return [detail?.reason, detail?.message];
+      })
+    : [];
   const parts = [
     error instanceof Error ? error.message : "",
     typeof record?.message === "string" ? record.message : "",
+    typeof record?.code === "string" ? record.code : "",
     typeof data === "string" ? data : "",
-    typeof toRecord(data)?.error === "string" ? String(toRecord(data)?.error) : ""
+    typeof toRecord(data)?.error === "string" ? String(toRecord(data)?.error) : "",
+    googleError?.message,
+    googleError?.status,
+    ...reasons
   ];
 
-  return parts.filter(Boolean).join(" ").toLowerCase();
+  return parts.filter((part): part is string => typeof part === "string").join(" ").toLowerCase();
 }
 
 function isRetriableGoogleApiError(error: unknown): boolean {
   const status = getErrorStatus(error);
-  if (status === 429) return true;
+  if (isGoogleRateLimitError(error)) return true;
   if (status && [408, 500, 502, 503, 504].includes(status)) return true;
 
   const text = getErrorText(error);
@@ -70,7 +81,7 @@ export function isGoogleRateLimitError(error: unknown): boolean {
   if (status === 429) return true;
 
   const text = getErrorText(error);
-  return ["rate limit", "ratelimitexceeded", "userratelimitexceeded", "quota exceeded"].some(
+  return ["rate limit", "ratelimitexceeded", "userratelimitexceeded", "quota exceeded", "quotaexceeded", "resource_exhausted"].some(
     (pattern) => text.includes(pattern)
   );
 }
