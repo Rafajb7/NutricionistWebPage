@@ -22,7 +22,7 @@ export function getEquivalentFoodQuantity(
     ? referenceCalories / alternativeCalories * 100
     : referenceG;
   const gramsPerUnit = getEffectiveQuantityG({ ...alternative, quantityG: 1 });
-  const step = allowsFractionalQuantity(alternative.quantityUnit) ? 0.25 : 10;
+  const step = allowsFractionalQuantity(alternative.quantityUnit) ? 0.25 : 5;
   // Round the exact equivalent once, keeping at least one practical portion.
   const quantity = Math.max(step, Math.round(equivalentG / gramsPerUnit / step) * step);
   return normalizeFoodQuantity(quantity, alternative.quantityUnit);
