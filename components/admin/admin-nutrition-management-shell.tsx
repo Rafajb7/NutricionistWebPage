@@ -3811,17 +3811,19 @@ export function AdminNutritionManagementShell({
           </p>
         ) : null}
 
-        <NutritionDraftRecoveryPanel
-          drafts={availableRecoveryDrafts}
-          disabled={loading || planLoading || Boolean(savingPlanId) || publishing}
-          canDownload={Boolean(planMode === "published" ? reviewPlan : plan)}
-          backupUnavailable={backupUnavailable}
-          error={saveFailureMessage}
-          onRestore={(draft) => restoreDraft(draft.plan, draft)}
-          onDiscard={removeDraft}
-          onDownload={downloadDraftCopy}
-          onImport={(file) => void importDraftCopy(file)}
-        />
+        {activePanel === "plans" ? (
+          <NutritionDraftRecoveryPanel
+            drafts={availableRecoveryDrafts}
+            disabled={loading || planLoading || Boolean(savingPlanId) || publishing}
+            canDownload={Boolean(planMode === "published" ? reviewPlan : plan)}
+            backupUnavailable={backupUnavailable}
+            error={saveFailureMessage}
+            onRestore={(draft) => restoreDraft(draft.plan, draft)}
+            onDiscard={removeDraft}
+            onDownload={downloadDraftCopy}
+            onImport={(file) => void importDraftCopy(file)}
+          />
+        ) : null}
 
         {loading ? (
           <section className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">

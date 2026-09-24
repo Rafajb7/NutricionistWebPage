@@ -29,10 +29,10 @@ function planInput(food: unknown) {
 describe("nutrition quantities and alternatives", () => {
   it.each([
     ["g", 178, 180],
-    ["g", 174.8, 170],
-    ["g", 175, 180],
+    ["g", 174.8, 175],
+    ["g", 167, 165],
     ["ml", 178, 180],
-    ["g", 2, 10],
+    ["g", 2, 5],
     ["piece", 0.1, 0.25],
     ["piece", 0.3, 0.25],
     ["piece", 0.48, 0.5],
@@ -51,9 +51,9 @@ describe("nutrition quantities and alternatives", () => {
       ...alternative, id: "unit-alternative", quantityUnit: "piece" as const,
       quantityG: 1, unitWeightG: 200,
     }] };
-    const updated = updateEntryAlternatives(previous, { ...previous, quantityG: 89 });
-    expect(updated.alternatives.map((item) => item.quantityG)).toEqual([180, 1]);
-    expect(updated.quantityG).toBe(89);
+    const updated = updateEntryAlternatives(previous, { ...previous, quantityG: 83 });
+    expect(updated.alternatives.map((item) => item.quantityG)).toEqual([165, 0.75]);
+    expect(updated.quantityG).toBe(83);
   });
 
   it.each([150, 50, 100])("matches alternative calories after changing reference to %s grams", (quantityG) => {
