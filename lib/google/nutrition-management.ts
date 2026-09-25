@@ -36,6 +36,7 @@ import type {
   NutritionFood,
   NutritionMealCompletion,
   NutritionPlanFoodAlternative,
+  NutritionPlanFoodAlternativeComponent,
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionPlanMeal,
@@ -458,18 +459,13 @@ function sanitizeFileName(value: string): string {
     .slice(0, 120);
 }
 
-function sanitizeAlternative(
-  alternative: NutritionPlanFoodAlternative,
-  entryId: string,
-  index: number,
-  now: string,
+function sanitizeAlternativeComponent(
+  alternative: NutritionPlanFoodAlternativeComponent,
   foodsById: Map<string, NutritionFood>
-): NutritionPlanFoodAlternative {
+): NutritionPlanFoodAlternativeComponent {
   const food = getFoodLikeForEntry(alternative, foodsById);
   const quantityUnit = normalizeQuantityUnitForFood(food, parseQuantityUnit(alternative.quantityUnit));
   return {
-    id: alternative.id || randomUUID(),
-    entryId,
     foodId: alternative.foodId,
     foodName: sanitizeName(alternative.foodName, "Alternativa").slice(0, 160),
     quantityG: normalizeFoodQuantity(alternative.quantityG, quantityUnit),
@@ -486,8 +482,25 @@ function sanitizeAlternative(
     fiberPer100g: clampNumber(alternative.fiberPer100g, 0, 100),
     sodiumPer100g: clampNumber(alternative.sodiumPer100g, 0, 100000),
     waterPer100g: clampNumber(alternative.waterPer100g, 0, 100),
+    customText: alternative.customText.trim().slice(0, 240)
+  };
+}
+
+function sanitizeAlternative(
+  alternative: NutritionPlanFoodAlternative,
+  entryId: string,
+  index: number,
+  now: string,
+  foodsById: Map<string, NutritionFood>
+): NutritionPlanFoodAlternative {
+  return {
+    ...sanitizeAlternativeComponent(alternative, foodsById),
+    id: alternative.id || randomUUID(),
+    entryId,
     position: index + 1,
-    customText: alternative.customText.trim().slice(0, 240),
+    ...(alternative.secondComponent ? {
+      secondComponent: sanitizeAlternativeComponent(alternative.secondComponent, foodsById)
+    } : {}),
     createdAt: alternative.createdAt || now,
     updatedAt: now
   };
@@ -1080,39 +1093,60 @@ function parseMeal(row: string[]): NutritionPlanMeal | null {
   };
 }
 
+function parseAlternativeComponent(value: unknown): NutritionPlanFoodAlternativeComponent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Partial<Record<keyof NutritionPlanFoodAlternativeComponent, unknown>>;
+  const foodName = String(record.foodName ?? "").trim();
+  if (!foodName) return null;
+  return {
+    foodId: String(record.foodId ?? "").trim(),
+    foodName: foodName.slice(0, 160),
+    quantityG: normalizeFoodQuantity(parseNumber(record.quantityG), parseQuantityUnit(record.quantityUnit)),
+    quantityUnit: parseQuantityUnit(record.quantityUnit),
+    unitWeightG: clampUnitWeightG(parseNumber(record.unitWeightG)),
+    proteinPer100g: clampNumber(parseNumber(record.proteinPer100g), 0, 200),
+    carbsPer100g: clampNumber(parseNumber(record.carbsPer100g), 0, 200),
+    fatPer100g: clampNumber(parseNumber(record.fatPer100g), 0, 200),
+    fiberPer100g: clampNumber(parseNumber(record.fiberPer100g), 0, 100),
+    sodiumPer100g: clampNumber(parseNumber(record.sodiumPer100g), 0, 100000),
+    waterPer100g: clampNumber(parseNumber(record.waterPer100g), 0, 100),
+    customText: String(record.customText ?? "").trim().slice(0, 240)
+  };
+}
+
+function parseStoredNutritionJson(raw: string): unknown {
+  const json = raw.startsWith("gzip:v1:")
+    ? gunzipSync(Buffer.from(raw.slice("gzip:v1:".length), "base64"), {
+        maxOutputLength: 64 * 1024 * 1024
+      }).toString("utf8")
+    : raw;
+  return JSON.parse(json) as unknown;
+}
+
 function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanFoodAlternative[] {
   const raw = String(value ?? "").trim();
   if (!raw) return [];
 
   try {
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = parseStoredNutritionJson(raw);
     if (!Array.isArray(parsed)) return [];
 
     return parsed
       .map((item, index): NutritionPlanFoodAlternative | null => {
         if (!item || typeof item !== "object") return null;
         const record = item as Partial<Record<keyof NutritionPlanFoodAlternative, unknown>>;
-        const foodName = String(record.foodName ?? "").trim();
-        if (!foodName) return null;
+        const component = parseAlternativeComponent(record);
+        if (!component) return null;
+        const secondComponent = parseAlternativeComponent(record.secondComponent);
         const createdAt = String(record.createdAt ?? "").trim();
         const updatedAt = String(record.updatedAt ?? "").trim();
 
         return {
+          ...component,
           id: String(record.id ?? "").trim() || randomUUID(),
           entryId,
-          foodId: String(record.foodId ?? "").trim(),
-          foodName: foodName.slice(0, 160),
-          quantityG: normalizeFoodQuantity(parseNumber(record.quantityG), parseQuantityUnit(record.quantityUnit)),
-          quantityUnit: parseQuantityUnit(record.quantityUnit),
-          unitWeightG: clampUnitWeightG(parseNumber(record.unitWeightG)),
-          proteinPer100g: clampNumber(parseNumber(record.proteinPer100g), 0, 200),
-          carbsPer100g: clampNumber(parseNumber(record.carbsPer100g), 0, 200),
-          fatPer100g: clampNumber(parseNumber(record.fatPer100g), 0, 200),
-          fiberPer100g: clampNumber(parseNumber(record.fiberPer100g), 0, 100),
-          sodiumPer100g: clampNumber(parseNumber(record.sodiumPer100g), 0, 100000),
-          waterPer100g: clampNumber(parseNumber(record.waterPer100g), 0, 100),
+          ...(secondComponent ? { secondComponent } : {}),
           position: Math.max(1, parseInteger(record.position) || index + 1),
-          customText: String(record.customText ?? "").trim().slice(0, 240),
           createdAt,
           updatedAt
         };
@@ -1355,10 +1389,10 @@ function getFoodLikeForEntry(
   };
 }
 
-function normalizeAlternativeQuantityMetadata(
-  alternative: NutritionPlanFoodAlternative,
+function normalizeAlternativeComponentQuantityMetadata<T extends NutritionPlanFoodAlternativeComponent>(
+  alternative: T,
   foodsById: Map<string, NutritionFood>
-): NutritionPlanFoodAlternative {
+): T {
   const food = getFoodLikeForEntry(alternative, foodsById);
   const unit = normalizeQuantityUnitForFood(food, parseQuantityUnit(alternative.quantityUnit));
   return {
@@ -1370,6 +1404,18 @@ function normalizeAlternativeQuantityMetadata(
         : alternative.unitWeightG > 1
           ? clampUnitWeightG(alternative.unitWeightG)
           : getDefaultUnitWeightGForFood(food, unit)
+  };
+}
+
+function normalizeAlternativeQuantityMetadata(
+  alternative: NutritionPlanFoodAlternative,
+  foodsById: Map<string, NutritionFood>
+): NutritionPlanFoodAlternative {
+  return {
+    ...normalizeAlternativeComponentQuantityMetadata(alternative, foodsById),
+    ...(alternative.secondComponent ? {
+      secondComponent: normalizeAlternativeComponentQuantityMetadata(alternative.secondComponent, foodsById)
+    } : {})
   };
 }
 
@@ -1438,31 +1484,50 @@ function serializeMeal(meal: NutritionPlanMeal): Array<string | number> {
   ];
 }
 
+function serializeAlternativeComponent(
+  alternative: NutritionPlanFoodAlternativeComponent
+): NutritionPlanFoodAlternativeComponent {
+  return {
+    foodId: alternative.foodId,
+    foodName: alternative.foodName,
+    quantityG: normalizeFoodQuantity(alternative.quantityG, alternative.quantityUnit),
+    quantityUnit: parseQuantityUnit(alternative.quantityUnit),
+    unitWeightG: clampUnitWeightG(alternative.unitWeightG),
+    proteinPer100g: alternative.proteinPer100g,
+    carbsPer100g: alternative.carbsPer100g,
+    fatPer100g: alternative.fatPer100g,
+    fiberPer100g: alternative.fiberPer100g,
+    sodiumPer100g: alternative.sodiumPer100g,
+    waterPer100g: alternative.waterPer100g,
+    customText: alternative.customText
+  };
+}
+
 function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]): string {
   if (!alternatives.length) return "";
-  return JSON.stringify(
+  const json = JSON.stringify(
     alternatives
       .map((alternative, index) => ({
+        ...serializeAlternativeComponent(alternative),
         id: alternative.id,
         entryId: alternative.entryId,
-        foodId: alternative.foodId,
-        foodName: alternative.foodName,
-        quantityG: normalizeFoodQuantity(alternative.quantityG, alternative.quantityUnit),
-        quantityUnit: parseQuantityUnit(alternative.quantityUnit),
-        unitWeightG: clampUnitWeightG(alternative.unitWeightG),
-        proteinPer100g: alternative.proteinPer100g,
-        carbsPer100g: alternative.carbsPer100g,
-        fatPer100g: alternative.fatPer100g,
-        fiberPer100g: alternative.fiberPer100g,
-        sodiumPer100g: alternative.sodiumPer100g,
-        waterPer100g: alternative.waterPer100g,
+        ...(alternative.secondComponent ? {
+          secondComponent: serializeAlternativeComponent(alternative.secondComponent)
+        } : {}),
         position: alternative.position || index + 1,
-        customText: alternative.customText,
         createdAt: alternative.createdAt,
         updatedAt: alternative.updatedAt
       }))
       .sort((a, b) => a.position - b.position)
   );
+  if (json.length <= 45_000) return json;
+  // Two components per alternative can fill the same Sheets cell. Keep legacy
+  // JSON for ordinary entries and use the snapshot encoding for larger ones.
+  const compressed = `gzip:v1:${gzipSync(json).toString("base64")}`;
+  if (compressed.length > 50_000) {
+    throw new Error("Las alternativas de un alimento contienen demasiados datos. Reduce su numero o sus notas.");
+  }
+  return compressed;
 }
 
 function serializeEntry(entry: NutritionPlanFoodEntry): Array<string | number> {
@@ -1693,12 +1758,7 @@ function buildFullPlan(dataset: NutritionDataset, plan: NutritionPlanSummary): N
 
 function parsePlanSnapshot(version: StoredNutritionPlanVersion): NutritionPlanFull | null {
   try {
-    const snapshotJson = version.snapshotJson.startsWith("gzip:v1:")
-      ? gunzipSync(Buffer.from(version.snapshotJson.slice("gzip:v1:".length), "base64"), {
-          maxOutputLength: 64 * 1024 * 1024
-        }).toString("utf8")
-      : version.snapshotJson;
-    const parsed = JSON.parse(snapshotJson) as NutritionPlanFull;
+    const parsed = parseStoredNutritionJson(version.snapshotJson) as NutritionPlanFull;
     if (!parsed || typeof parsed !== "object" || !parsed.id || !Array.isArray(parsed.meals)) {
       return null;
     }
@@ -1720,7 +1780,10 @@ function parsePlanSnapshot(version: StoredNutritionPlanVersion): NutritionPlanFu
           alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) => ({
             ...alternative,
             quantityUnit: parseQuantityUnit(alternative.quantityUnit),
-            unitWeightG: clampUnitWeightG(alternative.unitWeightG)
+            unitWeightG: clampUnitWeightG(alternative.unitWeightG),
+            ...(alternative.secondComponent ? {
+              secondComponent: parseAlternativeComponent(alternative.secondComponent) ?? undefined
+            } : {})
           }))
         }))
       }))
@@ -2542,6 +2605,7 @@ export async function duplicateNutritionPlan(planId: string): Promise<NutritionP
         position: index + 1,
         alternatives: (entry.alternatives ?? []).map((alternative, alternativeIndex) => ({
           ...alternative,
+          ...(alternative.secondComponent ? { secondComponent: { ...alternative.secondComponent } } : {}),
           id: randomUUID(),
           entryId: nextEntryId,
           position: alternativeIndex + 1,

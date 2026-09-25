@@ -7,13 +7,14 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   batchGet: vi.fn(),
   headerWrite: vi.fn(),
+  append: vi.fn(),
   write: vi.fn()
 }));
 
 vi.mock("googleapis", () => ({ google: { sheets: () => ({ spreadsheets: {
   get: mocks.get,
   batchUpdate: mocks.write,
-  values: { batchGet: mocks.batchGet, batchUpdate: mocks.headerWrite }
+  values: { batchGet: mocks.batchGet, batchUpdate: mocks.headerWrite, append: mocks.append }
 } }) } }));
 vi.mock("@/lib/google/auth", () => ({ getGoogleAuth: () => ({}) }));
 vi.mock("@/lib/env", () => ({ getEnv: () => ({
@@ -37,6 +38,21 @@ function planInput() {
       }]
     }, { id: "meal-new", name: "Dinner", entries: [] }]
   });
+}
+
+function doubleAlternativePlan() {
+  const plan = planInput();
+  plan.meals[0].entries[0].alternatives = [{
+    ...plan.meals[0].entries[0], id: "alternative-double", entryId: "entry-new",
+    foodId: "rice", foodName: "Arroz blanco", quantityG: 100, quantityUnit: "g", unitWeightG: 1,
+    proteinPer100g: 3, carbsPer100g: 28, fatPer100g: 0,
+    secondComponent: {
+      foodId: "legumes", foodName: "Lentejas", quantityG: 0.75, quantityUnit: "piece", unitWeightG: 150,
+      proteinPer100g: 9, carbsPer100g: 20, fatPer100g: 0.4, fiberPer100g: 8,
+      sodiumPer100g: 2, waterPer100g: 70, customText: "Cocidas"
+    }
+  }];
+  return nutritionPlanSaveSchema.parse(plan);
 }
 
 function applyWrite(request: WriteRequest) {
@@ -78,12 +94,67 @@ beforeEach(() => {
     }))
   } }));
   mocks.headerWrite.mockResolvedValue({ data: {} });
+  mocks.append.mockImplementation(async ({ range, requestBody }: {
+    range: string; requestBody: { values: Array<Array<string | number>> }
+  }) => {
+    rows[range.split("'")[1]].push(...structuredClone(requestBody.values));
+    return { data: {} };
+  });
   mocks.write.mockImplementation(async (request: WriteRequest) => applyWrite(request));
 });
 
 afterEach(() => { vi.useRealTimers(); });
 
 describe("nutrition plan persistence", () => {
+  it("round-trips both alternative components through Sheets and normalizes each quantity", async () => {
+    const { saveNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
+    const plan = doubleAlternativePlan();
+    const alternative = plan.meals[0].entries[0].alternatives[0];
+    alternative.secondComponent!.foodName = "  Lentejas  ";
+    alternative.secondComponent!.customText = "  Cocidas  ";
+    const saved = await saveNutritionPlan(plan);
+    const savedAlternative = saved!.meals[0].entries[0].alternatives[0];
+    expect(savedAlternative.secondComponent).toEqual({
+      ...alternative.secondComponent, foodName: "Lentejas", customText: "Cocidas"
+    });
+    const encoded = rows.PlanFoods.find((row) => row[0] === "entry-new")![15] as string;
+    expect(JSON.parse(encoded)[0].secondComponent).toEqual(savedAlternative.secondComponent);
+    const reloaded = await getNutritionPlanById("plan-test");
+    expect(reloaded?.meals[0].entries[0].alternatives).toEqual(saved!.meals[0].entries[0].alternatives);
+  });
+
+  it("keeps both components when duplicating a saved plan and assigns fresh alternative identities", async () => {
+    const { saveNutritionPlan, duplicateNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
+    const original = await saveNutritionPlan(doubleAlternativePlan());
+    const copy = await duplicateNutritionPlan("plan-test");
+    const originalAlternative = original!.meals[0].entries[0].alternatives[0];
+    const copiedEntry = copy!.meals[0].entries[0];
+    expect(copiedEntry.alternatives[0].id).not.toBe(originalAlternative.id);
+    expect(copiedEntry.alternatives[0].entryId).toBe(copiedEntry.id);
+    expect(copiedEntry.alternatives[0].secondComponent).toEqual(originalAlternative.secondComponent);
+    expect(copiedEntry.alternatives[0].secondComponent).not.toBe(originalAlternative.secondComponent);
+    expect((await getNutritionPlanById(copy!.id))?.meals[0].entries[0].alternatives)
+      .toEqual(copiedEntry.alternatives);
+  });
+
+  it("compresses large sets of double alternatives to stay below the Sheets cell limit", async () => {
+    const { saveNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
+    const plan = doubleAlternativePlan();
+    const base = plan.meals[0].entries[0].alternatives[0];
+    plan.meals[0].entries[0].alternatives = Array.from({ length: 20 }, (_, index) => ({
+      ...base, id: `alternative-${index}`, position: index + 1,
+      // Valid JSON strings may expand considerably when escaped for a Sheets cell.
+      customText: "\u0001".repeat(240),
+      secondComponent: { ...base.secondComponent!, customText: "\u0002".repeat(240) }
+    }));
+    expect(nutritionPlanSaveSchema.safeParse(plan).success).toBe(true);
+    const saved = await saveNutritionPlan(plan);
+    const encoded = rows.PlanFoods.find((row) => row[0] === "entry-new")![15] as string;
+    expect(encoded.startsWith("gzip:v1:")).toBe(true);
+    expect(encoded.length).toBeLessThan(50_000);
+    expect((await getNutritionPlanById("plan-test"))?.meals).toEqual(saved!.meals);
+  });
+
   it("saves summary, meals, foods and removals together without moving other plans' rows", async () => {
     const { saveNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
     const otherMeal = structuredClone(rows.Meals[2]);
@@ -177,7 +248,7 @@ describe("nutrition plan persistence", () => {
 describe("published plan snapshots", () => {
   it.each([false, true])("reads %s-compressed snapshots, including legacy plain JSON", async (large) => {
     const { serializeNutritionPlanSnapshot, getPublishedNutritionPlanSnapshot } = await import("@/lib/google/nutrition-management");
-    const plan = planInput();
+    const plan = doubleAlternativePlan();
     if (large) plan.meals = Array.from({ length: 20 }, (_, index) => ({
       ...plan.meals[0], id: `meal-${index}`,
       entries: Array.from({ length: 10 }, (_, entryIndex) => ({

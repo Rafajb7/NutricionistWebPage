@@ -6,7 +6,8 @@ import { useNutritionDraftRecovery } from "@/components/admin/use-nutrition-draf
 import { isNutritionDraftPlan, type NutritionDraftRecovery } from "@/lib/nutrition/draft-recovery";
 import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
 import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
-import { getEquivalentFoodQuantity, updateEntryAlternatives } from "@/lib/nutrition/alternatives";
+import { NutritionAlternativeEditor } from "@/components/admin/nutrition-alternative-editor";
+import { balanceAlternative, getEquivalentFoodQuantity, updateEntryAlternatives } from "@/lib/nutrition/alternatives";
 import {
   Fragment,
   useCallback,
@@ -88,6 +89,7 @@ import type {
   NutritionFoodReferenceUnit,
   NutritionFoodRestrictionTag,
   NutritionPlanFoodAlternative,
+  NutritionPlanFoodAlternativeComponent,
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionPlanMeal,
@@ -364,6 +366,17 @@ function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
               alternative.unitWeightG,
               normalizeQuantityUnit(alternative.quantityUnit),
             ),
+            ...(alternative.secondComponent ? {
+              secondComponent: {
+                ...alternative.secondComponent,
+                quantityG: normalizeQuantityG(alternative.secondComponent.quantityG, alternative.secondComponent.quantityUnit),
+                quantityUnit: normalizeQuantityUnit(alternative.secondComponent.quantityUnit),
+                unitWeightG: normalizeUnitWeightG(
+                  alternative.secondComponent.unitWeightG,
+                  normalizeQuantityUnit(alternative.secondComponent.quantityUnit),
+                ),
+              },
+            } : {}),
           })),
         }))
         .sort((a, b) => {
@@ -830,22 +843,16 @@ function getChangeRequestDetailText(request: NutritionChangeRequest): string {
   return "Solicitud general sobre el plan nutricional.";
 }
 
-function buildAlternativeFromFood(
-  entry: NutritionPlanFoodEntry,
+function buildAlternativeComponentFromFood(
   food: NutritionFood,
-  position: number,
-): NutritionPlanFoodAlternative {
-  const now = new Date().toISOString();
+): NutritionPlanFoodAlternativeComponent {
   const quantityUnit = getDefaultQuantityUnitForFood(food);
   const unitWeightG = getDefaultUnitWeightGForFood(food, quantityUnit);
-  const quantityG = getEquivalentFoodQuantity(entry, { ...food, quantityUnit, unitWeightG });
 
   return {
-    id: createClientId(),
-    entryId: entry.id,
     foodId: food.id,
     foodName: food.name,
-    quantityG,
+    quantityG: 100,
     quantityUnit,
     unitWeightG,
     proteinPer100g: food.proteinPer100g,
@@ -854,8 +861,23 @@ function buildAlternativeFromFood(
     fiberPer100g: food.fiberPer100g ?? 0,
     sodiumPer100g: food.sodiumPer100g,
     waterPer100g: food.waterPer100g,
-    position,
     customText: "",
+  };
+}
+
+function buildAlternativeFromFood(
+  entry: NutritionPlanFoodEntry,
+  food: NutritionFood,
+  position: number,
+): NutritionPlanFoodAlternative {
+  const now = new Date().toISOString();
+  const component = buildAlternativeComponentFromFood(food);
+  return {
+    ...component,
+    id: createClientId(),
+    entryId: entry.id,
+    quantityG: getEquivalentFoodQuantity(entry, component),
+    position,
     createdAt: now,
     updatedAt: now,
   };
@@ -3314,6 +3336,24 @@ export function AdminNutritionManagementShell({
     }));
   }
 
+  function setAlternativeSecondFood(
+    mealId: string,
+    entryId: string,
+    alternativeId: string,
+    food: NutritionFood | null,
+  ) {
+    if (isCurrentPlanPublished) return;
+    updateEntry(mealId, entryId, (entry) => ({
+      ...entry,
+      alternatives: entry.alternatives.map((alternative) => alternative.id === alternativeId
+        ? balanceAlternative(entry, {
+          ...alternative,
+          secondComponent: food ? buildAlternativeComponentFromFood(food) : undefined,
+        })
+        : alternative),
+    }));
+  }
+
   async function submitFoodForm(options?: {
     mealId?: string | null;
     optionNumber?: number;
@@ -5690,218 +5730,18 @@ export function AdminNutritionManagementShell({
                                               {alternatives.length ||
                                               hasAlternativeSearch ? (
                                                 <div className="mt-3 space-y-2 border-l-2 border-brand-accent/40 pl-3">
-                                                  {alternatives.map(
-                                                    (alternative) => {
-                                                      const alternativeTotals =
-                                                        calculateEntryTotals(
-                                                          alternative,
-                                                        );
-                                                      const alternativeCatalogFood =
-                                                        foods.find(
-                                                          (food) =>
-                                                            food.id ===
-                                                            alternative.foodId,
-                                                        );
-                                                      const alternativeFood =
-                                                        getFoodLikeForEntry(
-                                                          alternative,
-                                                          foods,
-                                                        );
-                                                      const alternativeQuantityUnit =
-                                                        normalizeQuantityUnitForFood(
-                                                          alternativeFood,
-                                                          normalizeQuantityUnit(
-                                                            alternative.quantityUnit,
-                                                          ),
-                                                        );
-                                                      const alternativeConflict =
-                                                        alternativeCatalogFood
-                                                          ? getRestrictionConflict(
-                                                              alternativeCatalogFood,
-                                                              selectedAthleteRestrictions,
-                                                            )
-                                                          : null;
-                                                      return (
-                                                        <div
-                                                          key={alternative.id}
-                                                          className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
-                                                        >
-                                                          <div className="flex items-start justify-between gap-3">
-                                                            <div className="min-w-0">
-                                                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-accent">
-                                                                Alternativa
-                                                              </p>
-                                                              <div className="mt-1 flex min-w-0 items-start gap-2">
-                                                                <span
-                                                                  className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
-                                                                    alternativeConflict
-                                                                      ? "border-red-300/40 bg-red-500/10 text-red-100"
-                                                                      : "border-emerald-300/40 bg-emerald-500/10 text-emerald-100"
-                                                                  }`}
-                                                                  title={
-                                                                    alternativeConflict
-                                                                      ? `${getRestrictionTypeLabel(alternativeConflict.type)}: ${formatRestrictionLabel(alternativeConflict)}`
-                                                                      : "Compatible"
-                                                                  }
-                                                                >
-                                                                  {alternativeConflict ? (
-                                                                    <ThumbsDown className="h-3.5 w-3.5" />
-                                                                  ) : (
-                                                                    <ThumbsUp className="h-3.5 w-3.5" />
-                                                                  )}
-                                                                </span>
-                                                                <p className="min-w-0 break-words text-sm font-semibold text-brand-text">
-                                                                  {
-                                                                    alternative.foodName
-                                                                  }
-                                                                </p>
-                                                              </div>
-                                                            </div>
-                                                            <button
-                                                              type="button"
-                                                              onClick={() =>
-                                                                removeAlternative(
-                                                                  meal.id,
-                                                                  entry.id,
-                                                                  alternative.id,
-                                                                )
-                                                              }
-                                                              disabled={
-                                                                isCurrentPlanPublished
-                                                              }
-                                                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-                                                              aria-label={`Eliminar alternativa ${alternative.foodName}`}
-                                                              title="Eliminar alternativa"
-                                                            >
-                                                              <Trash2 className="h-3.5 w-3.5" />
-                                                            </button>
-                                                          </div>
-
-                                                          <div className="mt-3 grid grid-cols-2 gap-2">
-                                                            <label className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted">
-                                                              Cantidad
-                                                              <NutritionQuantityInput
-                                                                key={`${alternative.id}:${alternativeQuantityUnit}`}
-                                                                value={alternative.quantityG}
-                                                                unit={alternativeQuantityUnit}
-                                                                onChange={(value) =>
-                                                                  updateAlternative(meal.id, entry.id, alternative.id, (current) => ({
-                                                                    ...current,
-                                                                    quantityG: value,
-                                                                  }))
-                                                                }
-                                                                disabled={isCurrentPlanPublished}
-                                                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                                                              />
-                                                            </label>
-                                                            <label className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted">
-                                                              Unidad
-                                                              <select
-                                                                value={
-                                                                  alternativeQuantityUnit
-                                                                }
-                                                                onChange={(
-                                                                  event,
-                                                                ) =>
-                                                                  updateAlternative(
-                                                                    meal.id,
-                                                                    entry.id,
-                                                                    alternative.id,
-                                                                    (
-                                                                      current,
-                                                                    ) => ({
-                                                                      ...current,
-                                                                      ...convertQuantityUnitForFood(
-                                                                        current,
-                                                                        getFoodLikeForEntry(
-                                                                          current,
-                                                                          foods,
-                                                                        ),
-                                                                        event
-                                                                          .target
-                                                                          .value as NutritionQuantityUnit,
-                                                                      ),
-                                                                    }),
-                                                                  )
-                                                                }
-                                                                disabled={
-                                                                  isCurrentPlanPublished
-                                                                }
-                                                                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                                                              >
-                                                                {getQuantityUnitOptionsForFood(
-                                                                  alternativeFood,
-                                                                ).map(
-                                                                  (option) => (
-                                                                    <option
-                                                                      key={
-                                                                        option.value
-                                                                      }
-                                                                      value={
-                                                                        option.value
-                                                                      }
-                                                                    >
-                                                                      {
-                                                                        option.label
-                                                                      }
-                                                                    </option>
-                                                                  ),
-                                                                )}
-                                                              </select>
-                                                            </label>
-                                                          </div>
-
-                                                          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-text">
-                                                              {formatNumber(
-                                                                alternativeTotals.caloriesKcal,
-                                                                0,
-                                                              )}{" "}
-                                                              kcal
-                                                            </span>
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-text">
-                                                              P{" "}
-                                                              {formatNumber(
-                                                                alternativeTotals.proteinG,
-                                                              )}
-                                                            </span>
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-text">
-                                                              C{" "}
-                                                              {formatNumber(
-                                                                alternativeTotals.carbsG,
-                                                              )}
-                                                            </span>
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-text">
-                                                              G{" "}
-                                                              {formatNumber(
-                                                                alternativeTotals.fatG,
-                                                              )}
-                                                            </span>
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-muted">
-                                                              Fibra{" "}
-                                                              {formatNumber(
-                                                                alternativeTotals.fiberG,
-                                                              )}{" "}
-                                                              g
-                                                            </span>
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-muted">
-                                                              {formatNumber(
-                                                                alternativeTotals.sodiumMg,
-                                                                0,
-                                                              )}{" "}
-                                                              mg
-                                                            </span>
-                                                            <span className="rounded-md bg-black/20 px-2 py-1 text-brand-muted">
-                                                              {formatNumber(
-                                                                alternativeTotals.waterG,
-                                                              )}{" "}
-                                                              g
-                                                            </span>
-                                                          </div>
-                                                        </div>
-                                                      );
-                                                    },
-                                                  )}
+                                                  {alternatives.map((alternative) => (
+                                                    <NutritionAlternativeEditor
+                                                      key={alternative.id}
+                                                      alternative={alternative}
+                                                      foods={foods}
+                                                      restrictions={selectedAthleteRestrictions}
+                                                      disabled={isCurrentPlanPublished}
+                                                      onUpdate={(updater) => updateAlternative(meal.id, entry.id, alternative.id, updater)}
+                                                      onSetSecondFood={(food) => setAlternativeSecondFood(meal.id, entry.id, alternative.id, food)}
+                                                      onRemove={() => removeAlternative(meal.id, entry.id, alternative.id)}
+                                                    />
+                                                  ))}
 
                                                   {hasAlternativeSearch ? (
                                                     <div className="rounded-lg border border-brand-accent/25 bg-brand-accent/10 p-3">
@@ -6359,215 +6199,18 @@ export function AdminNutritionManagementShell({
                                                       className="px-3 py-3"
                                                     >
                                                       <div className="space-y-2 border-l-2 border-brand-accent/40 pl-3">
-                                                        {alternatives.map(
-                                                          (alternative) => {
-                                                            const alternativeTotals =
-                                                              calculateEntryTotals(
-                                                                alternative,
-                                                              );
-                                                            const alternativeCatalogFood =
-                                                              foods.find(
-                                                                (food) =>
-                                                                  food.id ===
-                                                                  alternative.foodId,
-                                                              );
-                                                            const alternativeFood =
-                                                              getFoodLikeForEntry(
-                                                                alternative,
-                                                                foods,
-                                                              );
-                                                            const alternativeQuantityUnit =
-                                                              normalizeQuantityUnitForFood(
-                                                                alternativeFood,
-                                                                normalizeQuantityUnit(
-                                                                  alternative.quantityUnit,
-                                                                ),
-                                                              );
-                                                            const alternativeConflict =
-                                                              alternativeCatalogFood
-                                                                ? getRestrictionConflict(
-                                                                    alternativeCatalogFood,
-                                                                    selectedAthleteRestrictions,
-                                                                  )
-                                                                : null;
-                                                            return (
-                                                              <div
-                                                                key={
-                                                                  alternative.id
-                                                                }
-                                                                className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 lg:flex-row lg:items-center"
-                                                              >
-                                                                <div className="min-w-0 flex-1">
-                                                                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-accent">
-                                                                    Alternativa
-                                                                  </p>
-                                                                  <div className="mt-0.5 flex items-center gap-2">
-                                                                    <span
-                                                                      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
-                                                                        alternativeConflict
-                                                                          ? "border-red-300/40 bg-red-500/10 text-red-100"
-                                                                          : "border-emerald-300/40 bg-emerald-500/10 text-emerald-100"
-                                                                      }`}
-                                                                      title={
-                                                                        alternativeConflict
-                                                                          ? `${getRestrictionTypeLabel(alternativeConflict.type)}: ${formatRestrictionLabel(alternativeConflict)}`
-                                                                          : "Compatible"
-                                                                      }
-                                                                    >
-                                                                      {alternativeConflict ? (
-                                                                        <ThumbsDown className="h-3.5 w-3.5" />
-                                                                      ) : (
-                                                                        <ThumbsUp className="h-3.5 w-3.5" />
-                                                                      )}
-                                                                    </span>
-                                                                    <p className="min-w-0 break-words text-sm font-semibold text-brand-text">
-                                                                      {
-                                                                        alternative.foodName
-                                                                      }
-                                                                    </p>
-                                                                  </div>
-                                                                </div>
-                                                                <label className="w-full text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-muted lg:w-52">
-                                                                  Cantidad
-                                                                  <div className="mt-1 flex gap-1">
-                                                                    <NutritionQuantityInput
-                                                                      key={`${alternative.id}:${alternativeQuantityUnit}`}
-                                                                      value={alternative.quantityG}
-                                                                      unit={alternativeQuantityUnit}
-                                                                      onChange={(value) =>
-                                                                        updateAlternative(meal.id, entry.id, alternative.id, (current) => ({
-                                                                          ...current,
-                                                                          quantityG: value,
-                                                                        }))
-                                                                      }
-                                                                      disabled={isCurrentPlanPublished}
-                                                                      className="w-20 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-right text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                                                                    />
-                                                                    <select
-                                                                      value={
-                                                                        alternativeQuantityUnit
-                                                                      }
-                                                                      onChange={(
-                                                                        event,
-                                                                      ) =>
-                                                                        updateAlternative(
-                                                                          meal.id,
-                                                                          entry.id,
-                                                                          alternative.id,
-                                                                          (
-                                                                            current,
-                                                                          ) => ({
-                                                                            ...current,
-                                                                            ...convertQuantityUnitForFood(
-                                                                              current,
-                                                                              getFoodLikeForEntry(
-                                                                                current,
-                                                                                foods,
-                                                                              ),
-                                                                              event
-                                                                                .target
-                                                                                .value as NutritionQuantityUnit,
-                                                                            ),
-                                                                          }),
-                                                                        )
-                                                                      }
-                                                                      disabled={
-                                                                        isCurrentPlanPublished
-                                                                      }
-                                                                      className="w-24 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                                                                    >
-                                                                      {getQuantityUnitOptionsForFood(
-                                                                        alternativeFood,
-                                                                      ).map(
-                                                                        (
-                                                                          option,
-                                                                        ) => (
-                                                                          <option
-                                                                            key={
-                                                                              option.value
-                                                                            }
-                                                                            value={
-                                                                              option.value
-                                                                            }
-                                                                          >
-                                                                            {
-                                                                              option.label
-                                                                            }
-                                                                          </option>
-                                                                        ),
-                                                                      )}
-                                                                    </select>
-                                                                  </div>
-                                                                </label>
-                                                                <div className="grid flex-[1.8] grid-cols-3 gap-2 text-xs sm:grid-cols-7">
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-text">
-                                                                    {formatNumber(
-                                                                      alternativeTotals.caloriesKcal,
-                                                                      0,
-                                                                    )}{" "}
-                                                                    kcal
-                                                                  </span>
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-text">
-                                                                    P{" "}
-                                                                    {formatNumber(
-                                                                      alternativeTotals.proteinG,
-                                                                    )}
-                                                                  </span>
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-text">
-                                                                    C{" "}
-                                                                    {formatNumber(
-                                                                      alternativeTotals.carbsG,
-                                                                    )}
-                                                                  </span>
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-text">
-                                                                    G{" "}
-                                                                    {formatNumber(
-                                                                      alternativeTotals.fatG,
-                                                                    )}
-                                                                  </span>
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-muted">
-                                                                    Fibra{" "}
-                                                                    {formatNumber(
-                                                                      alternativeTotals.fiberG,
-                                                                    )}{" "}
-                                                                    g
-                                                                  </span>
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-muted">
-                                                                    {formatNumber(
-                                                                      alternativeTotals.sodiumMg,
-                                                                      0,
-                                                                    )}{" "}
-                                                                    mg
-                                                                  </span>
-                                                                  <span className="rounded-md bg-black/20 px-2 py-1 text-right text-brand-muted">
-                                                                    {formatNumber(
-                                                                      alternativeTotals.waterG,
-                                                                    )}{" "}
-                                                                    g
-                                                                  </span>
-                                                                </div>
-                                                                <button
-                                                                  type="button"
-                                                                  onClick={() =>
-                                                                    removeAlternative(
-                                                                      meal.id,
-                                                                      entry.id,
-                                                                      alternative.id,
-                                                                    )
-                                                                  }
-                                                                  disabled={
-                                                                    isCurrentPlanPublished
-                                                                  }
-                                                                  className="inline-flex aspect-square h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-400/35 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-                                                                  aria-label={`Eliminar alternativa ${alternative.foodName}`}
-                                                                  title="Eliminar alternativa"
-                                                                >
-                                                                  <Trash2 className="h-3.5 w-3.5" />
-                                                                </button>
-                                                              </div>
-                                                            );
-                                                          },
-                                                        )}
+                                                        {alternatives.map((alternative) => (
+                                                          <NutritionAlternativeEditor
+                                                            key={alternative.id}
+                                                            alternative={alternative}
+                                                            foods={foods}
+                                                            restrictions={selectedAthleteRestrictions}
+                                                            disabled={isCurrentPlanPublished}
+                                                            onUpdate={(updater) => updateAlternative(meal.id, entry.id, alternative.id, updater)}
+                                                            onSetSecondFood={(food) => setAlternativeSecondFood(meal.id, entry.id, alternative.id, food)}
+                                                            onRemove={() => removeAlternative(meal.id, entry.id, alternative.id)}
+                                                          />
+                                                        ))}
 
                                                         {hasAlternativeSearch ? (
                                                           <div className="rounded-lg border border-brand-accent/25 bg-brand-accent/10 p-3">

@@ -105,9 +105,7 @@ export type NutritionPlanMeal = {
   updatedAt: string;
 };
 
-export type NutritionPlanFoodAlternative = {
-  id: string;
-  entryId: string;
+export type NutritionPlanFoodAlternativeComponent = {
   foodId: string;
   foodName: string;
   quantityG: number;
@@ -119,8 +117,14 @@ export type NutritionPlanFoodAlternative = {
   fiberPer100g: number;
   sodiumPer100g: number;
   waterPer100g: number;
-  position: number;
   customText: string;
+};
+
+export type NutritionPlanFoodAlternative = NutritionPlanFoodAlternativeComponent & {
+  id: string;
+  entryId: string;
+  secondComponent?: NutritionPlanFoodAlternativeComponent;
+  position: number;
   createdAt: string;
   updatedAt: string;
 };

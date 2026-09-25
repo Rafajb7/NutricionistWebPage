@@ -20,6 +20,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
+import { calculateAlternativeTotals, getAlternativeComponents } from "@/lib/nutrition/alternatives";
 import {
   calculateEntryTotals,
   calculateMealOptionTotals,
@@ -38,7 +39,6 @@ import type {
   NutritionChangeRequest,
   NutritionFood,
   NutritionMealCompletion,
-  NutritionPlanFoodAlternative,
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionQuantityUnit,
@@ -173,31 +173,6 @@ function getMealOptionGroups(meal: NutritionPlanFull["meals"][number]): Array<{
 
 function completionKey(planId: string, mealId: string): string {
   return `${planId}__${mealId}`;
-}
-
-function toEntryLike(alternative: NutritionPlanFoodAlternative): Pick<
-  NutritionPlanFoodEntry,
-  | "quantityG"
-  | "quantityUnit"
-  | "unitWeightG"
-  | "proteinPer100g"
-  | "carbsPer100g"
-  | "fatPer100g"
-  | "fiberPer100g"
-  | "sodiumPer100g"
-  | "waterPer100g"
-> {
-  return {
-    quantityG: alternative.quantityG,
-    quantityUnit: alternative.quantityUnit,
-    unitWeightG: alternative.unitWeightG,
-    proteinPer100g: alternative.proteinPer100g,
-    carbsPer100g: alternative.carbsPer100g,
-    fatPer100g: alternative.fatPer100g,
-    fiberPer100g: alternative.fiberPer100g ?? 0,
-    sodiumPer100g: alternative.sodiumPer100g,
-    waterPer100g: alternative.waterPer100g
-  };
 }
 
 function getFoodCaloriesPer100g(food: Pick<NutritionFood, "proteinPer100g" | "carbsPer100g" | "fatPer100g">): number {
@@ -936,10 +911,8 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                           </p>
                                           <div className="mt-2 space-y-2">
                                             {entry.alternatives.map((alternative) => {
-                                              const alternativeTotals = calculateEntryTotals(
-                                                toEntryLike(alternative)
-                                              );
-                                              const alternativeConflict = getFoodConflict(alternative.foodId);
+                                              const alternativeTotals = calculateAlternativeTotals(alternative);
+                                              const components = getAlternativeComponents(alternative);
 
                                               return (
                                                 <div
@@ -947,30 +920,43 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                                   className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
                                                 >
                                                   <div className="min-w-0">
-                                                    <div className="flex flex-wrap items-center gap-2">
-                                                      <p className="text-sm font-semibold text-brand-text">
-                                                        {alternative.foodName}
-                                                      </p>
-                                                      {alternativeConflict ? (
-                                                        <span className="inline-flex items-center gap-1 rounded-full border border-red-400/35 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">
-                                                          <ThumbsDown className="h-3 w-3" />
-                                                          {alternativeConflict.label}
-                                                        </span>
-                                                      ) : (
-                                                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-100">
-                                                          <ThumbsUp className="h-3 w-3" />
-                                                          Compatible
-                                                        </span>
-                                                      )}
-                                                    </div>
-                                                    {alternative.customText ? (
-                                                      <p className="mt-1 text-xs text-brand-muted">
-                                                        {alternative.customText}
+                                                    {alternative.secondComponent ? (
+                                                      <p className="mb-2 text-xs text-brand-muted">
+                                                        Alternativa conjunta: toma ambos alimentos
                                                       </p>
                                                     ) : null}
+                                                    {components.map((component, componentIndex) => {
+                                                      const conflict = getFoodConflict(component.foodId);
+                                                      return (
+                                                        <div key={componentIndex} className={componentIndex ? "mt-2" : ""}>
+                                                          <div className="flex flex-wrap items-center gap-2">
+                                                            <p className="text-sm font-semibold text-brand-text">
+                                                              {componentIndex ? "+ " : ""}{component.foodName}
+                                                              {alternative.secondComponent ? ` (${formatQuantity(component.quantityG, component.quantityUnit)})` : ""}
+                                                            </p>
+                                                            {conflict ? (
+                                                              <span className="inline-flex items-center gap-1 rounded-full border border-red-400/35 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">
+                                                                <ThumbsDown className="h-3 w-3" />
+                                                                {conflict.label}
+                                                              </span>
+                                                            ) : (
+                                                              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-100">
+                                                                <ThumbsUp className="h-3 w-3" />
+                                                                Compatible
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                          {component.customText ? (
+                                                            <p className="mt-1 text-xs text-brand-muted">
+                                                              {component.customText}
+                                                            </p>
+                                                          ) : null}
+                                                        </div>
+                                                      );
+                                                    })}
                                                   </div>
                                                   <p className="shrink-0 text-sm text-brand-muted">
-                                                    {formatQuantity(alternative.quantityG, alternative.quantityUnit)} |{" "}
+                                                    {alternative.secondComponent ? "Total: " : `${formatQuantity(alternative.quantityG, alternative.quantityUnit)} | `}
                                                     {formatNumber(alternativeTotals.caloriesKcal, " kcal")}
                                                   </p>
                                                 </div>

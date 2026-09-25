@@ -2,6 +2,7 @@ import { normalizeFoodQuantity, formatFoodQuantity } from "@/lib/nutrition/quant
 import fs from "node:fs";
 import path from "node:path";
 import PDFDocument from "pdfkit";
+import { calculateAlternativeTotals, getAlternativeComponents } from "@/lib/nutrition/alternatives";
 import {
   ATWATER_KCAL_PER_GRAM,
   calculateEntryTotals,
@@ -13,6 +14,7 @@ import {
 import type {
   AthleteRoadmapStep,
   NutritionPlanFoodAlternative,
+  NutritionPlanFoodAlternativeComponent,
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionQuantityUnit,
@@ -131,6 +133,18 @@ function normalizePdfMealOption(value: unknown): number {
   return Math.min(20, Math.max(1, Math.round(parsed)));
 }
 
+function normalizePdfAlternativeComponent<T extends NutritionPlanFoodAlternativeComponent>(component: T): T {
+  const quantityUnit = normalizePdfQuantityUnit(component.quantityUnit);
+  return {
+    ...component,
+    foodName: component.foodName ?? "",
+    customText: component.customText ?? "",
+    quantityG: normalizeFoodQuantity(component.quantityG, quantityUnit),
+    quantityUnit,
+    unitWeightG: normalizePdfUnitWeightG(component.unitWeightG, quantityUnit)
+  };
+}
+
 function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull {
   const meals = Array.isArray(plan.meals) ? plan.meals : [];
 
@@ -164,14 +178,11 @@ function normalizePdfPlanQuantities(plan: NutritionPlanFull): NutritionPlanFull 
             unitWeightG: normalizePdfUnitWeightG(entry.unitWeightG, quantityUnit),
             mealOption: normalizePdfMealOption(entry.mealOption),
             alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) => {
-              const alternativeQuantityUnit = normalizePdfQuantityUnit(alternative.quantityUnit);
               return {
-                ...alternative,
-                foodName: alternative.foodName ?? "",
-                customText: alternative.customText ?? "",
-                quantityG: normalizeFoodQuantity(alternative.quantityG, alternative.quantityUnit),
-                quantityUnit: alternativeQuantityUnit,
-                unitWeightG: normalizePdfUnitWeightG(alternative.unitWeightG, alternativeQuantityUnit)
+                ...normalizePdfAlternativeComponent(alternative),
+                ...(alternative.secondComponent ? {
+                  secondComponent: normalizePdfAlternativeComponent(alternative.secondComponent)
+                } : {})
               };
             })
           };
@@ -1404,12 +1415,18 @@ function drawMealEntryRows(
     [...(entry.alternatives ?? [])]
       .sort((a, b) => a.position - b.position)
       .forEach((alternative) => {
-        const alternativeTotals = calculateEntryTotals(alternative);
-        const alternativeLabel = alternative.customText.trim() || alternative.foodName;
+        const alternativeTotals = calculateAlternativeTotals(alternative);
+        const components = getAlternativeComponents(alternative);
+        const alternativeLabel = alternative.secondComponent
+          ? `Alternativa conjunta - ${components.map((component) =>
+            `${formatQuantity(component)} de ${component.customText.trim() || component.foodName}`
+          ).join(" + ")}`
+          : `Alternativa - ${alternative.customText.trim() || alternative.foodName}`;
+        const alternativeQuantity = alternative.secondComponent ? "-" : formatQuantity(alternative);
         const alternativeValues = includeMacros
           ? [
-              `Alternativa - ${alternativeLabel}`,
-              formatQuantity(alternative),
+              alternativeLabel,
+              alternativeQuantity,
               formatNumber(alternativeTotals.caloriesKcal, 0),
               formatNumber(alternativeTotals.proteinG),
               formatNumber(alternativeTotals.carbsG),
@@ -1417,7 +1434,7 @@ function drawMealEntryRows(
               formatNumber(alternativeTotals.waterG),
               `${formatNumber(alternativeTotals.sodiumMg, 0)} mg`
             ]
-          : [`Alternativa - ${alternativeLabel}`, formatQuantity(alternative)];
+          : [alternativeLabel, alternativeQuantity];
         const alternativeEstimatedHeight = Math.max(
           22,
           Math.max(
