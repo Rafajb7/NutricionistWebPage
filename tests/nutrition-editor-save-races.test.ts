@@ -3,9 +3,11 @@ import { toast } from "sonner";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminNutritionManagementShell } from "@/components/admin/admin-nutrition-management-shell";
+import { NutritionAlternativeEditor } from "@/components/admin/nutrition-alternative-editor";
+import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
 import { listNutritionDraftRecoveries, writeNutritionDraftRecovery } from "@/lib/nutrition/draft-recovery";
 import type { NutritionDraftStorage } from "@/lib/nutrition/draft-recovery";
-import type { NutritionPlanFull } from "@/lib/nutrition/types";
+import type { NutritionFood, NutritionPlanFull } from "@/lib/nutrition/types";
 
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
 vi.mock("next/link", () => ({ default: "a" }));
@@ -105,6 +107,51 @@ describe("nutrition editor saves with concurrent editing", () => {
       }));
     });
     expect(renderer!.root.findAllByType("input").some((input) => input.props.value === "Plan A")).toBe(true);
+  }
+
+  async function openEditorWithFoodAlternative() {
+    const rice: NutritionFood = {
+      id: "rice", name: "Arroz blanco", category: "Cereales", referenceUnit: "100g",
+      proteinPer100g: 0, carbsPer100g: 50, fatPer100g: 0,
+      fiberPer100g: 0, sodiumPer100g: 0, waterPer100g: 0,
+      unitWeightG: 100, restrictionTags: [], active: true, createdAt: "", updatedAt: "",
+    };
+    const lentils: NutritionFood = {
+      ...rice, id: "lentils", name: "Lentejas", category: "Legumbres",
+      proteinPer100g: 10, carbsPer100g: 15,
+    };
+    const plan = makePlan("A");
+    const alternative = {
+      ...rice, id: "alternative-rice", entryId: "reference-rice", foodId: rice.id, foodName: rice.name,
+      quantityG: 100, quantityUnit: "g" as const, unitWeightG: 1, position: 1, customText: "",
+    };
+    plan.meals[0].entries = [{
+      ...alternative, id: "reference-rice", planId: plan.id, mealId: plan.meals[0].id,
+      mealOption: 1, alternatives: [alternative],
+    }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      if (!options?.method && url === "/api/admin/nutrition-management") {
+        const original = await (await originalFetch(url, options)).json();
+        return Response.json({ ...original, foods: [rice, lentils], plans: [plan, makePlan("B")] });
+      }
+      if (!options?.method && url === "/api/admin/nutrition-management/plans/plan-000A") return Response.json({ plan });
+      return originalFetch(url, options);
+    });
+    await openEditor();
+  }
+
+  function alternativeEditor() {
+    return renderer!.root.findAllByType(NutritionAlternativeEditor)[0];
+  }
+
+  function addSecondFood() {
+    act(() => alternativeEditor().findAllByType("button")
+      .find((button) => visibleText(button).includes("Añadir segundo alimento"))!.props.onClick());
+    act(() => alternativeEditor().findByProps({ "aria-label": "Buscar segundo alimento" })
+      .props.onChange({ target: { value: "Lentejas" } }));
+    act(() => alternativeEditor().findAllByType("button")
+      .find((button) => visibleText(button).trim() === "Lentejas")!.props.onClick());
   }
 
   function notesInput() {
@@ -222,6 +269,46 @@ describe("nutrition editor saves with concurrent editing", () => {
   async function advance(ms: number) {
     await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
   }
+
+  it("creates a joint alternative, recalculates both foods, and includes both in recovery and autosave", async () => {
+    await openEditorWithFoodAlternative();
+    addSecondFood();
+    for (const editor of renderer!.root.findAllByType(NutritionAlternativeEditor)) {
+      expect(editor.props.alternative).toMatchObject({
+        foodId: "rice", quantityG: 50,
+        secondComponent: { foodId: "lentils", quantityG: 100 },
+      });
+      expect(visibleText(editor)).toContain("Alternativa doble");
+      expect(visibleText(editor.findByProps({ "aria-label": "Totales de la alternativa" }))).toContain("200 kcal");
+    }
+    // The first quantity control edits the reference food, outside the alternative cards.
+    act(() => renderer!.root.findAllByType(NutritionQuantityInput)[0].props.onChange(200));
+    expect(alternativeEditor().props.alternative).toMatchObject({
+      quantityG: 100, secondComponent: { quantityG: 200 },
+    });
+    expect(listNutritionDraftRecoveries(storage, "nutritionist").drafts[0].plan.meals[0].entries[0].alternatives[0])
+      .toMatchObject({ quantityG: 100, secondComponent: { foodId: "lentils", quantityG: 200 } });
+    await advance(30_000);
+    expect(submitted!.meals[0].entries[0].alternatives[0])
+      .toMatchObject({ quantityG: 100, secondComponent: { foodId: "lentils", quantityG: 200 } });
+    await respondToSave();
+    expect(alternativeEditor().props.alternative.secondComponent.quantityG).toBe(200);
+  });
+
+  it("edits the second quantity independently and restores a full portion when removing it", async () => {
+    await openEditorWithFoodAlternative();
+    addSecondFood();
+    act(() => alternativeEditor().findAllByType(NutritionQuantityInput)[1].props.onChange(125));
+    expect(alternativeEditor().props.alternative).toMatchObject({ quantityG: 50, secondComponent: { quantityG: 125 } });
+    act(() => alternativeEditor().findAllByType("select")[1].props.onChange({ target: { value: "piece" } }));
+    expect(alternativeEditor().props.alternative.secondComponent).toMatchObject({ quantityUnit: "piece", quantityG: 1.25 });
+    act(() => alternativeEditor().findAllByType(NutritionQuantityInput)[1].props.onChange(0.5));
+    expect(alternativeEditor().props.alternative.secondComponent.quantityG).toBe(0.5);
+    act(() => alternativeEditor().findByProps({ "aria-label": "Quitar segundo alimento" }).props.onClick());
+    expect(alternativeEditor().props.alternative.quantityG).toBe(100);
+    expect(alternativeEditor().props.alternative.secondComponent).toBeUndefined();
+    expect(visibleText(alternativeEditor())).toContain("Añadir segundo alimento");
+  });
 
   it("autosaves at 30 seconds and continuous edits do not postpone the timer", async () => {
     await openEditor();

@@ -34,15 +34,21 @@ function isIdentifier(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 512;
 }
 
-function isFood(value: unknown): value is Record<string, unknown> {
+function isFoodComponent(value: unknown): value is Record<string, unknown> {
   return isRecord(value)
-    && hasStrings(value, ["id", "foodId", "foodName", "customText", "createdAt", "updatedAt"])
+    && hasStrings(value, ["foodId", "foodName", "customText"])
     && hasNumbers(value, [
       "quantityG", "unitWeightG", "proteinPer100g", "carbsPer100g", "fatPer100g",
-      "fiberPer100g", "sodiumPer100g", "waterPer100g", "position",
+      "fiberPer100g", "sodiumPer100g", "waterPer100g",
     ])
     && typeof value.quantityUnit === "string"
     && ["g", "ml", "piece", "serving"].includes(value.quantityUnit);
+}
+
+function isFood(value: unknown): value is Record<string, unknown> {
+  return isFoodComponent(value)
+    && hasStrings(value, ["id", "createdAt", "updatedAt"])
+    && hasNumbers(value, ["position"]);
 }
 
 // Drafts can contain empty names and zero quantities while a user is editing.
@@ -69,7 +75,10 @@ export function isNutritionDraftPlan(value: unknown): value is NutritionPlanFull
         && hasNumbers(entry, ["mealOption"])
         && Array.isArray(entry.alternatives)
         && entry.alternatives.every((alternative) => isFood(alternative)
-          && typeof alternative.entryId === "string")))
+          && typeof alternative.entryId === "string"
+          && (alternative.secondComponent === undefined
+            || (isFoodComponent(alternative.secondComponent)
+              && alternative.secondComponent.secondComponent === undefined)))))
     && Array.isArray(value.versions)
     && value.versions.every((version) => isRecord(version)
       && hasStrings(version, ["id", "planId", "athleteUsername", "publishedAt", "driveFileId", "fileName"])

@@ -49,6 +49,30 @@ function storeDraft(storage: NutritionDraftStorage, sessionId = "editor-one", pl
 }
 
 describe("nutrition draft recovery", () => {
+  it("recovers both alternative components, including unfinished edits to the second food", () => {
+    const storage = new MemoryStorage();
+    const plan = makePlan();
+    plan.meals[0].entries[0].alternatives[0].secondComponent = {
+      foodId: "legumes", foodName: "", customText: "Pendiente", quantityG: 0,
+      quantityUnit: "serving", unitWeightG: 150, proteinPer100g: 9, carbsPer100g: 20,
+      fatPer100g: 0.4, fiberPer100g: 8, sodiumPer100g: 2, waterPer100g: 70,
+    };
+    storeDraft(storage, "editor-one", plan);
+    expect(readNutritionDraftRecovery(storage, "nutritionist", "plan", "editor-one")?.plan).toEqual(plan);
+  });
+
+  it.each([null, "Lentejas", { foodName: "Lentejas", quantityG: 100 }])(
+    "rejects an invalid second component without overwriting an existing recovery (%j)", (secondComponent) => {
+      const storage = new MemoryStorage();
+      const original = storeDraft(storage);
+      const invalid = makePlan();
+      Object.assign(invalid.meals[0].entries[0].alternatives[0], { secondComponent });
+      expect(writeNutritionDraftRecovery(storage, "nutritionist", "editor-one", invalid))
+        .toEqual({ ok: false, reason: "invalid" });
+      expect(readNutritionDraftRecovery(storage, "nutritionist", "plan", "editor-one")).toEqual(original);
+    }
+  );
+
   it("recovers the complete plan, including unfinished fields and fractional alternatives", () => {
     const storage = new MemoryStorage();
     const plan = makePlan();

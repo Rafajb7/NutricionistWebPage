@@ -137,9 +137,7 @@ const nutritionPlanVersionSchema = z.object({
   fileName: z.string().max(180)
 });
 
-const nutritionPlanAlternativeSchema = z.object({
-  id: z.string().max(120).optional().default(""),
-  entryId: z.string().max(120).optional().default(""),
+const nutritionPlanAlternativeComponentFields = {
   foodId: z.string().max(120).optional().default(""),
   foodName: z.string().min(1).max(160),
   quantityG: nutritionQuantitySchema,
@@ -151,8 +149,23 @@ const nutritionPlanAlternativeSchema = z.object({
   fiberPer100g: z.coerce.number().min(0).max(100).optional().default(0),
   sodiumPer100g: z.coerce.number().min(0).max(100000),
   waterPer100g: z.coerce.number().min(0).max(100),
-  position: z.coerce.number().int().min(0).max(1000).optional().default(0),
   customText: z.string().max(240).optional().default(""),
+};
+
+const nutritionPlanAlternativeComponentSchema = z.object({
+  ...nutritionPlanAlternativeComponentFields,
+  secondComponent: z.never().optional(),
+}).transform((item) => ({
+  ...item,
+  quantityG: normalizeFoodQuantity(item.quantityG, item.quantityUnit),
+}));
+
+const nutritionPlanAlternativeSchema = z.object({
+  ...nutritionPlanAlternativeComponentFields,
+  id: z.string().max(120).optional().default(""),
+  entryId: z.string().max(120).optional().default(""),
+  secondComponent: nutritionPlanAlternativeComponentSchema.optional(),
+  position: z.coerce.number().int().min(0).max(1000).optional().default(0),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema
 }).transform((item) => ({
