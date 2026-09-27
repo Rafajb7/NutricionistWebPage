@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import PDFDocument from "pdfkit";
 import { getAlternativeComponents, withAlternativeComponents } from "@/lib/nutrition/alternatives";
-import { drawMealCardsPage } from "@/lib/nutrition/pdf-meal-cards";
+import { drawMealMenus } from "@/lib/nutrition/pdf-menus";
+import { CONTENTS_ENTRIES_PER_PAGE, drawPdfContents, type PdfContentsEntry } from "@/lib/nutrition/pdf-contents";
+import { MENU_PAGE, paintPdfLines, wrapPdfText } from "@/lib/nutrition/pdf-layout";
 import {
   ATWATER_KCAL_PER_GRAM,
   calculateMealTotals,
@@ -387,36 +389,6 @@ function drawFooter(
     );
 }
 
-function ensureSpace(doc: PDFKit.PDFDocument, neededHeight: number) {
-  const bottomLimit = doc.page.height - doc.page.margins.bottom - 20;
-  if (doc.y + neededHeight <= bottomLimit) return;
-  doc.addPage();
-  doc.y = 96;
-}
-
-function drawYellowTag(
-  doc: PDFKit.PDFDocument,
-  text: string,
-  x: number,
-  y: number,
-  width: number
-) {
-  const label = uppercase(text);
-  const fontSize = fitFontSize(doc, label, "Helvetica-Bold", width - 24, 10, 7.2, 1.1);
-  doc.save();
-  doc.rect(x, y, width, 23).fill(COLORS.yellow);
-  doc
-    .fillColor("#050505")
-    .font("Helvetica-Bold")
-    .fontSize(fontSize)
-    .text(label, x + 12, y + 7, {
-      width: width - 24,
-      characterSpacing: 1.1,
-      lineBreak: false
-    });
-  doc.restore();
-}
-
 function drawMetricCard(
   doc: PDFKit.PDFDocument,
   label: string,
@@ -528,49 +500,6 @@ function drawCover(doc: PDFKit.PDFDocument, plan: NutritionPlanFull, generatedAt
   );
 }
 
-function drawPlanSectionCover(
-  doc: PDFKit.PDFDocument,
-  plan: NutritionPlanFull,
-  generatedAt: string,
-  index: number,
-  count: number,
-  includeMacros: boolean
-) {
-  const left = doc.page.margins.left;
-  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const title = uppercase(getPlanLabel(plan));
-  const titleSize = fitFontSize(doc, title, "Helvetica-Bold", pageWidth, 48, 22, 0.4);
-  const visibleMeals = getVisibleMeals(plan);
-  const tagWidth = 164;
-
-  doc.y = 132;
-  drawYellowTag(doc, `Plan ${index + 1} de ${count}`, left, doc.y, tagWidth);
-  doc
-    .fillColor(COLORS.white)
-    .font("Helvetica-Bold")
-    .fontSize(titleSize)
-    .text(title, left, doc.y + 42, {
-      width: pageWidth,
-      characterSpacing: 0.4
-    });
-
-  const detailY = doc.y + 34;
-  const gap = 12;
-  if (includeMacros) {
-    const totals = calculatePlanTotals(plan);
-    const detailWidth = (pageWidth - gap * 3) / 4;
-    drawMetricCard(doc, "Kcal", formatNumber(totals.caloriesKcal, 0), "Energia total", left, detailY, detailWidth);
-    drawMetricCard(doc, "Menus", String(visibleMeals.length), "Comidas definidas", left + detailWidth + gap, detailY, detailWidth);
-    drawMetricCard(doc, "Atleta", uppercase(plan.athleteName || plan.athleteUsername), "Nombre del atleta", left + (detailWidth + gap) * 2, detailY, detailWidth);
-    drawMetricCard(doc, "Fecha", formatDate(generatedAt), "Fecha del PDF", left + (detailWidth + gap) * 3, detailY, detailWidth);
-  } else {
-    const detailWidth = (pageWidth - gap * 2) / 3;
-    drawMetricCard(doc, "Menus", String(visibleMeals.length), "Comidas definidas", left, detailY, detailWidth);
-    drawMetricCard(doc, "Atleta", uppercase(plan.athleteName || plan.athleteUsername), "Nombre del atleta", left + detailWidth + gap, detailY, detailWidth);
-    drawMetricCard(doc, "Fecha", formatDate(generatedAt), "Fecha del PDF", left + (detailWidth + gap) * 2, detailY, detailWidth);
-  }
-}
-
 function drawOverviewMealTable(
   doc: PDFKit.PDFDocument,
   meals: NutritionPlanFull["meals"],
@@ -603,6 +532,15 @@ function drawOverviewMealTable(
   meals.forEach((meal, index) => {
     const optionGroups = getPdfMealOptionGroups(meal);
     const values = [meal.name, String(optionGroups.length), String(meal.entries.length)];
+    doc.font("Helvetica").fontSize(7.7);
+    const requiredHeight = Math.max(22, ...values.map((value, column) =>
+      doc.heightOfString(value, { width: columns[column].width - 10 }) + 11));
+    if (cursorY + requiredHeight > doc.page.height - doc.page.margins.bottom - 32) {
+      doc.addPage();
+      paintPdfLines(doc, ["MENUS DEFINIDOS - CONTINUACION"], x, 104, 10, COLORS.yellow, true);
+      drawTableHeader(doc, columns, offsetX, 130);
+      cursorY = 152;
+    }
     cursorY += drawTableRow(
       doc,
       columns,
@@ -1150,6 +1088,7 @@ function drawTableRow(
   y: number,
   shaded: boolean
 ): number {
+  doc.font("Helvetica").fontSize(7.7);
   const heights = values.map((value, index) =>
     doc.heightOfString(value, {
       width: columns[index].width - 10,
@@ -1203,227 +1142,63 @@ function getPdfMealOptionGroups(meal: NutritionPlanFull["meals"][number]): Array
     }));
 }
 
-function drawPlanMenusPage(
-  doc: PDFKit.PDFDocument,
-  plan: NutritionPlanFull,
-  index: number,
-  includeMacros: boolean
-) {
-  const meals = getVisibleMeals(plan);
-  const label = `PLAN ${index + 1} / ${uppercase(shortLabel(getPlanLabel(plan), 80))}`;
-  for (const meal of meals) drawMealCardsPage(doc, meal, label, includeMacros);
-  if (!meals.length) {
-    doc.addPage();
-    doc.fillColor(COLORS.muted).font("Helvetica").fontSize(12)
-      .text("Sin comidas definidas.", doc.page.margins.left, 130);
-  }
-}
-
 function drawRoadmapPage(doc: PDFKit.PDFDocument, steps: AthleteRoadmapStep[]) {
-  doc.addPage();
-  const left = doc.page.margins.left;
-  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const sortedSteps = [...steps].sort((a, b) => a.position - b.position).slice(0, 10);
-
-  doc.y = 104;
-  doc
-    .fillColor(COLORS.yellow)
-    .font("Helvetica-Bold")
-    .fontSize(9)
-    .text("HOJA DE RUTA DEL PROCESO", left, doc.y, {
-      width: pageWidth,
-      characterSpacing: 2.2
+  const sorted = [...steps].sort((a, b) => a.position - b.position);
+  const width = (892 - 28) / 3;
+  for (let offset = 0; offset < sorted.length; offset += 3) {
+    const batch = sorted.slice(offset, offset + 3).map((step, index) => {
+      const title = wrapPdfText(doc, uppercase(step.title), width - 28, 15, true);
+      const description = wrapPdfText(doc, step.description.trim() || "Sin descripcion adicional.", width - 28, 10);
+      const date = step.startDate && step.endDate ? `${formatDate(step.startDate)} - ${formatDate(step.endDate)}`
+        : step.startDate ? `Desde ${formatDate(step.startDate)}` : step.endDate ? `Hasta ${formatDate(step.endDate)}` : "Sin fecha cerrada";
+      const contentTop = 64 + title.length * 21;
+      const capacity = Math.max(1, Math.floor((318 - contentTop - 14) / 14));
+      return { step, number: offset + index + 1, title, description, date, contentTop, capacity,
+        pages: Math.ceil(description.length / capacity) };
     });
-  doc
-    .fillColor(COLORS.white)
-    .font("Helvetica-Bold")
-    .fontSize(44)
-    .text("ROADMAP", left, doc.y + 12, { width: pageWidth });
-  doc
-    .fillColor(COLORS.muted)
-    .font("Helvetica")
-    .fontSize(9)
-    .text("Etapas completadas, etapa actual y siguientes pasos del proceso nutricional.", left, doc.y + 2, {
-      width: pageWidth
-    });
-
-  if (!sortedSteps.length) {
-    drawEmptyChartPanel(doc, "No hay etapas definidas.", left, 230, pageWidth, 170);
-    return;
+    const parts = Math.max(...batch.map((item) => item.pages));
+    for (let part = 0; part < parts; part++) {
+      doc.addPage(MENU_PAGE);
+      paintPdfLines(doc, ["HOJA DE RUTA"], 34, 36, 30, COLORS.white, true);
+      paintPdfLines(doc, ["Etapas completadas, etapa actual y siguientes pasos del proceso nutricional."], 34, 86, 9, COLORS.muted);
+      batch.forEach((item, column) => {
+        if (part >= item.pages) return;
+        const x = 34 + column * (width + 14);
+        const y = 140;
+        const color = item.step.status === "completed" ? "#34D399" : item.step.status === "current" ? COLORS.yellow : "#A6A69F";
+        const status = item.step.status === "completed" ? "COMPLETADA" : item.step.status === "current" ? "ACTUAL" : "PENDIENTE";
+        const lines = item.description.slice(part * item.capacity, (part + 1) * item.capacity);
+        const height = item.contentTop + lines.length * 14 + 14;
+        doc.rect(x, y, width, height).fill(COLORS.panel);
+        doc.rect(x, y, 2, height).fill(color);
+        paintPdfLines(doc, [String(item.number).padStart(2, "0")], x + 14, y + 13, 24, color, true);
+        paintPdfLines(doc, [part ? `${status} / CONTINUACION` : status], x + 58, y + 22, 8, color, true);
+        paintPdfLines(doc, item.title, x + 14, y + 48, 15, COLORS.white, true);
+        paintPdfLines(doc, [item.date], x + 14, y + 49 + item.title.length * 21, 7, COLORS.muted);
+        paintPdfLines(doc, lines, x + 14, y + item.contentTop, 10, "#D8D8D3");
+      });
+    }
   }
-
-  const hasDates = sortedSteps.some((step) => step.startDate || step.endDate);
-  const cardGap = 10;
-  const columns = sortedSteps.length <= 5 ? sortedSteps.length : 5;
-  const cardWidth = (pageWidth - cardGap * (columns - 1)) / columns;
-  const cardHeight = hasDates ? 138 : 120;
-  const startY = 220;
-
-  sortedSteps.forEach((step, index) => {
-    const row = Math.floor(index / columns);
-    const column = index % columns;
-    const x = left + column * (cardWidth + cardGap);
-    const y = startY + row * (cardHeight + 22);
-    const color =
-      step.status === "completed" ? "#34D399" : step.status === "current" ? COLORS.yellow : COLORS.dim;
-    const panelColor = step.status === "current" ? "#1F1A0A" : COLORS.panel;
-    const statusLabel =
-      step.status === "completed" ? "COMPLETADA" : step.status === "current" ? "ACTUAL" : "PENDIENTE";
-
-    if (index > 0 && column > 0) {
-      doc
-        .moveTo(x - cardGap, y + 22)
-        .lineTo(x, y + 22)
-        .strokeColor(COLORS.line)
-        .lineWidth(1)
-        .stroke();
-    }
-
-    doc.rect(x, y, cardWidth, cardHeight).fill(panelColor);
-    doc.rect(x, y, 5, cardHeight).fill(color);
-    doc.circle(x + 22, y + 22, 8).fill(color);
-    doc
-      .fillColor(COLORS.white)
-      .font("Helvetica-Bold")
-      .fontSize(9)
-      .text(`${String(index + 1).padStart(2, "0")}. ${uppercase(shortLabel(step.title, 28))}`, x + 38, y + 13, {
-        width: cardWidth - 50,
-        height: 26,
-        characterSpacing: 0.7
-      });
-    doc
-      .fillColor(color)
-      .font("Helvetica-Bold")
-      .fontSize(7)
-      .text(statusLabel, x + 18, y + 48, {
-        width: cardWidth - 36,
-        characterSpacing: 1.2
-      });
-
-    if (hasDates) {
-      const dateLabel =
-        step.startDate && step.endDate
-          ? `${formatDate(step.startDate)} - ${formatDate(step.endDate)}`
-          : step.startDate
-            ? `Desde ${formatDate(step.startDate)}`
-            : step.endDate
-              ? `Hasta ${formatDate(step.endDate)}`
-              : "Sin fecha cerrada";
-      doc
-        .fillColor(COLORS.muted)
-        .font("Helvetica-Bold")
-        .fontSize(7)
-        .text(dateLabel, x + 18, y + 66, {
-          width: cardWidth - 36,
-          height: 16
-        });
-    }
-
-    if (step.description.trim()) {
-      doc
-        .fillColor(COLORS.muted)
-        .font("Helvetica")
-        .fontSize(8)
-        .text(step.description, x + 18, y + (hasDates ? 86 : 68), {
-          width: cardWidth - 36,
-          height: cardHeight - (hasDates ? 96 : 78),
-          lineGap: 2
-        });
-    }
-  });
 }
 
-function drawGuidancePage(doc: PDFKit.PDFDocument, plan: NutritionPlanFull) {
-  doc.addPage();
-  const left = doc.page.margins.left;
-  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const y = 120;
-  const guidanceItems = [
-    {
-      title: "Observaciones",
-      eyebrow: "APORTE EXPLICATIVO DEL NUTRICIONISTA",
-      text: plan.notes.trim() || "Sin observaciones adicionales."
-    },
-    {
-      title: "Suplementacion",
-      eyebrow: "APOYO COMPLEMENTARIO",
-      text: plan.supplementation.trim() || "Sin suplementacion pautada."
-    },
-    {
-      title: "Recomendaciones",
-      eyebrow: "PAUTAS GENERALES",
-      text: plan.recommendations.trim() || "Sin recomendaciones adicionales."
+function drawGuidanceSection(doc: PDFKit.PDFDocument, title: string, subtitle: string, text: string) {
+  const lines = wrapPdfText(doc, text, 848, 11);
+  const linesPerPage = 20;
+  const count = Math.max(1, Math.ceil(lines.length / linesPerPage));
+  for (let page = 0; page < count; page++) {
+    doc.addPage(MENU_PAGE);
+    paintPdfLines(doc, [uppercase(title)], 34, 36, 30, COLORS.white, true);
+    paintPdfLines(doc, [subtitle], 34, 85, 8, COLORS.yellow, true);
+    const batch = lines.slice(page * linesPerPage, (page + 1) * linesPerPage);
+    const height = Math.max(80, batch.length * 15.4 + 30);
+    doc.rect(34, 123, 892, height).fill(COLORS.panel);
+    doc.rect(34, 123, 2, height).fill(COLORS.yellow);
+    paintPdfLines(doc, batch, 56, 138, 11, "#D8D8D3");
+    if (count > 1) paintPdfLines(doc, [`${page + 1} / ${count}`], 852, 86, 8, COLORS.muted);
+    if (title === "Recomendaciones" && page === count - 1) {
+      paintPdfLines(doc, ["CADA PAUTA EXISTE PARA LLEGAR EN TU MEJOR ESTADO POSIBLE."], 34, 468, 8, COLORS.yellow, true);
     }
-  ];
-
-  doc.y = y;
-  doc
-    .fillColor(COLORS.yellow)
-    .font("Helvetica-Bold")
-    .fontSize(9)
-    .text("OBSERVACIONES GLOBALES DEL PLAN", left, doc.y, {
-      width: pageWidth,
-      characterSpacing: 2.2
-    });
-  doc
-    .fillColor(COLORS.white)
-    .font("Helvetica-Bold")
-    .fontSize(44)
-    .text("GUIA DEL NUTRICIONISTA", left, doc.y + 12, { width: pageWidth });
-
-  doc.y += 28;
-  guidanceItems.forEach((item, index) => {
-    const textHeight = doc.heightOfString(item.text, {
-      width: pageWidth - 44,
-      lineGap: 3
-    });
-    const panelHeight = Math.max(82, Math.min(132, textHeight + 52));
-    ensureSpace(doc, panelHeight + 12);
-    const panelY = doc.y;
-
-    doc.rect(left, panelY, pageWidth, panelHeight).fill(index % 2 === 1 ? COLORS.panelAlt : COLORS.panel);
-    doc.rect(left, panelY, 5, panelHeight).fill(COLORS.yellow);
-    doc
-      .fillColor(COLORS.yellow)
-      .font("Helvetica-Bold")
-      .fontSize(8)
-      .text(item.eyebrow, left + 22, panelY + 14, {
-        width: pageWidth - 44,
-        characterSpacing: 1.2
-      });
-    doc
-      .fillColor(COLORS.white)
-      .font("Helvetica-Bold")
-      .fontSize(14)
-      .text(uppercase(item.title), left + 22, panelY + 28, {
-        width: pageWidth - 44,
-        height: 18
-      });
-    doc
-      .fillColor(COLORS.white)
-      .font("Helvetica")
-      .fontSize(10)
-      .text(item.text, left + 22, panelY + 52, {
-        width: pageWidth - 44,
-        height: panelHeight - 60,
-        lineGap: 3
-      });
-    doc.y = panelY + panelHeight + 12;
-  });
-
-  const closingText = "CADA PAUTA EXISTE PARA LLEGAR EN TU MEJOR ESTADO POSIBLE.";
-  const closingSize = fitFontSize(doc, closingText, "Helvetica-Bold", pageWidth, 12, 8, 1.1);
-  ensureSpace(doc, 44);
-  doc
-    .fillColor(COLORS.yellow)
-    .font("Helvetica-Bold")
-    .fontSize(closingSize)
-    .text(closingText, left, doc.page.height - 100, {
-      width: pageWidth,
-      align: "center",
-      characterSpacing: 1.1,
-      lineBreak: false
-    });
+  }
 }
 
 export async function renderNutritionPlanPdf(
@@ -1437,9 +1212,9 @@ export async function renderNutritionPlanPdf(
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
-      size: "A4",
-      layout: "landscape",
-      margins: { top: 96, left: 44, right: 44, bottom: 48 },
+      size: MENU_PAGE.size,
+      layout: MENU_PAGE.layout,
+      margins: { top: 96, left: 34, right: 34, bottom: 36 },
       bufferPages: true,
       info: {
         Title: `${primaryPlan.athleteName || primaryPlan.athleteUsername} - Plan nutricional`,
@@ -1451,51 +1226,84 @@ export async function renderNutritionPlanPdf(
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
     doc.on("error", reject);
     doc.on("end", () => resolve(Buffer.concat(chunks)));
+    let sectionHeader = false;
     doc.on("pageAdded", () => {
       drawPageBackground(doc);
-      drawHeader(doc, primaryPlan);
+      if (sectionHeader) drawLogo(doc, doc.page.width - 76, 20, 42);
+      else drawHeader(doc, primaryPlan);
       doc.y = 96;
     });
 
     const generatedAt = new Date().toISOString();
     const documentPlans = getComparisonPlans(primaryPlan, normalizedComparisonPlans);
-    drawCover(doc, primaryPlan, generatedAt);
-    if (roadmapSteps.length) {
-      drawRoadmapPage(doc, roadmapSteps);
-    }
-
-    documentPlans.forEach((documentPlan) => {
-      doc.addPage();
-      doc.y = 96;
-      drawOverviewPage(doc, documentPlan, calculatePlanTotals(documentPlan), generatedAt, includeMacros);
-    });
-
+    const sections: Array<{ title: string; detail: string; referenceStyle?: boolean; draw: () => void }> = [];
     documentPlans.forEach((documentPlan, index) => {
-      doc.addPage();
-      drawPlanSectionCover(doc, documentPlan, generatedAt, index, documentPlans.length, includeMacros);
-
-      if (includeMacros) {
+      const planLabel = getPlanLabel(documentPlan);
+      sections.push({ title: "Vista general", detail: planLabel, draw: () => {
         doc.addPage();
-        doc.y = 96;
-        drawMealMacroChartsPage(doc, documentPlan);
+        drawOverviewPage(doc, documentPlan, calculatePlanTotals(documentPlan), generatedAt, includeMacros);
+      } });
+      for (const meal of getVisibleMeals(documentPlan)) {
+        const count = getPdfMealOptionGroups(meal).length;
+        sections.push({ title: meal.name, detail: `${planLabel} / ${count} ${count === 1 ? "opcion" : "opciones"}`,
+          referenceStyle: true, draw: () => drawMealMenus(doc, meal,
+            `PLAN ${index + 1} / ${uppercase(shortLabel(planLabel, 80))}`, includeMacros) });
       }
-
-      drawPlanMenusPage(doc, documentPlan, index, includeMacros);
+      if (includeMacros) sections.push({ title: "Macros por comida", detail: planLabel, draw: () => {
+        doc.addPage();
+        drawMealMacroChartsPage(doc, documentPlan);
+      } });
     });
-
-    drawGuidancePage(doc, primaryPlan);
-
-    if (includeMacros) {
+    sections.push({ title: "Suplementacion", detail: "Indicaciones del nutricionista", referenceStyle: true,
+      draw: () => drawGuidanceSection(doc, "Suplementacion", "APOYO COMPLEMENTARIO",
+        primaryPlan.supplementation.trim() || "Sin suplementacion pautada.") });
+    sections.push({ title: "Observaciones", detail: "Aclaraciones del plan", referenceStyle: true,
+      draw: () => drawGuidanceSection(doc, "Observaciones", "ACLARACIONES DEL NUTRICIONISTA",
+        primaryPlan.notes.trim() || "Sin observaciones adicionales.") });
+    sections.push({ title: "Recomendaciones", detail: "Pautas generales", referenceStyle: true,
+      draw: () => drawGuidanceSection(doc, "Recomendaciones", "PAUTAS GENERALES",
+        primaryPlan.recommendations.trim() || "Sin recomendaciones adicionales.") });
+    if (roadmapSteps.length) sections.push({ title: "Hoja de ruta", detail: `${roadmapSteps.length} etapas del proceso`, referenceStyle: true,
+      draw: () => drawRoadmapPage(doc, roadmapSteps) });
+    if (includeMacros) sections.push({ title: "Comparativa de planes", detail: "Distribucion de macros y energia", draw: () => {
       doc.addPage();
-      doc.y = 96;
       drawPlanComparisonChartsPage(doc, primaryPlan, documentPlans);
+    } });
+
+    drawCover(doc, primaryPlan, generatedAt);
+    const contentsPages: number[] = [];
+    sectionHeader = true;
+    for (let index = 0; index < Math.ceil(sections.length / CONTENTS_ENTRIES_PER_PAGE); index++) {
+      doc.addPage(MENU_PAGE);
+      contentsPages.push(doc.bufferedPageRange().count - 1);
     }
+    const contents: PdfContentsEntry[] = [];
+    sections.forEach((section, index) => {
+      sectionHeader = section.referenceStyle === true;
+      const first = doc.bufferedPageRange().count;
+      section.draw();
+      const last = doc.bufferedPageRange().count;
+      const destination = `nutrition-section-${index}`;
+      contents.push({ title: section.title, detail: section.detail, destination, firstPage: first + 1, lastPage: last });
+      doc.switchToPage(first);
+      doc.addNamedDestination(destination, "Fit");
+      doc.outline.addItem(`${section.title} - ${section.detail}`);
+      doc.switchToPage(last - 1);
+    });
+    drawPdfContents(doc, contents, contentsPages);
 
     const range = doc.bufferedPageRange();
     for (let index = range.start; index < range.start + range.count; index += 1) {
       doc.switchToPage(index);
       if (index > range.start) {
         drawFooter(doc, index + 1, range.count, primaryPlan);
+        if (!contentsPages.includes(index)) {
+          doc.font("Helvetica-Bold").fontSize(7).fillColor(COLORS.yellow)
+            .text("INDICE", doc.page.width - doc.page.margins.right - 111,
+              doc.page.height - doc.page.margins.bottom - 10, { lineBreak: false });
+          doc.goTo(doc.page.width - doc.page.margins.right - 111,
+            doc.page.height - doc.page.margins.bottom - 10, 40, 10, "nutrition-contents");
+        }
       }
     }
 
