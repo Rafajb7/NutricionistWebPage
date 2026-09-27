@@ -4,7 +4,9 @@ import {
   calculateAlternativeTotals,
   getAlternativeComponents,
   getEquivalentFoodQuantity,
+  MAX_ALTERNATIVE_COMPONENTS,
   updateEntryAlternatives,
+  withAlternativeComponents,
 } from "@/lib/nutrition/alternatives";
 import { calculateEntryTotals } from "@/lib/nutrition/calculations";
 import { formatFoodQuantity, getEffectiveQuantityG, normalizeFoodQuantity } from "@/lib/nutrition/quantity-units";
@@ -158,14 +160,14 @@ describe("two-food nutrition alternatives", () => {
     const balanced = balanceAlternative(rice, riceAndLegumes);
 
     expect(balanced.quantityG).toBe(100);
-    expect(balanced.secondComponent?.quantityG).toBe(150);
+    expect(balanced.additionalComponents?.[0].quantityG).toBe(150);
     expect(getAlternativeComponents(balanced).map((food) => calculateEntryTotals(food).caloriesKcal))
       .toEqual([120, 120]);
     expect(calculateAlternativeTotals(balanced)).toMatchObject({
       caloriesKcal: 240, proteinG: 7.5, carbsG: 52.5, fatG: 0,
     });
     expect(balanced.customText).toBe(alternative.customText);
-    expect(balanced.secondComponent?.customText).toBe(secondComponent.customText);
+    expect(balanced.additionalComponents?.[0].customText).toBe(secondComponent.customText);
     expect(riceAndLegumes.quantityG).toBe(200);
     expect(riceAndLegumes.secondComponent.quantityG).toBe(100);
   });
@@ -178,7 +180,7 @@ describe("two-food nutrition alternatives", () => {
 
     const balanced = balanceAlternative(reference, { ...food, secondComponent });
     expect(balanced.quantityG).toBe(80);
-    expect(balanced.secondComponent?.quantityG).toBe(80);
+    expect(balanced.additionalComponents?.[0].quantityG).toBe(80);
   });
 
   it("recalculates all simple and double alternatives when the reference changes", () => {
@@ -202,7 +204,7 @@ describe("two-food nutrition alternatives", () => {
       secondComponent: { ...secondComponent, quantityUnit, unitWeightG: 100 },
     });
     expect(balanced.quantityG).toBe(150);
-    expect(balanced.secondComponent?.quantityG).toBe(0.75);
+    expect(balanced.additionalComponents?.[0].quantityG).toBe(0.75);
     expect(getAlternativeComponents(balanced).map((food) => calculateEntryTotals(food).caloriesKcal))
       .toEqual([60, 60]);
   });
@@ -212,7 +214,7 @@ describe("two-food nutrition alternatives", () => {
       alternatives: [{ ...alternative, secondComponent }] };
     const updated = updateEntryAlternatives(previous, { ...previous, unitWeightG: 200 });
     expect(updated.alternatives[0].quantityG).toBe(100);
-    expect(updated.alternatives[0].secondComponent?.quantityG).toBe(50);
+    expect(updated.alternatives[0].additionalComponents?.[0].quantityG).toBe(50);
     expect(calculateAlternativeTotals(updated.alternatives[0]).caloriesKcal)
       .toBe(calculateEntryTotals(updated).caloriesKcal);
   });
@@ -220,7 +222,7 @@ describe("two-food nutrition alternatives", () => {
   it("restores the remaining component to the full calorie target after removing the second", () => {
     const balanced = balanceAlternative(entry, { ...alternative, secondComponent });
     expect(balanced.quantityG).toBe(100);
-    const simple = balanceAlternative(entry, { ...balanced, secondComponent: undefined });
+    const simple = balanceAlternative(entry, withAlternativeComponents(balanced, [balanced]));
     expect(simple.quantityG).toBe(200);
     expect(getAlternativeComponents(simple)).toHaveLength(1);
     expect(calculateAlternativeTotals(simple)).toEqual(calculateEntryTotals(entry));
@@ -250,14 +252,150 @@ describe("two-food nutrition alternatives", () => {
       ...alternative, secondComponent: { ...secondComponent, quantityUnit: "piece", unitWeightG: 100 },
     });
     expect(balanced.quantityG).toBe(5);
-    expect(balanced.secondComponent?.quantityG).toBe(0.25);
+    expect(balanced.additionalComponents?.[0].quantityG).toBe(0.25);
     expect(getEquivalentFoodQuantity(entry, { ...alternative, proteinPer100g: 0 }, 0.5)).toBe(50);
   });
 
   it("keeps existing single-food alternative totals and calorie matching unchanged", () => {
     expect(getAlternativeComponents(alternative)).toEqual([alternative]);
     expect(calculateAlternativeTotals(alternative)).toEqual(calculateEntryTotals(alternative));
-    expect(balanceAlternative(entry, alternative)).toEqual(alternative);
+    expect(balanceAlternative(entry, alternative)).toEqual({ ...alternative, additionalComponents: [] });
     expect(balanceAlternative(entry, alternative)).not.toHaveProperty("secondComponent");
+  });
+});
+
+describe("alternatives with up to five foods", () => {
+  const densities = [10, 20, 40, 8, 16];
+  const components = densities.map((proteinPer100g, index): NutritionPlanFoodAlternativeComponent => ({
+    ...secondComponent,
+    foodId: `component-${index + 1}`,
+    foodName: `Alimento ${index + 1}`,
+    proteinPer100g,
+  }));
+
+  it.each([
+    [3, [2000, 1000, 500]],
+    [4, [1500, 750, 375, 1875]],
+    [5, [1200, 600, 300, 1500, 750]],
+  ] as const)("shares the reference calories evenly across %s different foods", (count, expectedQuantities) => {
+    const candidate = withAlternativeComponents(alternative, components.slice(0, count));
+    const reference = { ...entry, quantityG: 3000 };
+    const balanced = balanceAlternative(reference, candidate);
+    const foods = getAlternativeComponents(balanced);
+
+    expect(foods.map((food) => food.quantityG)).toEqual(expectedQuantities);
+    expect(foods.map((food) => calculateEntryTotals(food).caloriesKcal))
+      .toEqual(Array(count).fill(2400 / count));
+    expect(calculateAlternativeTotals(balanced).caloriesKcal).toBe(2400);
+    expect(balanced).not.toHaveProperty("secondComponent");
+    expect(candidate.additionalComponents?.map((food) => food.quantityG))
+      .toEqual(Array(count - 1).fill(100));
+  });
+
+  it("uses an exact one-third share instead of a rounded percentage", () => {
+    const candidate = withAlternativeComponents(alternative, [components[0], components[0], components[0]]);
+    const balanced = balanceAlternative({ ...entry, quantityG: 3000 }, candidate);
+    expect(getAlternativeComponents(balanced).map((food) => food.quantityG)).toEqual([2000, 2000, 2000]);
+    expect(calculateAlternativeTotals(balanced).caloriesKcal).toBe(2400);
+  });
+
+  it.each([
+    [3, [55, 30, 0.25]],
+    [4, [40, 20, 0.25, 0.5]],
+    [5, [35, 15, 0.25, 0.25, 15]],
+  ] as const)("recalculates %s mixed-unit foods with the usual rounding", (count, expectedQuantities) => {
+    const mixedComponents: NutritionPlanFoodAlternativeComponent[] = [
+      components[0],
+      { ...secondComponent, quantityUnit: "ml" },
+      { ...secondComponent, quantityUnit: "piece", unitWeightG: 100 },
+      { ...secondComponent, quantityUnit: "serving", unitWeightG: 50 },
+      secondComponent,
+    ];
+    const previous = { ...entry,
+      alternatives: [withAlternativeComponents(alternative, mixedComponents.slice(0, count))] };
+    const updated = updateEntryAlternatives(previous, { ...previous, quantityG: 83 });
+    expect(getAlternativeComponents(updated.alternatives[0]).map((food) => food.quantityG))
+      .toEqual(expectedQuantities);
+  });
+
+  it("preserves alternative metadata when promoting a different food to the first component", () => {
+    const legacy = { ...alternative, secondComponent, position: 4, createdAt: "created", updatedAt: "updated" };
+    const otherAlternative = { ...alternative, ...components[1], id: "other-alternative", position: 99 };
+    const canonical = withAlternativeComponents(legacy, [otherAlternative, legacy, components[2]]);
+
+    expect(canonical).toMatchObject({
+      id: alternative.id, entryId: alternative.entryId, position: 4,
+      createdAt: "created", updatedAt: "updated", foodId: components[1].foodId,
+      customText: components[1].customText,
+    });
+    expect(canonical).not.toHaveProperty("secondComponent");
+    expect(canonical.additionalComponents?.[0]).not.toHaveProperty("secondComponent");
+    expect(canonical.additionalComponents?.[0]).not.toHaveProperty("additionalComponents");
+    expect(canonical.additionalComponents?.[0]).not.toHaveProperty("id");
+    expect(legacy.secondComponent).toBe(secondComponent);
+  });
+
+  it("rebalances all remaining foods after removing a middle component", () => {
+    const five = balanceAlternative({ ...entry, quantityG: 3000 },
+      withAlternativeComponents(alternative, components));
+    const remaining = getAlternativeComponents(five).filter((_, index) => index !== 2);
+    const four = balanceAlternative({ ...entry, quantityG: 3000 }, withAlternativeComponents(five, remaining));
+
+    expect(getAlternativeComponents(four).map((food) => food.foodId))
+      .toEqual(["component-1", "component-2", "component-4", "component-5"]);
+    expect(getAlternativeComponents(four).map((food) => food.quantityG))
+      .toEqual([1500, 750, 1875, 940]);
+    expect(getAlternativeComponents(four).map((food) => calculateEntryTotals(food).caloriesKcal))
+      .toEqual([600, 600, 600, 602]);
+    expect(getAlternativeComponents(five)).toHaveLength(5);
+  });
+
+  it("preserves identity and restores a single food after removing every other component", () => {
+    const many = withAlternativeComponents(alternative, components);
+    const last = balanceAlternative(entry, withAlternativeComponents(many, [components[4]]));
+    expect(last.foodId).toBe("component-5");
+    expect(last.id).toBe(alternative.id);
+    expect(last.additionalComponents).toEqual([]);
+    expect(last.quantityG).toBe(125);
+    expect(calculateAlternativeTotals(last).caloriesKcal).toBe(80);
+  });
+
+  it("reads old single and double alternatives and canonicalizes them when balanced", () => {
+    const legacy = { ...alternative, secondComponent };
+    expect(getAlternativeComponents(legacy)).toEqual([legacy, secondComponent]);
+    const balanced = balanceAlternative(entry, legacy);
+    expect(balanced.quantityG).toBe(100);
+    expect(balanced.additionalComponents).toEqual([{ ...secondComponent, quantityG: 50 }]);
+    expect(balanced).not.toHaveProperty("secondComponent");
+    expect(balanceAlternative(entry, alternative).additionalComponents).toEqual([]);
+  });
+
+  it("gives canonical components precedence over the legacy alias without counting it twice", () => {
+    const canonical = { ...withAlternativeComponents(alternative, components.slice(0, 3)), secondComponent };
+    expect(getAlternativeComponents(canonical)).toHaveLength(3);
+    expect(getAlternativeComponents(canonical).map((food) => food.foodId))
+      .toEqual(["component-1", "component-2", "component-3"]);
+    const balanced = balanceAlternative(entry, canonical);
+    expect(balanced.additionalComponents).toHaveLength(2);
+    expect(balanced).not.toHaveProperty("secondComponent");
+  });
+
+  it("treats an explicit empty component list as a single food despite a legacy alias", () => {
+    const canonical = { ...alternative, additionalComponents: [], secondComponent };
+    expect(getAlternativeComponents(canonical)).toEqual([canonical]);
+    expect(calculateAlternativeTotals(canonical)).toEqual(calculateEntryTotals(alternative));
+    const balanced = balanceAlternative(entry, canonical);
+    expect(balanced.quantityG).toBe(200);
+    expect(balanced.additionalComponents).toEqual([]);
+    expect(balanced).not.toHaveProperty("secondComponent");
+  });
+
+  it("rejects empty or oversized alternatives without silently dropping any food", () => {
+    expect(MAX_ALTERNATIVE_COMPONENTS).toBe(5);
+    expect(() => withAlternativeComponents(alternative, [])).toThrow(RangeError);
+    expect(() => withAlternativeComponents(alternative, [...components, secondComponent])).toThrow(RangeError);
+    expect(() => balanceAlternative(entry, { ...alternative, additionalComponents: components })).toThrow(RangeError);
+    expect(getAlternativeComponents(withAlternativeComponents(alternative, [components[0]]))).toHaveLength(1);
+    expect(getAlternativeComponents(withAlternativeComponents(alternative, components))).toHaveLength(5);
   });
 });

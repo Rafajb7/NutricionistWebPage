@@ -10,6 +10,10 @@ import {
 } from "@/lib/google/retry";
 import { DEFAULT_NUTRITION_FOODS } from "@/lib/nutrition/default-foods";
 import {
+  getAlternativeComponents,
+  withAlternativeComponents
+} from "@/lib/nutrition/alternatives";
+import {
   ALLERGY_RESTRICTION_OPTIONS,
   DIET_RESTRICTION_OPTIONS,
   INTOLERANCE_RESTRICTION_OPTIONS,
@@ -493,17 +497,17 @@ function sanitizeAlternative(
   now: string,
   foodsById: Map<string, NutritionFood>
 ): NutritionPlanFoodAlternative {
-  return {
-    ...sanitizeAlternativeComponent(alternative, foodsById),
+  const components = getAlternativeComponents(alternative).map((component) =>
+    sanitizeAlternativeComponent(component, foodsById)
+  );
+  return withAlternativeComponents({
+    ...components[0],
     id: alternative.id || randomUUID(),
     entryId,
     position: index + 1,
-    ...(alternative.secondComponent ? {
-      secondComponent: sanitizeAlternativeComponent(alternative.secondComponent, foodsById)
-    } : {}),
     createdAt: alternative.createdAt || now,
     updatedAt: now
-  };
+  }, components);
 }
 
 function getAthleteRestrictionOption(
@@ -1123,6 +1127,17 @@ function parseStoredNutritionJson(raw: string): unknown {
   return JSON.parse(json) as unknown;
 }
 
+function parseAdditionalAlternativeComponents(
+  alternative: Partial<Record<keyof NutritionPlanFoodAlternative, unknown>>
+): NutritionPlanFoodAlternativeComponent[] {
+  const values = alternative.additionalComponents !== undefined
+    ? (Array.isArray(alternative.additionalComponents) ? alternative.additionalComponents : [])
+    : alternative.secondComponent ? [alternative.secondComponent] : [];
+  return values
+    .map(parseAlternativeComponent)
+    .filter((component): component is NutritionPlanFoodAlternativeComponent => component !== null);
+}
+
 function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanFoodAlternative[] {
   const raw = String(value ?? "").trim();
   if (!raw) return [];
@@ -1137,7 +1152,6 @@ function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanF
         const record = item as Partial<Record<keyof NutritionPlanFoodAlternative, unknown>>;
         const component = parseAlternativeComponent(record);
         if (!component) return null;
-        const secondComponent = parseAlternativeComponent(record.secondComponent);
         const createdAt = String(record.createdAt ?? "").trim();
         const updatedAt = String(record.updatedAt ?? "").trim();
 
@@ -1145,7 +1159,7 @@ function parseEntryAlternatives(value: unknown, entryId: string): NutritionPlanF
           ...component,
           id: String(record.id ?? "").trim() || randomUUID(),
           entryId,
-          ...(secondComponent ? { secondComponent } : {}),
+          additionalComponents: parseAdditionalAlternativeComponents(record),
           position: Math.max(1, parseInteger(record.position) || index + 1),
           createdAt,
           updatedAt
@@ -1411,12 +1425,9 @@ function normalizeAlternativeQuantityMetadata(
   alternative: NutritionPlanFoodAlternative,
   foodsById: Map<string, NutritionFood>
 ): NutritionPlanFoodAlternative {
-  return {
-    ...normalizeAlternativeComponentQuantityMetadata(alternative, foodsById),
-    ...(alternative.secondComponent ? {
-      secondComponent: normalizeAlternativeComponentQuantityMetadata(alternative.secondComponent, foodsById)
-    } : {})
-  };
+  return withAlternativeComponents(alternative, getAlternativeComponents(alternative).map((component) =>
+    normalizeAlternativeComponentQuantityMetadata(component, foodsById)
+  ));
 }
 
 function normalizeEntryQuantityMetadata(
@@ -1511,9 +1522,7 @@ function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]
         ...serializeAlternativeComponent(alternative),
         id: alternative.id,
         entryId: alternative.entryId,
-        ...(alternative.secondComponent ? {
-          secondComponent: serializeAlternativeComponent(alternative.secondComponent)
-        } : {}),
+        additionalComponents: getAlternativeComponents(alternative).slice(1).map(serializeAlternativeComponent),
         position: alternative.position || index + 1,
         createdAt: alternative.createdAt,
         updatedAt: alternative.updatedAt
@@ -1521,7 +1530,7 @@ function serializeEntryAlternatives(alternatives: NutritionPlanFoodAlternative[]
       .sort((a, b) => a.position - b.position)
   );
   if (json.length <= 45_000) return json;
-  // Two components per alternative can fill the same Sheets cell. Keep legacy
+  // Multiple components per alternative can fill the same Sheets cell. Keep legacy
   // JSON for ordinary entries and use the snapshot encoding for larger ones.
   const compressed = `gzip:v1:${gzipSync(json).toString("base64")}`;
   if (compressed.length > 50_000) {
@@ -1777,14 +1786,16 @@ function parsePlanSnapshot(version: StoredNutritionPlanVersion): NutritionPlanFu
           quantityUnit: parseQuantityUnit(entry.quantityUnit),
           unitWeightG: clampUnitWeightG(entry.unitWeightG),
           mealOption: clampMealOption(entry.mealOption || 1),
-          alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) => ({
-            ...alternative,
-            quantityUnit: parseQuantityUnit(alternative.quantityUnit),
-            unitWeightG: clampUnitWeightG(alternative.unitWeightG),
-            ...(alternative.secondComponent ? {
-              secondComponent: parseAlternativeComponent(alternative.secondComponent) ?? undefined
-            } : {})
-          }))
+          alternatives: (Array.isArray(entry.alternatives) ? entry.alternatives : []).map((alternative) =>
+            withAlternativeComponents(alternative, [
+              {
+                ...alternative,
+                quantityUnit: parseQuantityUnit(alternative.quantityUnit),
+                unitWeightG: clampUnitWeightG(alternative.unitWeightG)
+              },
+              ...parseAdditionalAlternativeComponents(alternative)
+            ])
+          )
         }))
       }))
     };
@@ -2604,8 +2615,7 @@ export async function duplicateNutritionPlan(planId: string): Promise<NutritionP
         mealId: mealIdMap.get(meal.id) ?? randomUUID(),
         position: index + 1,
         alternatives: (entry.alternatives ?? []).map((alternative, alternativeIndex) => ({
-          ...alternative,
-          ...(alternative.secondComponent ? { secondComponent: { ...alternative.secondComponent } } : {}),
+          ...withAlternativeComponents(alternative, getAlternativeComponents(alternative)),
           id: randomUUID(),
           entryId: nextEntryId,
           position: alternativeIndex + 1,
@@ -2693,7 +2703,18 @@ export class NutritionPlanSnapshotTooLargeError extends Error {
 }
 
 export function serializeNutritionPlanSnapshot(plan: NutritionPlanFull): string {
-  const json = JSON.stringify(plan);
+  const json = JSON.stringify({
+    ...plan,
+    meals: plan.meals.map((meal) => ({
+      ...meal,
+      entries: meal.entries.map((entry) => ({
+        ...entry,
+        alternatives: (entry.alternatives ?? []).map((alternative) =>
+          withAlternativeComponents(alternative, getAlternativeComponents(alternative))
+        )
+      }))
+    }))
+  });
   if (json.length <= 45_000) return json;
 
   // A Sheets cell accepts at most 50,000 characters. Meal options and alternatives

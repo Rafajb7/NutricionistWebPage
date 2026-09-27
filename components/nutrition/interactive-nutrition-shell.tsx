@@ -920,9 +920,9 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                                   className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
                                                 >
                                                   <div className="min-w-0">
-                                                    {alternative.secondComponent ? (
+                                                    {components.length > 1 ? (
                                                       <p className="mb-2 text-xs text-brand-muted">
-                                                        Alternativa conjunta: toma ambos alimentos
+                                                        Alternativa conjunta: toma los {components.length} alimentos
                                                       </p>
                                                     ) : null}
                                                     {components.map((component, componentIndex) => {
@@ -932,7 +932,7 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                                           <div className="flex flex-wrap items-center gap-2">
                                                             <p className="text-sm font-semibold text-brand-text">
                                                               {componentIndex ? "+ " : ""}{component.foodName}
-                                                              {alternative.secondComponent ? ` (${formatQuantity(component.quantityG, component.quantityUnit)})` : ""}
+                                                              {components.length > 1 ? ` (${formatQuantity(component.quantityG, component.quantityUnit)})` : ""}
                                                             </p>
                                                             {conflict ? (
                                                               <span className="inline-flex items-center gap-1 rounded-full border border-red-400/35 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">
@@ -956,7 +956,7 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                                     })}
                                                   </div>
                                                   <p className="shrink-0 text-sm text-brand-muted">
-                                                    {alternative.secondComponent ? "Total: " : `${formatQuantity(alternative.quantityG, alternative.quantityUnit)} | `}
+                                                    {components.length > 1 ? "Total: " : `${formatQuantity(alternative.quantityG, alternative.quantityUnit)} | `}
                                                     {formatNumber(alternativeTotals.caloriesKcal, " kcal")}
                                                   </p>
                                                 </div>

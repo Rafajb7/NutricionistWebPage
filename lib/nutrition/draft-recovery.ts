@@ -1,4 +1,5 @@
 import type { NutritionPlanFull } from "@/lib/nutrition/types";
+import { MAX_ALTERNATIVE_COMPONENTS } from "@/lib/nutrition/alternatives";
 
 export type NutritionDraftStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
 
@@ -51,6 +52,20 @@ function isFood(value: unknown): value is Record<string, unknown> {
     && hasNumbers(value, ["position"]);
 }
 
+function isAdditionalFoodComponent(value: unknown): boolean {
+  return isFoodComponent(value)
+    && value.secondComponent === undefined && value.additionalComponents === undefined;
+}
+
+function hasValidAlternativeComponents(alternative: Record<string, unknown>): boolean {
+  if (alternative.additionalComponents !== undefined) {
+    return Array.isArray(alternative.additionalComponents)
+      && alternative.additionalComponents.length < MAX_ALTERNATIVE_COMPONENTS
+      && alternative.additionalComponents.every(isAdditionalFoodComponent);
+  }
+  return alternative.secondComponent === undefined || isAdditionalFoodComponent(alternative.secondComponent);
+}
+
 // Drafts can contain empty names and zero quantities while a user is editing.
 // Validate their structure, without applying the stricter remote-save schema.
 export function isNutritionDraftPlan(value: unknown): value is NutritionPlanFull {
@@ -76,9 +91,7 @@ export function isNutritionDraftPlan(value: unknown): value is NutritionPlanFull
         && Array.isArray(entry.alternatives)
         && entry.alternatives.every((alternative) => isFood(alternative)
           && typeof alternative.entryId === "string"
-          && (alternative.secondComponent === undefined
-            || (isFoodComponent(alternative.secondComponent)
-              && alternative.secondComponent.secondComponent === undefined)))))
+          && hasValidAlternativeComponents(alternative))))
     && Array.isArray(value.versions)
     && value.versions.every((version) => isRecord(version)
       && hasStrings(version, ["id", "planId", "athleteUsername", "publishedAt", "driveFileId", "fileName"])

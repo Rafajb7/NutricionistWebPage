@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminNutritionManagementShell } from "@/components/admin/admin-nutrition-management-shell";
 import { NutritionAlternativeEditor } from "@/components/admin/nutrition-alternative-editor";
 import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
+import { getAlternativeComponents } from "@/lib/nutrition/alternatives";
 import { listNutritionDraftRecoveries, writeNutritionDraftRecovery } from "@/lib/nutrition/draft-recovery";
 import type { NutritionDraftStorage } from "@/lib/nutrition/draft-recovery";
 import type { NutritionFood, NutritionPlanFull } from "@/lib/nutrition/types";
@@ -120,6 +121,11 @@ describe("nutrition editor saves with concurrent editing", () => {
       ...rice, id: "lentils", name: "Lentejas", category: "Legumbres",
       proteinPer100g: 10, carbsPer100g: 15,
     };
+    const foods = [rice, lentils,
+      { ...lentils, id: "tofu", name: "Tofu" },
+      { ...lentils, id: "egg", name: "Huevo" },
+      { ...lentils, id: "avocado", name: "Aguacate" },
+    ];
     const plan = makePlan("A");
     const alternative = {
       ...rice, id: "alternative-rice", entryId: "reference-rice", foodId: rice.id, foodName: rice.name,
@@ -133,7 +139,7 @@ describe("nutrition editor saves with concurrent editing", () => {
     vi.mocked(fetch).mockImplementation(async (url, options) => {
       if (!options?.method && url === "/api/admin/nutrition-management") {
         const original = await (await originalFetch(url, options)).json();
-        return Response.json({ ...original, foods: [rice, lentils], plans: [plan, makePlan("B")] });
+        return Response.json({ ...original, foods, plans: [plan, makePlan("B")] });
       }
       if (!options?.method && url === "/api/admin/nutrition-management/plans/plan-000A") return Response.json({ plan });
       return originalFetch(url, options);
@@ -145,13 +151,13 @@ describe("nutrition editor saves with concurrent editing", () => {
     return renderer!.root.findAllByType(NutritionAlternativeEditor)[0];
   }
 
-  function addSecondFood() {
+  function addAlternativeFood(name = "Lentejas") {
     act(() => alternativeEditor().findAllByType("button")
-      .find((button) => visibleText(button).includes("Añadir segundo alimento"))!.props.onClick());
-    act(() => alternativeEditor().findByProps({ "aria-label": "Buscar segundo alimento" })
-      .props.onChange({ target: { value: "Lentejas" } }));
+      .find((button) => visibleText(button).includes("Añadir alimento a la alternativa"))!.props.onClick());
+    act(() => alternativeEditor().findByProps({ "aria-label": "Buscar alimento para la alternativa" })
+      .props.onChange({ target: { value: name } }));
     act(() => alternativeEditor().findAllByType("button")
-      .find((button) => visibleText(button).trim() === "Lentejas")!.props.onClick());
+      .find((button) => visibleText(button).trim() === name)!.props.onClick());
   }
 
   function notesInput() {
@@ -272,42 +278,71 @@ describe("nutrition editor saves with concurrent editing", () => {
 
   it("creates a joint alternative, recalculates both foods, and includes both in recovery and autosave", async () => {
     await openEditorWithFoodAlternative();
-    addSecondFood();
+    addAlternativeFood();
     for (const editor of renderer!.root.findAllByType(NutritionAlternativeEditor)) {
       expect(editor.props.alternative).toMatchObject({
         foodId: "rice", quantityG: 50,
-        secondComponent: { foodId: "lentils", quantityG: 100 },
+        additionalComponents: [{ foodId: "lentils", quantityG: 100 }],
       });
-      expect(visibleText(editor)).toContain("Alternativa doble");
+      expect(visibleText(editor)).toContain("Alternativa combinada");
       expect(visibleText(editor.findByProps({ "aria-label": "Totales de la alternativa" }))).toContain("200 kcal");
     }
     // The first quantity control edits the reference food, outside the alternative cards.
     act(() => renderer!.root.findAllByType(NutritionQuantityInput)[0].props.onChange(200));
     expect(alternativeEditor().props.alternative).toMatchObject({
-      quantityG: 100, secondComponent: { quantityG: 200 },
+      quantityG: 100, additionalComponents: [{ quantityG: 200 }],
     });
     expect(listNutritionDraftRecoveries(storage, "nutritionist").drafts[0].plan.meals[0].entries[0].alternatives[0])
-      .toMatchObject({ quantityG: 100, secondComponent: { foodId: "lentils", quantityG: 200 } });
+      .toMatchObject({ quantityG: 100, additionalComponents: [{ foodId: "lentils", quantityG: 200 }] });
     await advance(30_000);
     expect(submitted!.meals[0].entries[0].alternatives[0])
-      .toMatchObject({ quantityG: 100, secondComponent: { foodId: "lentils", quantityG: 200 } });
+      .toMatchObject({ quantityG: 100, additionalComponents: [{ foodId: "lentils", quantityG: 200 }] });
     await respondToSave();
-    expect(alternativeEditor().props.alternative.secondComponent.quantityG).toBe(200);
+    expect(alternativeEditor().props.alternative.additionalComponents[0].quantityG).toBe(200);
   });
 
   it("edits the second quantity independently and restores a full portion when removing it", async () => {
     await openEditorWithFoodAlternative();
-    addSecondFood();
+    addAlternativeFood();
     act(() => alternativeEditor().findAllByType(NutritionQuantityInput)[1].props.onChange(125));
-    expect(alternativeEditor().props.alternative).toMatchObject({ quantityG: 50, secondComponent: { quantityG: 125 } });
+    expect(alternativeEditor().props.alternative).toMatchObject({ quantityG: 50, additionalComponents: [{ quantityG: 125 }] });
     act(() => alternativeEditor().findAllByType("select")[1].props.onChange({ target: { value: "piece" } }));
-    expect(alternativeEditor().props.alternative.secondComponent).toMatchObject({ quantityUnit: "piece", quantityG: 1.25 });
+    expect(alternativeEditor().props.alternative.additionalComponents[0]).toMatchObject({ quantityUnit: "piece", quantityG: 1.25 });
     act(() => alternativeEditor().findAllByType(NutritionQuantityInput)[1].props.onChange(0.5));
-    expect(alternativeEditor().props.alternative.secondComponent.quantityG).toBe(0.5);
-    act(() => alternativeEditor().findByProps({ "aria-label": "Quitar segundo alimento" }).props.onClick());
+    expect(alternativeEditor().props.alternative.additionalComponents[0].quantityG).toBe(0.5);
+    act(() => alternativeEditor().findByProps({ "aria-label": "Quitar Lentejas de la alternativa" }).props.onClick());
     expect(alternativeEditor().props.alternative.quantityG).toBe(100);
-    expect(alternativeEditor().props.alternative.secondComponent).toBeUndefined();
-    expect(visibleText(alternativeEditor())).toContain("Añadir segundo alimento");
+    expect(alternativeEditor().props.alternative.additionalComponents).toEqual([]);
+    expect(visibleText(alternativeEditor())).toContain("Añadir alimento a la alternativa");
+  });
+
+  it("supports five foods, rebalances each addition and removal, and saves all components", async () => {
+    await openEditorWithFoodAlternative();
+    addAlternativeFood();
+    addAlternativeFood("Tofu");
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.quantityG)).toEqual([35, 65, 65]);
+    addAlternativeFood("Huevo");
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.quantityG)).toEqual([25, 50, 50, 50]);
+    addAlternativeFood("Aguacate");
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.quantityG)).toEqual([20, 40, 40, 40, 40]);
+    expect(visibleText(alternativeEditor())).toMatch(/Máximo de\s+5\s+alimentos/);
+    expect(alternativeEditor().findAllByType("button").some((button) => visibleText(button).includes("Añadir alimento"))).toBe(false);
+    // A stale click must also respect the limit in the parent update handler.
+    act(() => alternativeEditor().props.onAddFood({ foodId: "extra", id: "extra", name: "Extra" }));
+    expect(getAlternativeComponents(alternativeEditor().props.alternative)).toHaveLength(5);
+    expect(listNutritionDraftRecoveries(storage, "nutritionist").drafts[0].plan.meals[0].entries[0].alternatives[0].additionalComponents).toHaveLength(4);
+    await advance(30_000);
+    expect(submitted!.meals[0].entries[0].alternatives[0].additionalComponents).toHaveLength(4);
+    await respondToSave();
+    act(() => alternativeEditor().findByProps({ "aria-label": "Quitar Arroz blanco de la alternativa" }).props.onClick());
+    expect(alternativeEditor().props.alternative).toMatchObject({ id: "alternative-rice", entryId: "reference-rice", foodId: "lentils" });
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.quantityG)).toEqual([50, 50, 50, 50]);
+    act(() => alternativeEditor().findByProps({ "aria-label": "Quitar Huevo de la alternativa" }).props.onClick());
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.foodId)).toEqual(["lentils", "tofu", "avocado"]);
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.quantityG)).toEqual([65, 65, 65]);
+    // Changing the reference rebalances every remaining component.
+    act(() => renderer!.root.findAllByType(NutritionQuantityInput)[0].props.onChange(300));
+    expect(getAlternativeComponents(alternativeEditor().props.alternative).map((food) => food.quantityG)).toEqual([200, 200, 200]);
   });
 
   it("autosaves at 30 seconds and continuous edits do not postpone the timer", async () => {
