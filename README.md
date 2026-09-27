@@ -150,7 +150,9 @@ App:
   - cada alternativa admite de 1 a 5 alimentos desde `Anadir alimento a la alternativa`: forman una sola opcion, con cantidades editables y nutrientes totales conjuntos
   - al anadir o quitar un componente, o cambiar la cantidad de referencia, reparte las kcal a partes iguales (1/N) antes de redondear cada cantidad al multiplo de 5 g/ml o de 0,25 unidades/raciones mas cercano
   - las alternativas combinadas se conservan en borradores, autoguardado, recuperacion y planes publicados, incluyendo las alternativas dobles anteriores; en el PDF y la vista del atleta se muestran juntos todos sus alimentos y cantidades
-  - el PDF dedica una pagina a cada comida con todas sus opciones: tarjetas por alimento con cantidad arriba a la derecha, alternativas agrupadas con flechas y macros opcionales en cuadros de colores; usa A4 apaisado o un formato mayor cuando la comida requiere mas espacio, sin cortar alimentos
+  - el PDF incluye un indice de bloques numerados con paginas reales, enlaces a las secciones y regreso al indice desde el pie de pagina
+  - los menus siguen una estructura de opciones en paneles: cantidades delante del alimento, alternativas separadas con `/` y combinaciones entre parentesis con `+`; mantiene los macros opcionales de cada alimento o alternativa en cuadros de colores
+  - usa paginas apaisadas uniformes de 960 x 540 puntos, con hasta tres opciones en paralelo o cuatro opciones breves en una distribucion de 2 x 2; los menus y notas extensos continuan en nuevas paginas sin recortes ni reducciones de letra
   - el resumen inicial del PDF muestra una tabla estrecha con Menu, Opciones y Alimentos, sin columna de estado
   - genera una previsualizacion PDF sin publicarla
   - al confirmar/publicar sube el PDF a Drive para que aparezca en `/nutrition-plans`

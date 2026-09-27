@@ -24,13 +24,13 @@ async function renderedDocument(plan: NutritionPlanFull, includeMacros = true) {
   }
 }
 
-describe("food cards in the generated PDF", () => {
+describe("reference-style menus in the generated PDF", () => {
   it("renders the reference and joint alternative with individual quantities and combined macros", async () => {
     const { pages } = await renderedDocument(makeDoubleAlternativePlan());
     const page = pages.find((candidate) => candidate.includes("OPCION 1"))!;
-    expect(page).toContain("Arroz blanco 100 g");
-    expect(page).toContain("Alternativas JUNTOS - 2 ALIMENTOS");
-    expect(page).toContain("Arroz blanco 50 g Lentejas 25 g");
+    expect(page).toContain("100 g de Arroz blanco");
+    expect(page).toContain("/ (50 g de Arroz blanco + 25 g de Lentejas)");
+    expect(page).toContain("50 g de Arroz blanco + 25 g de Lentejas");
     expect(page).toContain("100 kcal P 5 g C 20 g G 0 g");
     expect(page).not.toMatch(/CANTIDAD|ALIMENTO BASE/);
   }, 30_000);
@@ -40,13 +40,13 @@ describe("food cards in the generated PDF", () => {
     const alternative = plan.meals[0].entries[0].alternatives[0];
     alternative.additionalComponents = alternative.additionalComponents!.slice(0, count - 1);
     const { pages } = await renderedDocument(plan);
-    const page = pages.find((candidate) => candidate.includes("Alternativas"))!;
+    const page = pages.find((candidate) => candidate.includes("OPCION 1"))!;
     expect(page).toBeDefined();
-    expect(page).toContain("Arroz blanco 50 g");
-    for (const component of alternative.additionalComponents) expect(page).toContain(`${component.foodName} 25 g`);
+    expect(page).toContain("50 g de Arroz blanco");
+    for (const component of alternative.additionalComponents) expect(page).toContain(`25 g de ${component.foodName}`);
     expect(page).toContain(`${count * 50} kcal`);
-    if (count === 1) expect(page).not.toContain("JUNTOS");
-    else expect(page).toContain(`JUNTOS - ${count} ALIMENTOS`);
+    if (count === 1) expect(page).not.toContain("/ (");
+    else expect(page).toContain("/ (50 g de Arroz blanco +");
   }, 30_000);
 
   it("retains joint foods and fractional units when macros are hidden", async () => {
@@ -59,8 +59,8 @@ describe("food cards in the generated PDF", () => {
       foodName: "Fruta", quantityG: 1.25, quantityUnit: "serving", unitWeightG: 150,
     });
     const { text } = await renderedDocument(plan, false);
-    expect(text).toContain("JUNTOS - 5 ALIMENTOS");
-    expect(text).toContain("Arroz blanco 50 g Aguacate 0,5 ud Fruta 1,25 rac.");
+    expect(text).toContain("/ (50 g de Arroz blanco +");
+    expect(text).toContain("50 g de Arroz blanco + 0,5 unidades de Aguacate + 1,25 raciones de Fruta");
     expect(text).not.toMatch(/kcal|SODIO|ENERGIA TOTAL|\bFibra\b|\bAgua\b|Na 0 mg/i);
   }, 30_000);
 
@@ -70,8 +70,8 @@ describe("food cards in the generated PDF", () => {
     alternative.secondComponent = alternative.additionalComponents![0];
     delete alternative.additionalComponents;
     const { text } = await renderedDocument(plan);
-    expect(text).toContain("JUNTOS - 2 ALIMENTOS");
-    expect(text).toContain("Arroz blanco 50 g Lentejas 25 g");
+    expect(text).toContain("(50 g de Arroz blanco + 25 g de Lentejas)");
+    expect(text).toContain("50 g de Arroz blanco + 25 g de Lentejas");
     expect(text).toContain("100 kcal P 5 g C 20 g G 0 g");
   }, 30_000);
 
@@ -82,12 +82,12 @@ describe("food cards in the generated PDF", () => {
     if (empty) alternative.additionalComponents = [];
     const { text } = await renderedDocument(plan);
     expect(text).not.toContain("Alias antiguo ignorado");
-    expect(text).toContain("Alternativas");
+    expect(text).toContain("50 g de Arroz blanco");
     if (empty) {
       expect(text).not.toContain("JUNTOS");
       expect(text).not.toContain("Lentejas");
     } else {
-      expect(text).toContain("JUNTOS - 2 ALIMENTOS");
+      expect(text).toContain("(50 g de Arroz blanco + 25 g de Lentejas)");
       expect(text).toContain("100 kcal P 5 g C 20 g G 0 g");
     }
   }, 30_000);
@@ -99,8 +99,8 @@ describe("food cards in the generated PDF", () => {
     entry.alternatives[0].customText = "Cereal integral preparado";
     entry.alternatives[0].additionalComponents![0].customText = "Legumbres cocidas y escurridas";
     const { text } = await renderedDocument(plan, false);
-    expect(text).toContain("Cereal cocido de referencia 100 g");
-    expect(text).toContain("Cereal integral preparado 50 g Legumbres cocidas y escurridas 25 g");
+    expect(text).toContain("100 g de Cereal cocido de referencia");
+    expect(text).toContain("50 g de Cereal integral preparado + 25 g de Legumbres cocidas y escurridas");
     expect(text).not.toMatch(/Arroz blanco|Lentejas/);
   }, 30_000);
 
@@ -113,11 +113,11 @@ describe("food cards in the generated PDF", () => {
       quantityG: Number.NaN, quantityUnit: "unknown", unitWeightG: Number.NaN, customText: null,
     });
     const { text } = await renderedDocument(plan);
-    expect(text).toContain("Arroz blanco 50 g Lentejas 1 g");
+    expect(text).toContain("50 g de Arroz blanco + 1 g de Lentejas");
     expect(text).not.toMatch(/NaN|undefined|null/);
   }, 30_000);
 
-  it.each([true, false])("retains all long alternatives together on the meal page (macros %s)", async (includeMacros) => {
+  it.each([true, false])("retains all long alternatives on readable continuation pages (macros %s)", async (includeMacros) => {
     const plan = makeFiveComponentAlternativePlan();
     const meal = plan.meals[0];
     meal.name = "Comida extensa";
@@ -140,12 +140,15 @@ describe("food cards in the generated PDF", () => {
     });
     const { text, pages } = await renderedDocument(plan, includeMacros);
     const menuPages = pages.filter((page) => page.includes("OPCION 1"));
-    expect(menuPages).toHaveLength(1);
-    expect(menuPages[0]).toContain("COMIDA EXTENSA");
-    expect(menuPages[0]).toContain("Cereal de referencia preparado 100 g");
-    expect(menuPages[0].match(/JUNTOS - 5 ALIMENTOS/g)).toHaveLength(8);
-    for (const marker of markers) expect(menuPages[0].split(marker)).toHaveLength(2);
-    expect(text).not.toContain("CONTINUACION");
+    expect(menuPages.length).toBeGreaterThan(1);
+    for (const page of menuPages) {
+      expect(page).toContain("COMIDA EXTENSA");
+      expect(page).toContain("OPCION 1");
+    }
+    const menuText = menuPages.join(" ");
+    expect(menuText).toContain("100 g de Cereal de referencia preparado");
+    for (const marker of markers) expect(menuText.split(marker)).toHaveLength(2);
+    expect(menuText).toContain("CONTINUACION");
     if (!includeMacros) expect(text).not.toMatch(/kcal|SODIO|ENERGIA TOTAL/i);
   }, 30_000);
 
@@ -167,29 +170,31 @@ describe("food cards in the generated PDF", () => {
     const options = mealPages[0].split(/OPCION \d+/).slice(1);
     for (let index = 1; index <= 6; index += 1) {
       const option = options[index <= 3 ? 0 : 1];
-      expect(option).toContain(`Referencia ${index} 100 g`);
-      expect(option).toContain(`Sustituto ${index} 50 g Acompanamiento ${index} 25 g`);
+      expect(option).toContain(`100 g de Referencia ${index}`);
+      expect(option).toContain(`50 g de Sustituto ${index} + 25 g de Acompanamiento ${index}`);
     }
   }, 30_000);
 
-  it.each([true, false])("fits three complete options on one standard meal page (macros %s)", async (includeMacros) => {
+  it.each([true, false])("keeps three options in their meal section on standard pages (macros %s)", async (includeMacros) => {
     const { pages, dimensions } = await renderedDocument(makeCardPlan(), includeMacros);
     const mealPages = pages.filter((page) => /OPCION \d+/.test(page));
-    expect(mealPages).toHaveLength(2);
-    const breakfast = mealPages.find((page) => page.includes("DESAYUNO"))!;
-    expect(breakfast).toContain("OPCION 1");
-    expect(breakfast).toContain("OPCION 2");
-    expect(breakfast).toContain("OPCION 3");
+    const breakfastPages = mealPages.filter((page) => page.includes("DESAYUNO"));
+    expect(breakfastPages.length).toBe(includeMacros ? 2 : 1);
+    const breakfast = breakfastPages.join(" ");
+    for (const page of breakfastPages) {
+      expect(page).toContain("OPCION 1");
+      expect(page).toContain("OPCION 2");
+      expect(page).toContain("OPCION 3");
+      expect(page).not.toContain("CENA");
+      const size = dimensions[pages.indexOf(page)];
+      expect(size.width).toBe(960);
+      expect(size.height).toBe(540);
+    }
     for (const food of ["Crema de arroz", "Proteina en polvo isolada", "Bebida de arroz y avellanas", "Kiwi crudo", "Crema de cacahuete", "Corn flakes", "Copos de avena", "Harina de avena", "Leche desnatada", "Chocolate negro 85%"]) {
       expect(breakfast.split(food)).toHaveLength(4);
     }
-    expect(breakfast.match(/Alternativas/g)).toHaveLength(9);
-    expect(breakfast).not.toContain("CENA");
-    const size = dimensions[pages.indexOf(breakfast)];
-    // A3 is the largest standard sheet used before extending exceptional meals.
-    expect(size.width).toBeLessThanOrEqual(1190.56);
-    expect(size.height).toBeLessThanOrEqual(841.90);
-    const overview = pages.find((page) => page.replace(/\s/g, "").includes("VISTAGENERAL"))!;
+    expect(breakfast).toContain("60 g de Crema de arroz / 60 g de Corn flakes");
+    const overview = pages.find((page) => page.replace(/\s/g, "").includes("MENUOPCIONESALIMENTOS"))!;
     expect(overview.replace(/\s/g, "")).toContain("MENUOPCIONESALIMENTOS");
     expect(overview.replace(/\s/g, "")).not.toMatch(/ESTADO|INCLUIDO|OPCIONAL/);
     expect(overview).toContain("Desayuno 3 15");
