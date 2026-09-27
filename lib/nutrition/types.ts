@@ -123,6 +123,8 @@ export type NutritionPlanFoodAlternativeComponent = {
 export type NutritionPlanFoodAlternative = NutritionPlanFoodAlternativeComponent & {
   id: string;
   entryId: string;
+  additionalComponents?: NutritionPlanFoodAlternativeComponent[];
+  // Legacy double alternatives; additionalComponents takes precedence when present.
   secondComponent?: NutritionPlanFoodAlternativeComponent;
   position: number;
   createdAt: string;

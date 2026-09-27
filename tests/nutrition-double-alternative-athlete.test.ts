@@ -2,7 +2,7 @@ import * as React from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InteractiveNutritionShell } from "@/components/nutrition/interactive-nutrition-shell";
-import { makeDoubleAlternativePlan } from "./fixtures/nutrition-double-alternative";
+import { makeDoubleAlternativePlan, makeFiveComponentAlternativePlan } from "./fixtures/nutrition-double-alternative";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ prefetch: vi.fn() }) }));
 vi.mock("next/link", () => ({ default: "a" }));
@@ -43,10 +43,10 @@ describe("athlete double alternatives", () => {
 
   it("groups both quantities, sums calories and checks the second food restrictions", async () => {
     const plan = makeDoubleAlternativePlan();
-    plan.meals[0].entries[0].alternatives[0].secondComponent!.customText = "Lentejas cocidas y escurridas";
+    plan.meals[0].entries[0].alternatives[0].additionalComponents![0].customText = "Lentejas cocidas y escurridas";
     await openPlan(plan);
     const jointLabel = renderer!.root.findAllByType("p")
-      .find((node) => visibleText(node) === "Alternativa conjunta: toma ambos alimentos")!;
+      .find((node) => visibleText(node) === "Alternativa conjunta: toma los 2 alimentos")!;
     const jointCard = jointLabel.parent!.parent!;
     const text = visibleText(jointCard);
     expect(text).toContain("Arroz blanco (50 g)");
@@ -58,10 +58,22 @@ describe("athlete double alternatives", () => {
 
   it("keeps the quantity and calories for existing single alternatives", async () => {
     const plan = makeDoubleAlternativePlan();
-    delete plan.meals[0].entries[0].alternatives[0].secondComponent;
+    plan.meals[0].entries[0].alternatives[0].additionalComponents = [];
     await openPlan(plan);
     const text = visibleText(renderer!.root);
     expect(text).toContain("50 g | 50 kcal");
     expect(text).not.toContain("Alternativa conjunta");
+  });
+
+  it("shows all five components in one choice and sums their calories", async () => {
+    await openPlan(makeFiveComponentAlternativePlan());
+    const jointLabel = renderer!.root.findAllByType("p")
+      .find((node) => visibleText(node) === "Alternativa conjunta: toma los 5 alimentos")!;
+    const text = visibleText(jointLabel.parent!.parent!);
+    expect(text).toContain("Arroz blanco (50 g)");
+    for (const name of ["Lentejas", "Garbanzos", "Alubias", "Guisantes"]) {
+      expect(text).toContain(`+ ${name} (25 g)`);
+    }
+    expect(text).toContain("Total: 250 kcal");
   });
 });

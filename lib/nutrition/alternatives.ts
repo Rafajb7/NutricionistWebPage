@@ -11,6 +11,8 @@ type EquivalentFood = Pick<NutritionPlanFoodEntry,
   "proteinPer100g" | "carbsPer100g" | "fatPer100g" | "quantityUnit" | "unitWeightG"
 >;
 
+export const MAX_ALTERNATIVE_COMPONENTS = 5;
+
 // Use unrounded calories so repeated edits do not accumulate rounding errors.
 export function getEquivalentFoodQuantity(
   reference: EquivalentFood & { quantityG: number },
@@ -37,7 +39,42 @@ export function getEquivalentFoodQuantity(
 export function getAlternativeComponents(
   alternative: NutritionPlanFoodAlternative,
 ): NutritionPlanFoodAlternativeComponent[] {
-  return alternative.secondComponent ? [alternative, alternative.secondComponent] : [alternative];
+  const additional = alternative.additionalComponents !== undefined
+    ? alternative.additionalComponents
+    : alternative.secondComponent ? [alternative.secondComponent] : [];
+  return [alternative, ...additional];
+}
+
+function toAlternativeComponent(component: NutritionPlanFoodAlternativeComponent): NutritionPlanFoodAlternativeComponent {
+  return {
+    foodId: component.foodId,
+    foodName: component.foodName,
+    quantityG: component.quantityG,
+    quantityUnit: component.quantityUnit,
+    unitWeightG: component.unitWeightG,
+    proteinPer100g: component.proteinPer100g,
+    carbsPer100g: component.carbsPer100g,
+    fatPer100g: component.fatPer100g,
+    fiberPer100g: component.fiberPer100g,
+    sodiumPer100g: component.sodiumPer100g,
+    waterPer100g: component.waterPer100g,
+    customText: component.customText,
+  };
+}
+
+export function withAlternativeComponents(
+  alternative: NutritionPlanFoodAlternative,
+  components: readonly NutritionPlanFoodAlternativeComponent[],
+): NutritionPlanFoodAlternative {
+  if (components.length < 1 || components.length > MAX_ALTERNATIVE_COMPONENTS) {
+    throw new RangeError(`Una alternativa debe contener entre 1 y ${MAX_ALTERNATIVE_COMPONENTS} alimentos.`);
+  }
+  const { secondComponent: _legacySecond, additionalComponents: _additional, ...metadata } = alternative;
+  return {
+    ...metadata,
+    ...toAlternativeComponent(components[0]),
+    additionalComponents: components.slice(1).map(toAlternativeComponent),
+  };
 }
 
 export function calculateAlternativeTotals(alternative: NutritionPlanFoodAlternative): NutritionTotals {
@@ -48,17 +85,12 @@ export function balanceAlternative(
   reference: EquivalentFood & { quantityG: number },
   alternative: NutritionPlanFoodAlternative,
 ): NutritionPlanFoodAlternative {
-  const calorieShare = alternative.secondComponent ? 0.5 : 1;
-  return {
-    ...alternative,
-    quantityG: getEquivalentFoodQuantity(reference, alternative, calorieShare),
-    ...(alternative.secondComponent ? {
-      secondComponent: {
-        ...alternative.secondComponent,
-        quantityG: getEquivalentFoodQuantity(reference, alternative.secondComponent, calorieShare),
-      },
-    } : {}),
-  };
+  const components = getAlternativeComponents(alternative);
+  const calorieShare = 1 / components.length;
+  return withAlternativeComponents(alternative, components.map((component) => ({
+    ...component,
+    quantityG: getEquivalentFoodQuantity(reference, component, calorieShare),
+  })));
 }
 
 export function updateEntryAlternatives(

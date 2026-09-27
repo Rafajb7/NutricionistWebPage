@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import type { sheets_v4 } from "googleapis";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
+import type { NutritionPlanFull } from "@/lib/nutrition/types";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -40,17 +42,17 @@ function planInput() {
   });
 }
 
-function doubleAlternativePlan() {
+function alternativePlan(componentCount = 2) {
   const plan = planInput();
   plan.meals[0].entries[0].alternatives = [{
     ...plan.meals[0].entries[0], id: "alternative-double", entryId: "entry-new",
     foodId: "rice", foodName: "Arroz blanco", quantityG: 100, quantityUnit: "g", unitWeightG: 1,
     proteinPer100g: 3, carbsPer100g: 28, fatPer100g: 0,
-    secondComponent: {
-      foodId: "legumes", foodName: "Lentejas", quantityG: 0.75, quantityUnit: "piece", unitWeightG: 150,
+    additionalComponents: Array.from({ length: componentCount - 1 }, (_, index) => ({
+      foodId: `legumes-${index}`, foodName: "Lentejas", quantityG: 0.75, quantityUnit: "piece" as const, unitWeightG: 150,
       proteinPer100g: 9, carbsPer100g: 20, fatPer100g: 0.4, fiberPer100g: 8,
       sodiumPer100g: 2, waterPer100g: 70, customText: "Cocidas"
-    }
+    }))
   }];
   return nutritionPlanSaveSchema.parse(plan);
 }
@@ -106,46 +108,47 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("nutrition plan persistence", () => {
-  it("round-trips both alternative components through Sheets and normalizes each quantity", async () => {
+  it.each([2, 3, 4, 5])("round-trips %i alternative components through Sheets and normalizes each quantity", async (componentCount) => {
     const { saveNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
-    const plan = doubleAlternativePlan();
+    const plan = alternativePlan(componentCount);
     const alternative = plan.meals[0].entries[0].alternatives[0];
-    alternative.secondComponent!.foodName = "  Lentejas  ";
-    alternative.secondComponent!.customText = "  Cocidas  ";
+    alternative.additionalComponents![0].foodName = "  Lentejas  ";
+    alternative.additionalComponents![0].customText = "  Cocidas  ";
     const saved = await saveNutritionPlan(plan);
     const savedAlternative = saved!.meals[0].entries[0].alternatives[0];
-    expect(savedAlternative.secondComponent).toEqual({
-      ...alternative.secondComponent, foodName: "Lentejas", customText: "Cocidas"
-    });
+    expect(savedAlternative.additionalComponents).toEqual(alternative.additionalComponents!.map((component) => ({
+      ...component, foodName: "Lentejas", customText: "Cocidas"
+    })));
     const encoded = rows.PlanFoods.find((row) => row[0] === "entry-new")![15] as string;
-    expect(JSON.parse(encoded)[0].secondComponent).toEqual(savedAlternative.secondComponent);
+    expect(JSON.parse(encoded)[0].additionalComponents).toEqual(savedAlternative.additionalComponents);
+    expect(JSON.parse(encoded)[0]).not.toHaveProperty("secondComponent");
     const reloaded = await getNutritionPlanById("plan-test");
     expect(reloaded?.meals[0].entries[0].alternatives).toEqual(saved!.meals[0].entries[0].alternatives);
   });
 
-  it("keeps both components when duplicating a saved plan and assigns fresh alternative identities", async () => {
+  it.each([2, 3, 4, 5])("keeps %i components when duplicating a saved plan and assigns fresh alternative identities", async (componentCount) => {
     const { saveNutritionPlan, duplicateNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
-    const original = await saveNutritionPlan(doubleAlternativePlan());
+    const original = await saveNutritionPlan(alternativePlan(componentCount));
     const copy = await duplicateNutritionPlan("plan-test");
     const originalAlternative = original!.meals[0].entries[0].alternatives[0];
     const copiedEntry = copy!.meals[0].entries[0];
     expect(copiedEntry.alternatives[0].id).not.toBe(originalAlternative.id);
     expect(copiedEntry.alternatives[0].entryId).toBe(copiedEntry.id);
-    expect(copiedEntry.alternatives[0].secondComponent).toEqual(originalAlternative.secondComponent);
-    expect(copiedEntry.alternatives[0].secondComponent).not.toBe(originalAlternative.secondComponent);
+    expect(copiedEntry.alternatives[0].additionalComponents).toEqual(originalAlternative.additionalComponents);
+    expect(copiedEntry.alternatives[0].additionalComponents![0]).not.toBe(originalAlternative.additionalComponents![0]);
     expect((await getNutritionPlanById(copy!.id))?.meals[0].entries[0].alternatives)
       .toEqual(copiedEntry.alternatives);
   });
 
-  it("compresses large sets of double alternatives to stay below the Sheets cell limit", async () => {
+  it("compresses large sets of five-food alternatives to stay below the Sheets cell limit", async () => {
     const { saveNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
-    const plan = doubleAlternativePlan();
+    const plan = alternativePlan(5);
     const base = plan.meals[0].entries[0].alternatives[0];
     plan.meals[0].entries[0].alternatives = Array.from({ length: 20 }, (_, index) => ({
       ...base, id: `alternative-${index}`, position: index + 1,
       // Valid JSON strings may expand considerably when escaped for a Sheets cell.
       customText: "\u0001".repeat(240),
-      secondComponent: { ...base.secondComponent!, customText: "\u0002".repeat(240) }
+      additionalComponents: base.additionalComponents!.map((component) => ({ ...component, customText: "\u0002".repeat(240) }))
     }));
     expect(nutritionPlanSaveSchema.safeParse(plan).success).toBe(true);
     const saved = await saveNutritionPlan(plan);
@@ -153,6 +156,53 @@ describe("nutrition plan persistence", () => {
     expect(encoded.startsWith("gzip:v1:")).toBe(true);
     expect(encoded.length).toBeLessThan(50_000);
     expect((await getNutritionPlanById("plan-test"))?.meals).toEqual(saved!.meals);
+  });
+
+  it.each([{ canonical: undefined }, { canonical: [] }, { canonical: "canonical" }])(
+    "reads legacy rows with canonical precedence (%j) and rewrites without the old alias", async ({ canonical }) => {
+    const { saveNutritionPlan } = await import("@/lib/google/nutrition-management");
+    await saveNutritionPlan(alternativePlan());
+    const row = rows.PlanFoods.find((item) => item[0] === "entry-new")!;
+    const alternatives = JSON.parse(row[15] as string);
+    const legacy = alternatives[0].additionalComponents[0];
+    alternatives[0].secondComponent = { ...legacy, foodName: "Legacy lentils" };
+    if (canonical === undefined) delete alternatives[0].additionalComponents;
+    if (Array.isArray(canonical)) alternatives[0].additionalComponents = canonical;
+    row[15] = JSON.stringify(alternatives);
+    vi.resetModules();
+    const backend = await import("@/lib/google/nutrition-management");
+    const restored = await backend.getNutritionPlanById("plan-test");
+    const alternative = restored!.meals[0].entries[0].alternatives[0];
+    expect(alternative).not.toHaveProperty("secondComponent");
+    expect(alternative.additionalComponents).toEqual(canonical === undefined
+      ? [{ ...legacy, foodName: "Legacy lentils" }] : Array.isArray(canonical) ? [] : [legacy]);
+    await backend.saveNutritionPlan(restored!);
+    const rewritten = rows.PlanFoods.find((item) => item[0] === "entry-new")![15] as string;
+    expect(JSON.parse(rewritten)[0]).not.toHaveProperty("secondComponent");
+    }
+  );
+
+  it("canonicalizes legacy alternatives passed directly to the save backend", async () => {
+    const { saveNutritionPlan } = await import("@/lib/google/nutrition-management");
+    const plan: NutritionPlanFull = alternativePlan();
+    const alternative = plan.meals[0].entries[0].alternatives[0];
+    alternative.secondComponent = alternative.additionalComponents![0];
+    delete alternative.additionalComponents;
+    const saved = await saveNutritionPlan(plan);
+    const savedAlternative = saved!.meals[0].entries[0].alternatives[0];
+    expect(savedAlternative.additionalComponents).toEqual([alternative.secondComponent]);
+    expect(savedAlternative).not.toHaveProperty("secondComponent");
+  });
+
+  it("rejects a sixth food before writing rather than saving a truncated alternative", async () => {
+    const { saveNutritionPlan } = await import("@/lib/google/nutrition-management");
+    const plan = alternativePlan(5);
+    const components = plan.meals[0].entries[0].alternatives[0].additionalComponents!;
+    components.push({ ...components[0] });
+    const before = structuredClone(rows);
+    await expect(saveNutritionPlan(plan)).rejects.toThrow(RangeError);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(rows).toEqual(before);
   });
 
   it("saves summary, meals, foods and removals together without moving other plans' rows", async () => {
@@ -246,9 +296,27 @@ describe("nutrition plan persistence", () => {
 });
 
 describe("published plan snapshots", () => {
+  it.each([false, true])("reads %s-compressed legacy double snapshots and only writes canonical components", async (compressed) => {
+    const { serializeNutritionPlanSnapshot, getPublishedNutritionPlanSnapshot } = await import("@/lib/google/nutrition-management");
+    const plan: NutritionPlanFull = alternativePlan();
+    const alternative = plan.meals[0].entries[0].alternatives[0];
+    alternative.secondComponent = alternative.additionalComponents![0];
+    delete alternative.additionalComponents;
+    const legacyJson = JSON.stringify(plan);
+    rows.PlanVersions = [["legacy-version", "plan-test", "athlete", 1, "published", "pdf-file", "plan.pdf",
+      compressed ? `gzip:v1:${gzipSync(legacyJson).toString("base64")}` : legacyJson]];
+    const restored = await getPublishedNutritionPlanSnapshot("plan-test");
+    const restoredAlternative = restored!.meals[0].entries[0].alternatives[0];
+    expect(restoredAlternative.additionalComponents).toEqual([alternative.secondComponent]);
+    expect(restoredAlternative).not.toHaveProperty("secondComponent");
+    const encoded = JSON.parse(serializeNutritionPlanSnapshot(plan));
+    expect(encoded.meals[0].entries[0].alternatives[0].additionalComponents).toEqual([alternative.secondComponent]);
+    expect(encoded.meals[0].entries[0].alternatives[0]).not.toHaveProperty("secondComponent");
+  });
+
   it.each([false, true])("reads %s-compressed snapshots, including legacy plain JSON", async (large) => {
     const { serializeNutritionPlanSnapshot, getPublishedNutritionPlanSnapshot } = await import("@/lib/google/nutrition-management");
-    const plan = doubleAlternativePlan();
+    const plan = alternativePlan(5);
     if (large) plan.meals = Array.from({ length: 20 }, (_, index) => ({
       ...plan.meals[0], id: `meal-${index}`,
       entries: Array.from({ length: 10 }, (_, entryIndex) => ({

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Plus, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
-import { calculateAlternativeTotals, getAlternativeComponents } from "@/lib/nutrition/alternatives";
+import { calculateAlternativeTotals, getAlternativeComponents, MAX_ALTERNATIVE_COMPONENTS, withAlternativeComponents } from "@/lib/nutrition/alternatives";
 import { calculateEntryTotals } from "@/lib/nutrition/calculations";
 import {
   getAllowedQuantityUnitsForFood,
@@ -52,7 +52,8 @@ export function NutritionAlternativeEditor(props: {
   restrictions: NutritionAthleteRestriction[];
   disabled: boolean;
   onUpdate: (updater: (current: NutritionPlanFoodAlternative) => NutritionPlanFoodAlternative) => void;
-  onSetSecondFood: (food: NutritionFood | null) => void;
+  onAddFood: (food: NutritionFood) => void;
+  onRemoveFood: (index: number) => void;
   onRemove: () => void;
 }) {
   const [search, setSearch] = useState<string | null>(null);
@@ -60,17 +61,16 @@ export function NutritionAlternativeEditor(props: {
   const components = getAlternativeComponents(alternative);
   const totals = calculateAlternativeTotals(alternative);
   const query = search?.trim().toLocaleLowerCase("es") ?? "";
-  const results = query ? props.foods.filter((food) => food.active && food.id !== alternative.foodId
+  const results = query ? props.foods.filter((food) => food.active && !components.some((component) => component.foodId === food.id)
     && (food.name.toLocaleLowerCase("es").includes(query) || food.category.toLocaleLowerCase("es").includes(query)))
     .slice(0, 20) : [];
   const fieldClass = "w-full rounded-lg border border-white/10 bg-black/20 px-2 py-2 text-sm text-brand-text outline-none focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60";
 
   function updateComponent(index: number, patch: Partial<NutritionPlanFoodAlternativeComponent>) {
-    props.onUpdate((current) => index === 0
-      ? { ...current, ...patch }
-      : current.secondComponent
-        ? { ...current, secondComponent: { ...current.secondComponent, ...patch } }
-        : current);
+    props.onUpdate((current) => withAlternativeComponents(current,
+      getAlternativeComponents(current).map((component, componentIndex) => componentIndex === index
+        ? { ...component, ...patch }
+        : component)));
   }
 
   return (
@@ -79,10 +79,11 @@ export function NutritionAlternativeEditor(props: {
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-accent">
-            {alternative.secondComponent ? "Alternativa doble" : "Alternativa"}
+            {components.length > 1 ? "Alternativa combinada" : "Alternativa"}
+            {" · "}{components.length}/{MAX_ALTERNATIVE_COMPONENTS} alimentos
           </p>
-          {alternative.secondComponent ? <p className="mt-1 text-xs text-brand-muted">
-            Ambos alimentos forman una única alternativa.
+          {components.length > 1 ? <p className="mt-1 text-xs text-brand-muted">
+            Todos los alimentos forman una única alternativa.
           </p> : null}
         </div>
         <button type="button" onClick={props.onRemove} disabled={props.disabled}
@@ -101,14 +102,14 @@ export function NutritionAlternativeEditor(props: {
           };
           const quantityUnit = normalizeQuantityUnitForFood(food, component.quantityUnit);
           return (
-            <div key={index} className={index ? "border-t border-white/10 pt-3" : ""}>
+            <div key={`${component.foodId}:${index}`} className={index ? "border-t border-white/10 pt-3" : ""}>
               <div className="flex flex-wrap items-center gap-2">
                 {index ? <Plus className="h-4 w-4 text-brand-accent" aria-label="junto con" /> : null}
                 {catalogFood ? <FoodCompatibility food={catalogFood} restrictions={props.restrictions} /> : null}
                 <p className="min-w-0 flex-1 break-words text-sm font-semibold text-brand-text">{component.foodName}</p>
                 <span className="text-xs text-brand-muted">{number(calculateEntryTotals(component).caloriesKcal, 0)} kcal</span>
-                {index === 1 ? <button type="button" disabled={props.disabled}
-                  onClick={() => props.onSetSecondFood(null)} aria-label="Quitar segundo alimento"
+                {components.length > 1 ? <button type="button" disabled={props.disabled}
+                  onClick={() => props.onRemoveFood(index)} aria-label={`Quitar ${component.foodName} de la alternativa`}
                   className="rounded-lg border border-white/15 p-1.5 text-brand-muted hover:bg-white/10 disabled:opacity-40">
                   <X className="h-3.5 w-3.5" />
                 </button> : null}
@@ -116,7 +117,7 @@ export function NutritionAlternativeEditor(props: {
               <div className="mt-2 grid grid-cols-2 gap-2 sm:max-w-sm">
                 <label className="text-xs text-brand-muted">Cantidad de {component.foodName}
                   <NutritionQuantityInput
-                    key={`${component.foodId}:${quantityUnit}:${Boolean(alternative.secondComponent)}`}
+                    key={`${component.foodId}:${quantityUnit}:${components.length}`}
                     value={component.quantityG} unit={quantityUnit}
                     onChange={(value) => updateComponent(index, { quantityG: value })}
                     disabled={props.disabled} className={fieldClass} />
@@ -146,27 +147,30 @@ export function NutritionAlternativeEditor(props: {
           `Sodio ${number(totals.sodiumMg, 0)} mg`, `Agua ${number(totals.waterG)} g`,
         ].map((label, index) => <span key={index} className="rounded-md bg-black/20 px-2 py-1 text-brand-text">{label}</span>)}
       </div>
-      {!alternative.secondComponent ? (
+      {components.length < MAX_ALTERNATIVE_COMPONENTS ? (
         <div className="mt-3">
           {search === null ? (
             <button type="button" disabled={props.disabled} onClick={() => setSearch("")}
               className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2 py-1.5 text-xs text-brand-text hover:bg-brand-accent/10 disabled:opacity-40">
-              <Plus className="h-3.5 w-3.5" /> Añadir segundo alimento
+              <Plus className="h-3.5 w-3.5" /> Añadir alimento a la alternativa
             </button>
           ) : (
             <div className="space-y-2 rounded-lg border border-brand-accent/25 bg-brand-accent/5 p-2">
-              <p className="text-xs text-brand-muted">Se asignará el 50 % de las kcal de referencia a cada alimento, con el redondeo habitual.</p>
+              <p className="text-xs text-brand-muted">
+                Al añadirlo, se repartirán las kcal de referencia entre los {components.length + 1} alimentos
+                {" "}({number(100 / (components.length + 1))} % para cada uno), con el redondeo habitual.
+              </p>
               <div className="flex gap-2">
                 <input autoFocus value={search} onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Buscar segundo alimento" aria-label="Buscar segundo alimento"
+                  placeholder="Buscar alimento para la alternativa" aria-label="Buscar alimento para la alternativa"
                   disabled={props.disabled} className={fieldClass} />
-                <button type="button" onClick={() => setSearch(null)} aria-label="Cerrar buscador del segundo alimento"
+                <button type="button" onClick={() => setSearch(null)} aria-label="Cerrar buscador de componentes"
                   className="rounded-lg border border-white/15 px-2 text-brand-muted"><X className="h-4 w-4" /></button>
               </div>
               {query ? <div className="max-h-52 overflow-y-auto">
                 {results.length ? results.map((food) => (
                   <button key={food.id} type="button" disabled={props.disabled}
-                    onClick={() => { props.onSetSecondFood(food); setSearch(null); }}
+                    onClick={() => { props.onAddFood(food); setSearch(null); }}
                     className="flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm text-brand-text hover:bg-white/10 disabled:opacity-40">
                     <FoodCompatibility food={food} restrictions={props.restrictions} />
                     <span>{food.name}</span>
@@ -176,7 +180,7 @@ export function NutritionAlternativeEditor(props: {
             </div>
           )}
         </div>
-      ) : null}
+      ) : <p className="mt-3 text-xs text-brand-muted">Máximo de {MAX_ALTERNATIVE_COMPONENTS} alimentos por alternativa.</p>}
     </div>
   );
 }

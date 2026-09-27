@@ -15,11 +15,21 @@ export function makeDoubleAlternativePlan(): NutritionPlanFull {
     meals: [{ id: "meal", name: "Comida", entries: [{
       ...rice, id: "entry", alternatives: [{
         ...rice, id: "alternative", quantityG: 50,
-        secondComponent: {
+        additionalComponents: [{
           ...rice, foodId: "lentils-food", foodName: "Lentejas", quantityG: 25,
           proteinPer100g: 20, carbsPer100g: 30, customText: "",
-        },
+        }],
       }],
     }] }],
   });
+}
+
+export function makeFiveComponentAlternativePlan(): NutritionPlanFull {
+  const plan = makeDoubleAlternativePlan();
+  const alternative = plan.meals[0].entries[0].alternatives[0];
+  const extra = alternative.additionalComponents![0];
+  alternative.additionalComponents = ["Lentejas", "Garbanzos", "Alubias", "Guisantes"].map((name, index) => ({
+    ...extra, foodId: `component-${index + 2}`, foodName: name,
+  }));
+  return plan;
 }

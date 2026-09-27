@@ -49,6 +49,39 @@ function storeDraft(storage: NutritionDraftStorage, sessionId = "editor-one", pl
 }
 
 describe("nutrition draft recovery", () => {
+  it.each([1, 2, 3, 4, 5])("recovers a canonical %i-food alternative and keeps unfinished component edits", (componentCount) => {
+    const storage = new MemoryStorage();
+    const plan = makePlan();
+    plan.meals[0].entries[0].alternatives[0].additionalComponents = Array.from({ length: componentCount - 1 }, (_, index) => ({
+      foodId: `component-${index}`, foodName: "", customText: "Pendiente", quantityG: 0,
+      quantityUnit: "piece", unitWeightG: 150, proteinPer100g: 9, carbsPer100g: 20,
+      fatPer100g: 0.4, fiberPer100g: 8, sodiumPer100g: 2, waterPer100g: 70,
+    }));
+    storeDraft(storage, "editor-one", plan);
+    expect(readNutritionDraftRecovery(storage, "nutritionist", "plan", "editor-one")?.plan).toEqual(plan);
+  });
+
+  it("rejects six foods or nested extras without replacing the recoverable draft", () => {
+    const storage = new MemoryStorage();
+    const original = storeDraft(storage);
+    const plan = makePlan();
+    const { id: _id, entryId: _entryId, createdAt: _created, updatedAt: _updated, position: _position, ...component }
+      = plan.meals[0].entries[0].alternatives[0];
+    plan.meals[0].entries[0].alternatives[0].additionalComponents = Array.from({ length: 5 }, () => component);
+    expect(writeNutritionDraftRecovery(storage, "nutritionist", "editor-one", plan)).toEqual({ ok: false, reason: "invalid" });
+    plan.meals[0].entries[0].alternatives[0].additionalComponents = [Object.assign({}, component, { additionalComponents: [] })];
+    expect(writeNutritionDraftRecovery(storage, "nutritionist", "editor-one", plan)).toEqual({ ok: false, reason: "invalid" });
+    expect(readNutritionDraftRecovery(storage, "nutritionist", "plan", "editor-one")).toEqual(original);
+  });
+
+  it("uses the canonical empty array even when a recovery also contains an obsolete legacy alias", () => {
+    const storage = new MemoryStorage();
+    const plan = makePlan();
+    Object.assign(plan.meals[0].entries[0].alternatives[0], { additionalComponents: [], secondComponent: "obsolete" });
+    storeDraft(storage, "editor-one", plan);
+    expect(readNutritionDraftRecovery(storage, "nutritionist", "plan", "editor-one")?.plan).toEqual(plan);
+  });
+
   it("recovers both alternative components, including unfinished edits to the second food", () => {
     const storage = new MemoryStorage();
     const plan = makePlan();

@@ -7,7 +7,7 @@ import { isNutritionDraftPlan, type NutritionDraftRecovery } from "@/lib/nutriti
 import { nutritionPlanSaveSchema } from "@/lib/nutrition/validation";
 import { NutritionQuantityInput } from "@/components/admin/nutrition-quantity-input";
 import { NutritionAlternativeEditor } from "@/components/admin/nutrition-alternative-editor";
-import { balanceAlternative, getEquivalentFoodQuantity, updateEntryAlternatives } from "@/lib/nutrition/alternatives";
+import { balanceAlternative, getAlternativeComponents, getEquivalentFoodQuantity, MAX_ALTERNATIVE_COMPONENTS, updateEntryAlternatives, withAlternativeComponents } from "@/lib/nutrition/alternatives";
 import {
   Fragment,
   useCallback,
@@ -358,26 +358,16 @@ function normalizePlanGrams(plan: NutritionPlanFull): NutritionPlanFull {
           alternatives: (Array.isArray(entry.alternatives)
             ? entry.alternatives
             : []
-          ).map((alternative) => ({
-            ...alternative,
-            quantityG: normalizeQuantityG(alternative.quantityG, alternative.quantityUnit),
-            quantityUnit: normalizeQuantityUnit(alternative.quantityUnit),
-            unitWeightG: normalizeUnitWeightG(
-              alternative.unitWeightG,
-              normalizeQuantityUnit(alternative.quantityUnit),
-            ),
-            ...(alternative.secondComponent ? {
-              secondComponent: {
-                ...alternative.secondComponent,
-                quantityG: normalizeQuantityG(alternative.secondComponent.quantityG, alternative.secondComponent.quantityUnit),
-                quantityUnit: normalizeQuantityUnit(alternative.secondComponent.quantityUnit),
-                unitWeightG: normalizeUnitWeightG(
-                  alternative.secondComponent.unitWeightG,
-                  normalizeQuantityUnit(alternative.secondComponent.quantityUnit),
-                ),
-              },
-            } : {}),
-          })),
+          ).map((alternative) => withAlternativeComponents(alternative,
+            getAlternativeComponents(alternative).map((component) => ({
+              ...component,
+              quantityG: normalizeQuantityG(component.quantityG, component.quantityUnit),
+              quantityUnit: normalizeQuantityUnit(component.quantityUnit),
+              unitWeightG: normalizeUnitWeightG(
+                component.unitWeightG,
+                normalizeQuantityUnit(component.quantityUnit),
+              ),
+            })))),
         }))
         .sort((a, b) => {
           const optionDiff =
@@ -3336,21 +3326,42 @@ export function AdminNutritionManagementShell({
     }));
   }
 
-  function setAlternativeSecondFood(
+  function addAlternativeComponent(
     mealId: string,
     entryId: string,
     alternativeId: string,
-    food: NutritionFood | null,
+    food: NutritionFood,
   ) {
     if (isCurrentPlanPublished) return;
     updateEntry(mealId, entryId, (entry) => ({
       ...entry,
-      alternatives: entry.alternatives.map((alternative) => alternative.id === alternativeId
-        ? balanceAlternative(entry, {
-          ...alternative,
-          secondComponent: food ? buildAlternativeComponentFromFood(food) : undefined,
-        })
-        : alternative),
+      alternatives: entry.alternatives.map((alternative) => {
+        if (alternative.id !== alternativeId) return alternative;
+        const components = getAlternativeComponents(alternative);
+        if (components.length >= MAX_ALTERNATIVE_COMPONENTS || components.some((component) => component.foodId === food.id)) return alternative;
+        return balanceAlternative(entry, withAlternativeComponents(alternative, [
+          ...components, buildAlternativeComponentFromFood(food),
+        ]));
+      }),
+    }));
+  }
+
+  function removeAlternativeComponent(
+    mealId: string,
+    entryId: string,
+    alternativeId: string,
+    index: number,
+  ) {
+    if (isCurrentPlanPublished) return;
+    updateEntry(mealId, entryId, (entry) => ({
+      ...entry,
+      alternatives: entry.alternatives.map((alternative) => {
+        if (alternative.id !== alternativeId) return alternative;
+        const components = getAlternativeComponents(alternative);
+        if (components.length <= 1 || index < 0 || index >= components.length) return alternative;
+        return balanceAlternative(entry, withAlternativeComponents(alternative,
+          components.filter((_, componentIndex) => componentIndex !== index)));
+      }),
     }));
   }
 
@@ -5738,7 +5749,8 @@ export function AdminNutritionManagementShell({
                                                       restrictions={selectedAthleteRestrictions}
                                                       disabled={isCurrentPlanPublished}
                                                       onUpdate={(updater) => updateAlternative(meal.id, entry.id, alternative.id, updater)}
-                                                      onSetSecondFood={(food) => setAlternativeSecondFood(meal.id, entry.id, alternative.id, food)}
+                                                      onAddFood={(food) => addAlternativeComponent(meal.id, entry.id, alternative.id, food)}
+                                                      onRemoveFood={(index) => removeAlternativeComponent(meal.id, entry.id, alternative.id, index)}
                                                       onRemove={() => removeAlternative(meal.id, entry.id, alternative.id)}
                                                     />
                                                   ))}
@@ -6207,7 +6219,8 @@ export function AdminNutritionManagementShell({
                                                             restrictions={selectedAthleteRestrictions}
                                                             disabled={isCurrentPlanPublished}
                                                             onUpdate={(updater) => updateAlternative(meal.id, entry.id, alternative.id, updater)}
-                                                            onSetSecondFood={(food) => setAlternativeSecondFood(meal.id, entry.id, alternative.id, food)}
+                                                            onAddFood={(food) => addAlternativeComponent(meal.id, entry.id, alternative.id, food)}
+                                                            onRemoveFood={(index) => removeAlternativeComponent(meal.id, entry.id, alternative.id, index)}
                                                             onRemove={() => removeAlternative(meal.id, entry.id, alternative.id)}
                                                           />
                                                         ))}

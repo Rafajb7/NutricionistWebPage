@@ -147,9 +147,11 @@ App:
   - guarda borradores en Google Sheets (`Gestion nutricional` por defecto)
   - el catalogo de alimentos usa valores por 100 g: proteinas, carbohidratos, grasas, sodio y agua
   - cada alimento prescrito guarda snapshot nutricional para proteger planes historicos
-  - cada alternativa admite un segundo alimento desde `Anadir segundo alimento`: ambos forman una sola opcion, con cantidades editables y nutrientes totales conjuntos
-  - al incorporar el segundo alimento o cambiar la cantidad de referencia, reparte las kcal al 50/50 antes de redondear cada cantidad al multiplo de 5 g/ml o de 0,25 unidades/raciones mas cercano
-  - las alternativas dobles se conservan en borradores, autoguardado, recuperacion y planes publicados; en el PDF y la vista del atleta se muestran juntos los dos alimentos y sus cantidades
+  - cada alternativa admite de 1 a 5 alimentos desde `Anadir alimento a la alternativa`: forman una sola opcion, con cantidades editables y nutrientes totales conjuntos
+  - al anadir o quitar un componente, o cambiar la cantidad de referencia, reparte las kcal a partes iguales (1/N) antes de redondear cada cantidad al multiplo de 5 g/ml o de 0,25 unidades/raciones mas cercano
+  - las alternativas combinadas se conservan en borradores, autoguardado, recuperacion y planes publicados, incluyendo las alternativas dobles anteriores; en el PDF y la vista del atleta se muestran juntos todos sus alimentos y cantidades
+  - el PDF dedica una pagina a cada comida con todas sus opciones: tarjetas por alimento con cantidad arriba a la derecha, alternativas agrupadas con flechas y macros opcionales en cuadros de colores; usa A4 apaisado o un formato mayor cuando la comida requiere mas espacio, sin cortar alimentos
+  - el resumen inicial del PDF muestra una tabla estrecha con Menu, Opciones y Alimentos, sin columna de estado
   - genera una previsualizacion PDF sin publicarla
   - al confirmar/publicar sube el PDF a Drive para que aparezca en `/nutrition-plans`
 - Historico:

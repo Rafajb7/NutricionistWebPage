@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizeFoodQuantity } from "@/lib/nutrition/quantity-units";
+import { MAX_ALTERNATIVE_COMPONENTS } from "@/lib/nutrition/alternatives";
 
 const isoDateSchema = z.string().max(80).optional().default("");
 
@@ -155,23 +156,33 @@ const nutritionPlanAlternativeComponentFields = {
 const nutritionPlanAlternativeComponentSchema = z.object({
   ...nutritionPlanAlternativeComponentFields,
   secondComponent: z.never().optional(),
+  additionalComponents: z.never().optional(),
 }).transform((item) => ({
   ...item,
   quantityG: normalizeFoodQuantity(item.quantityG, item.quantityUnit),
 }));
 
-const nutritionPlanAlternativeSchema = z.object({
+const nutritionPlanAlternativeSchema = z.preprocess((value) => {
+  if (value && typeof value === "object" && !Array.isArray(value)
+    && "additionalComponents" in value && value.additionalComponents !== undefined) {
+    const { secondComponent: _legacyComponent, ...canonical } = value as Record<string, unknown>;
+    return canonical;
+  }
+  return value;
+}, z.object({
   ...nutritionPlanAlternativeComponentFields,
   id: z.string().max(120).optional().default(""),
   entryId: z.string().max(120).optional().default(""),
   secondComponent: nutritionPlanAlternativeComponentSchema.optional(),
+  additionalComponents: z.array(nutritionPlanAlternativeComponentSchema).max(MAX_ALTERNATIVE_COMPONENTS - 1).optional(),
   position: z.coerce.number().int().min(0).max(1000).optional().default(0),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema
-}).transform((item) => ({
+}).transform(({ secondComponent, ...item }) => ({
   ...item,
+  ...(item.additionalComponents !== undefined ? {} : secondComponent ? { additionalComponents: [secondComponent] } : {}),
   quantityG: normalizeFoodQuantity(item.quantityG, item.quantityUnit),
-}));
+})));
 
 const nutritionPlanEntrySchema = z.object({
   id: z.string().max(120).optional().default(""),
