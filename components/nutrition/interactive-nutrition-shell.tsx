@@ -20,13 +20,8 @@ import { BrandLogo } from "@/components/brand-logo";
 import { BrandButton } from "@/components/ui/brand-button";
 import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
-import { calculateAlternativeTotals, getAlternativeComponents } from "@/lib/nutrition/alternatives";
-import {
-  calculateEntryTotals,
-  calculateMealOptionTotals,
-  calculateMealTotals,
-  calculatePlanTotals
-} from "@/lib/nutrition/calculations";
+import { getAlternativeComponents } from "@/lib/nutrition/alternatives";
+import { calculateEntryTotals } from "@/lib/nutrition/calculations";
 import {
   normalizeFoodQuantity,
   formatFoodQuantity,
@@ -42,7 +37,6 @@ import type {
   NutritionPlanFoodEntry,
   NutritionPlanFull,
   NutritionQuantityUnit,
-  NutritionTotals,
   NutritionChangeRequestType
 } from "@/lib/nutrition/types";
 
@@ -72,6 +66,11 @@ const GENERAL_CHANGE_REQUEST_OPTIONS: Array<{
   label: string;
   placeholder: string;
 }> = [
+  {
+    value: "food_add",
+    label: "Incorporar alimento",
+    placeholder: "Indica qué alimento te gustaría incorporar al plan."
+  },
   {
     value: "calorie_increase",
     label: "Aumentar ingesta calorica",
@@ -114,18 +113,6 @@ function formatDateLabel(value: string): string {
     month: "2-digit",
     year: "numeric"
   });
-}
-
-function formatNumber(value: number, suffix = ""): string {
-  if (!Number.isFinite(value)) return `0${suffix}`;
-  return `${new Intl.NumberFormat("es-ES", { maximumFractionDigits: 1 }).format(value)}${suffix}`;
-}
-
-function formatTotals(totals: NutritionTotals): string {
-  return `${formatNumber(totals.caloriesKcal, " kcal")} | P ${formatNumber(
-    totals.proteinG,
-    " g"
-  )} | C ${formatNumber(totals.carbsG, " g")} | G ${formatNumber(totals.fatG, " g")}`;
 }
 
 function normalizeQuantityUnit(value: unknown): NutritionQuantityUnit {
@@ -209,15 +196,6 @@ function getGeneralChangeRequestLabel(request: NutritionChangeRequest): string {
   );
 }
 
-function MacroPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-      <p className="text-[11px] uppercase tracking-[0.14em] text-brand-muted">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-brand-text">{value}</p>
-    </div>
-  );
-}
-
 export function InteractiveNutritionShell({ user }: InteractiveNutritionShellProps) {
   const router = useRouter();
   const [date, setDate] = useState(() => toLocalDateOnly(new Date()));
@@ -297,7 +275,6 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
     () => plans.find((plan) => plan.id === selectedPlanId) ?? plans[0] ?? null,
     [plans, selectedPlanId]
   );
-  const selectedPlanTotals = selectedPlan ? calculatePlanTotals(selectedPlan) : null;
   const completionsByMeal = useMemo(() => {
     const map = new Map<string, NutritionMealCompletion>();
     completions.forEach((item) => {
@@ -446,7 +423,11 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
   async function submitGeneralChangeRequest() {
     if (!selectedPlan) return;
     if (!generalRequestNotes.trim()) {
-      toast.error("Anade una nota para que el nutricionista entienda el cambio.");
+      toast.error(
+        generalRequestType === "food_add"
+          ? "Describe el alimento que quieres incorporar e indica la marca si tienes alguna preferencia."
+          : "Anade una nota para que el nutricionista entienda el cambio."
+      );
       return;
     }
 
@@ -578,28 +559,16 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
         ) : (
           <>
             <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
-                    Modalidad seleccionada
-                  </p>
-                  <h2 className="mt-1 truncate text-xl font-semibold text-brand-text">
-                    {selectedPlan.name}
-                  </h2>
-                  {selectedPlan.notes ? (
-                    <p className="mt-2 max-w-3xl text-sm text-brand-muted">{selectedPlan.notes}</p>
-                  ) : null}
-                </div>
-                <div className="grid min-w-0 gap-2 sm:grid-cols-4 lg:min-w-[32rem]">
-                  {selectedPlanTotals ? (
-                    <>
-                      <MacroPill label="Kcal" value={formatNumber(selectedPlanTotals.caloriesKcal)} />
-                      <MacroPill label="Proteinas" value={formatNumber(selectedPlanTotals.proteinG, " g")} />
-                      <MacroPill label="Carbos" value={formatNumber(selectedPlanTotals.carbsG, " g")} />
-                      <MacroPill label="Grasas" value={formatNumber(selectedPlanTotals.fatG, " g")} />
-                    </>
-                  ) : null}
-                </div>
+              <div className="min-w-0">
+                <p className="text-xs uppercase tracking-[0.2em] text-brand-muted">
+                  Modalidad seleccionada
+                </p>
+                <h2 className="mt-1 truncate text-xl font-semibold text-brand-text">
+                  {selectedPlan.name}
+                </h2>
+                {selectedPlan.notes ? (
+                  <p className="mt-2 max-w-3xl text-sm text-brand-muted">{selectedPlan.notes}</p>
+                ) : null}
               </div>
 
               {plans.length > 1 ? (
@@ -664,9 +633,17 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                   value={generalRequestNotes}
                   onChange={(event) => setGeneralRequestNotes(event.target.value)}
                   rows={2}
+                  maxLength={1000}
+                  aria-label="Descripción de la solicitud"
+                  aria-describedby={generalRequestType === "food_add" ? "food-add-brand-hint" : undefined}
                   placeholder={selectedGeneralRequestOption.placeholder}
                   className="mt-3 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                 />
+                {generalRequestType === "food_add" ? (
+                  <p id="food-add-brand-hint" className="mt-2 text-xs text-brand-muted">
+                    Si quieres una marca concreta, indícala en la descripción.
+                  </p>
+                ) : null}
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   {pendingGeneralRequests.length ? (
                     <p className="text-xs text-brand-muted">
@@ -711,7 +688,6 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
 
             <section className="space-y-4">
               {includedMeals.map((meal) => {
-                const totals = calculateMealTotals(meal.entries);
                 const mealKey = completionKey(selectedPlan.id, meal.id);
                 const completion = completionsByMeal.get(mealKey);
                 const completed = Boolean(completion?.completed);
@@ -746,7 +722,6 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                             {completed ? "Comida realizada" : "Pendiente"}
                           </p>
                           <h3 className="mt-1 text-xl font-semibold text-brand-text">{meal.name}</h3>
-                          <p className="mt-1 text-sm text-brand-muted">{formatTotals(totals)}</p>
                           {meal.notes ? (
                             <p className="mt-2 text-sm text-brand-muted">{meal.notes}</p>
                           ) : null}
@@ -767,8 +742,6 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                     {expanded ? (
                       <div className="mt-4 space-y-3">
                         {optionGroups.map(({ optionNumber, entries }) => {
-                          const optionTotals = calculateMealOptionTotals(meal.entries, optionNumber);
-
                           return (
                             <div key={optionNumber} className="rounded-xl border border-white/10 bg-black/10 p-3">
                               {optionGroups.length > 1 ? (
@@ -777,7 +750,6 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                     Opcion {optionNumber}
                                     {optionNumber === 1 ? " - referencia" : ""}
                                   </span>
-                                  <span className="text-xs text-brand-muted">{formatTotals(optionTotals)}</span>
                                 </div>
                               ) : null}
 
@@ -812,7 +784,7 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                             )}
                                           </div>
                                           <p className="mt-1 text-sm text-brand-muted">
-                                            {formatQuantity(entry.quantityG, entry.quantityUnit)} | {formatTotals(entryTotals)}
+                                            {formatQuantity(entry.quantityG, entry.quantityUnit)}
                                           </p>
                                           {entry.customText ? (
                                             <p className="mt-2 text-sm text-brand-muted">{entry.customText}</p>
@@ -889,8 +861,7 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                                     {formatQuantity(
                                                       suggestedQuantity.quantityG,
                                                       suggestedQuantity.quantityUnit
-                                                    )} aprox. |{" "}
-                                                    {formatNumber(entryTotals.caloriesKcal, " kcal")}
+                                                    )} aprox.
                                                   </p>
                                                 </button>
                                               );
@@ -911,7 +882,6 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                           </p>
                                           <div className="mt-2 space-y-2">
                                             {entry.alternatives.map((alternative) => {
-                                              const alternativeTotals = calculateAlternativeTotals(alternative);
                                               const components = getAlternativeComponents(alternative);
 
                                               return (
@@ -955,10 +925,11 @@ export function InteractiveNutritionShell({ user }: InteractiveNutritionShellPro
                                                       );
                                                     })}
                                                   </div>
-                                                  <p className="shrink-0 text-sm text-brand-muted">
-                                                    {components.length > 1 ? "Total: " : `${formatQuantity(alternative.quantityG, alternative.quantityUnit)} | `}
-                                                    {formatNumber(alternativeTotals.caloriesKcal, " kcal")}
-                                                  </p>
+                                                  {components.length === 1 ? (
+                                                    <p className="shrink-0 text-sm text-brand-muted">
+                                                      {formatQuantity(alternative.quantityG, alternative.quantityUnit)}
+                                                    </p>
+                                                  ) : null}
                                                 </div>
                                               );
                                             })}

@@ -263,6 +263,7 @@ type CopiedMealOption = {
 
 const CHANGE_REQUEST_TYPE_LABELS = {
   food_swap: "Sustitucion de alimento",
+  food_add: "Incorporar alimento",
   calorie_increase: "Aumentar ingesta calorica",
   calorie_decrease: "Reducir ingesta calorica",
   meal_add: "Anadir comida/menu",

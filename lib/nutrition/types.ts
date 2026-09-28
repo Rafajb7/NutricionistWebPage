@@ -197,6 +197,7 @@ export type NutritionChangeRequestStatus = "pending" | "approved" | "denied";
 
 export type NutritionChangeRequestType =
   | "food_swap"
+  | "food_add"
   | "calorie_increase"
   | "calorie_decrease"
   | "meal_add"

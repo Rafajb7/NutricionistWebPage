@@ -17,6 +17,7 @@ const requestSchema = z.object({
   requestType: z
     .enum([
       "food_swap",
+      "food_add",
       "calorie_increase",
       "calorie_decrease",
       "meal_add",
@@ -33,6 +34,7 @@ const requestSchema = z.object({
 });
 
 const GENERAL_REQUEST_LABELS = {
+  food_add: "Incorporar alimento",
   calorie_increase: "Aumentar ingesta calorica",
   calorie_decrease: "Reducir ingesta calorica",
   meal_add: "Anadir comida/menu",
@@ -85,6 +87,12 @@ export async function POST(req: Request) {
     const parsed = requestSchema.safeParse(await req.json());
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+    }
+    if (parsed.data.requestType === "food_add" && !parsed.data.athleteNotes?.trim()) {
+      return NextResponse.json(
+        { error: "Describe el alimento que quieres incorporar e indica la marca si tienes alguna preferencia." },
+        { status: 400 }
+      );
     }
 
     const publishedPlan = await getPublishedNutritionPlanSnapshot(parsed.data.planId);
