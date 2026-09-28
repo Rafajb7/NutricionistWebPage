@@ -405,6 +405,7 @@ function parseChangeRequestStatus(value: unknown): NutritionChangeRequestStatus 
 
 function parseChangeRequestType(value: unknown): NutritionChangeRequestType {
   const normalized = normalizeTextKey(String(value ?? ""));
+  if (normalized === "food_add" || normalized === "incorporar alimento") return "food_add";
   if (normalized === "calorie_increase" || normalized === "aumentar calorias") return "calorie_increase";
   if (normalized === "calorie_decrease" || normalized === "reducir calorias") return "calorie_decrease";
   if (normalized === "meal_add" || normalized === "anadir comida" || normalized === "añadir comida") return "meal_add";
@@ -416,6 +417,7 @@ function parseChangeRequestType(value: unknown): NutritionChangeRequestType {
 }
 
 function getChangeRequestTypeLabel(type: NutritionChangeRequestType): string {
+  if (type === "food_add") return "Incorporar alimento";
   if (type === "calorie_increase") return "Aumentar ingesta calorica";
   if (type === "calorie_decrease") return "Reducir ingesta calorica";
   if (type === "meal_add") return "Anadir comida/menu";

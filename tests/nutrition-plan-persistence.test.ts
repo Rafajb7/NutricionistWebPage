@@ -7,6 +7,8 @@ import type { NutritionPlanFull } from "@/lib/nutrition/types";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  valuesGet: vi.fn(),
+  valuesUpdate: vi.fn(),
   batchGet: vi.fn(),
   headerWrite: vi.fn(),
   append: vi.fn(),
@@ -16,7 +18,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("googleapis", () => ({ google: { sheets: () => ({ spreadsheets: {
   get: mocks.get,
   batchUpdate: mocks.write,
-  values: { batchGet: mocks.batchGet, batchUpdate: mocks.headerWrite, append: mocks.append }
+  values: {
+    get: mocks.valuesGet, update: mocks.valuesUpdate,
+    batchGet: mocks.batchGet, batchUpdate: mocks.headerWrite, append: mocks.append
+  }
 } }) } }));
 vi.mock("@/lib/google/auth", () => ({ getGoogleAuth: () => ({}) }));
 vi.mock("@/lib/env", () => ({ getEnv: () => ({
@@ -90,6 +95,16 @@ beforeEach(() => {
   ];
   rows.PlanFoods = [["entry-remove", "plan-test", "meal-remove", "", "Old food", 100]];
   mocks.get.mockResolvedValue({ data: { sheets: titles.map((title, sheetId) => ({ properties: { title, sheetId } })) } });
+  mocks.valuesGet.mockImplementation(async ({ range }: { range: string }) => ({
+    data: { values: structuredClone(rows[range.split("'")[1]]) }
+  }));
+  mocks.valuesUpdate.mockImplementation(async ({ range, requestBody }: {
+    range: string; requestBody: { values: Array<Array<string | number>> }
+  }) => {
+    const rowNumber = Number(range.match(/!A(\d+):/)![1]);
+    rows[range.split("'")[1]][rowNumber - 2] = structuredClone(requestBody.values[0]);
+    return { data: {} };
+  });
   mocks.batchGet.mockImplementation(async ({ ranges }: { ranges: string[] }) => ({ data: {
     valueRanges: ranges.map((range) => ({
       values: range.includes("!A1:") ? [] : structuredClone(rows[range.split("'")[1]])
@@ -108,6 +123,31 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("nutrition plan persistence", () => {
+  it("keeps a food addition request and its brand description when reloading and resolving it", async () => {
+    const { createNutritionChangeRequest, listNutritionChangeRequests, resolveNutritionChangeRequest } =
+      await import("@/lib/google/nutrition-management");
+    const athleteNotes = "Me gustaría incorporar yogur de la marca Ejemplo.";
+    const created = await createNutritionChangeRequest({
+      requestType: "food_add", athleteUsername: "athlete", athleteName: "Athlete",
+      planId: "plan-test", planName: "Plan", athleteNotes
+    });
+
+    const reloaded = await listNutritionChangeRequests({ athleteUsername: "athlete", force: true });
+    expect(reloaded).toEqual([created]);
+    expect(reloaded[0]).toMatchObject({
+      requestType: "food_add", requestSummary: "Incorporar alimento", athleteNotes, status: "pending"
+    });
+
+    await resolveNutritionChangeRequest({
+      requestId: created.id, status: "approved", adminNotes: "Añadido al plan", resolvedBy: "nutritionist"
+    });
+    expect(await listNutritionChangeRequests({ athleteUsername: "athlete", force: true })).toEqual([
+      expect.objectContaining({
+        requestType: "food_add", athleteNotes, status: "approved", adminNotes: "Añadido al plan"
+      })
+    ]);
+  });
+
   it.each([2, 3, 4, 5])("round-trips %i alternative components through Sheets and normalizes each quantity", async (componentCount) => {
     const { saveNutritionPlan, getNutritionPlanById } = await import("@/lib/google/nutrition-management");
     const plan = alternativePlan(componentCount);

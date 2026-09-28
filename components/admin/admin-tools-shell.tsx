@@ -68,6 +68,7 @@ const CHANGE_REQUEST_FOCUS_MIN_INTERVAL_MS = 60_000;
 
 const CHANGE_REQUEST_TYPE_LABELS = {
   food_swap: "Sustitucion de alimento",
+  food_add: "Incorporar alimento",
   calorie_increase: "Aumentar calorias",
   calorie_decrease: "Reducir calorias",
   meal_add: "Anadir comida",
