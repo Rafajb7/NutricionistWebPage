@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { NutritionGuidanceEditor } from "@/components/admin/nutrition-guidance-editor";
 import { NutritionDraftRecoveryPanel } from "@/components/admin/nutrition-draft-recovery-panel";
 import { useNutritionDraftRecovery } from "@/components/admin/use-nutrition-draft-recovery";
 import { isNutritionDraftPlan, type NutritionDraftRecovery } from "@/lib/nutrition/draft-recovery";
@@ -1597,7 +1598,7 @@ export function AdminNutritionManagementShell({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [pdfIncludeMacros, setPdfIncludeMacros] = useState(true);
+  const [pdfIncludeMacros, setPdfIncludeMacros] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [selectedClonePlanId, setSelectedClonePlanId] = useState("");
   const [cloningMenus, setCloningMenus] = useState(false);
@@ -4990,54 +4991,19 @@ export function AdminNutritionManagementShell({
                     </div>
 
                     <div className="mt-4 grid gap-3 lg:grid-cols-3">
-                      <label className="block min-w-0 text-sm text-brand-muted">
-                        Observaciones
-                        <textarea
-                          value={plan.notes}
-                          onChange={(event) =>
-                            updatePlanField("notes", event.target.value)
-                          }
-                          rows={3}
-                          disabled={isCurrentPlanPublished}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                      </label>
-                      <label className="block min-w-0 text-sm text-brand-muted">
-                        Suplementacion
-                        <textarea
-                          value={plan.supplementation}
-                          onChange={(event) =>
-                            updatePlanField(
-                              "supplementation",
-                              event.target.value,
-                            )
-                          }
-                          rows={3}
-                          disabled={isCurrentPlanPublished}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                      </label>
-                      <label className="block min-w-0 text-sm text-brand-muted">
-                        Recomendaciones
-                        <textarea
-                          value={plan.recommendations}
-                          onChange={(event) =>
-                            updatePlanField(
-                              "recommendations",
-                              event.target.value,
-                            )
-                          }
-                          rows={3}
-                          disabled={isCurrentPlanPublished}
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                      </label>
+                      <NutritionGuidanceEditor key={`${plan.id}:notes`} title="Observaciones" value={plan.notes}
+                        onChange={(value) => updatePlanField("notes", value)} disabled={isCurrentPlanPublished} />
+                      <NutritionGuidanceEditor key={`${plan.id}:supplementation`} title="Suplementación" value={plan.supplementation}
+                        onChange={(value) => updatePlanField("supplementation", value)} disabled={isCurrentPlanPublished} />
+                      <NutritionGuidanceEditor key={`${plan.id}:recommendations`} title="Recomendaciones" value={plan.recommendations}
+                        onChange={(value) => updatePlanField("recommendations", value)} disabled={isCurrentPlanPublished} />
                     </div>
 
                     <div className="mt-4 flex flex-col gap-3 border-t border-white/10 pt-4 lg:flex-row lg:items-center lg:justify-between">
                       <div className="inline-flex w-full max-w-full rounded-xl border border-white/10 bg-black/20 p-1 sm:w-fit">
                         <button
                           type="button"
+                          aria-pressed={pdfIncludeMacros}
                           onClick={() => setPdfIncludeMacros(true)}
                           className={`flex-1 rounded-lg px-2 py-2 text-xs font-semibold transition sm:flex-none sm:px-3 ${
                             pdfIncludeMacros
@@ -5049,6 +5015,7 @@ export function AdminNutritionManagementShell({
                         </button>
                         <button
                           type="button"
+                          aria-pressed={!pdfIncludeMacros}
                           onClick={() => setPdfIncludeMacros(false)}
                           className={`flex-1 rounded-lg px-2 py-2 text-xs font-semibold transition sm:flex-none sm:px-3 ${
                             !pdfIncludeMacros

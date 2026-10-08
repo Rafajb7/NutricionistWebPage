@@ -1,3 +1,4 @@
+import { expenseEuroCents } from "./exchange-rates";
 import type {
   CreateFinanceContractInput,
   FinanceContract,
@@ -196,12 +197,14 @@ export function buildFinancePaymentsForContract(
 ): FinancePayment[] {
   const count = input.financed ? Math.max(1, Math.trunc(input.paymentCount)) : 1;
   const intervalMonths = Math.max(1, Math.trunc(input.paymentIntervalMonths));
-  const amounts =
-    input.financed && input.paymentAmountCents !== null && input.paymentAmountCents > 0
-      ? Array.from({ length: count }, () => input.paymentAmountCents ?? 0)
-      : splitAmountCents(input.totalAmountCents, count);
-
-  return Array.from({ length: count }, (_, index) => ({
+  const reservation = input.reservationAmountCents ?? 0;
+  if (!Number.isSafeInteger(reservation) || reservation < 0 || reservation > input.totalAmountCents) {
+    throw new Error("La reserva debe estar entre cero y el importe total.");
+  }
+  const remaining = input.totalAmountCents - reservation;
+  if (remaining > 0 && remaining < count) throw new Error("El saldo no permite tantas cuotas.");
+  const amounts = splitAmountCents(remaining, count);
+  const payments: FinancePayment[] = Array.from({ length: remaining > 0 ? count : 0 }, (_, index) => ({
     id: createId(),
     contractId,
     athleteUsername: input.athleteUsername,
@@ -218,6 +221,16 @@ export function buildFinancePaymentsForContract(
     createdAt: now,
     updatedAt: now
   }));
+  if (reservation > 0) {
+    payments.unshift({
+      id: createId(), contractId, athleteUsername: input.athleteUsername,
+      athleteName: input.athleteName, planLabel: `${input.planLabel} · Reserva`,
+      dueDate: input.startDate, expectedAmountCents: reservation, status: "paid",
+      paidAt: input.startDate, paidAmountCents: reservation, sequenceIndex: 1,
+      sequenceCount: 1, notes: "Reserva del contrato", createdAt: now, updatedAt: now
+    });
+  }
+  return payments;
 }
 
 function isBetween(date: string, start: string, end: string): boolean {
@@ -313,7 +326,7 @@ function buildMonthlySeries(
 
   for (const expense of expenses) {
     const point = points.get(monthKey(expense.date));
-    if (point) point.expenseCents += expense.amountCents;
+    if (point) point.expenseCents += expenseEuroCents(expense);
   }
 
   for (const point of points.values()) {
@@ -346,7 +359,7 @@ export function buildFinanceDashboard(input: {
 
   const expensesThisMonthCents = expenses
     .filter((expense) => isBetween(expense.date, month.start, month.end))
-    .reduce((sum, expense) => sum + expense.amountCents, 0);
+    .reduce((sum, expense) => sum + expenseEuroCents(expense), 0);
 
   const netThisMonthCents = paidThisMonthCents - expensesThisMonthCents;
 

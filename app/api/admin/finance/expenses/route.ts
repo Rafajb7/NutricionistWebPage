@@ -24,6 +24,8 @@ export async function POST(req: Request) {
       description: parsed.data.description,
       amountCents: parseRequiredAmountToCents(parsed.data.amount),
       currency: parsed.data.currency,
+      vatRate: parsed.data.vatRate,
+      vatDeductible: parsed.data.vatDeductible,
       notes: parsed.data.notes
     });
     const finance = await listFinanceRecords();

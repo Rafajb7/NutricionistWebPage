@@ -161,9 +161,7 @@ describe("nutrition editor saves with concurrent editing", () => {
   }
 
   function notesInput() {
-    return renderer!.root.findAllByType("label")
-      .find((label) => label.children.some((child) => child === "Observaciones"))!
-      .findByType("textarea");
+    return renderer!.root.findByProps({ "aria-label": "Observaciones: entrada 1" });
   }
 
   function editNotes(notes: string) {
@@ -195,6 +193,8 @@ describe("nutrition editor saves with concurrent editing", () => {
 
   it("keeps edits made after pressing save, with their recovery copy and dirty state", async () => {
     await openEditor();
+    const noMacros = renderer!.root.findAllByType("button").find((button) => visibleText(button).includes("PDF sin macros"))!;
+    expect(noMacros.props["aria-pressed"]).toBe(true);
     editNotes("Version enviada");
     startSave();
     editNotes("Nuevos cambios mientras Google responde");

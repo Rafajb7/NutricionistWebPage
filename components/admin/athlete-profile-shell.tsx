@@ -1463,7 +1463,7 @@ export function AthleteProfileShell({
             <section className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
               <div className="min-w-0 rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                  <SectionTitle eyebrow="Finanzas" title="Estado financiero" />
+                  <SectionTitle eyebrow="Finanzas" title="Cash collector" />
                   <Link
                     href="/tools/finance"
                     className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-xs text-brand-text transition hover:bg-white/10 sm:w-auto"
@@ -1474,12 +1474,12 @@ export function AthleteProfileShell({
                 </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <MetricCard
-                    label="Pendiente"
+                    label="Falta por pagar"
                     value={formatCents(profile.finance.summary.pendingCents)}
                     detail={`${profile.finance.summary.overdueCount} vencidos`}
                   />
                   <MetricCard
-                    label="Pagado"
+                    label="Total cobrado"
                     value={formatCents(profile.finance.summary.paidCents)}
                   />
                   <MetricCard

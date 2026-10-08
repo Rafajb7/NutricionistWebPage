@@ -2,21 +2,18 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import type { ChangeEvent } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowLeft,
   Building2,
   CalendarDays,
-  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   CircleDollarSign,
   Clock3,
-  CreditCard,
   Download,
   ExternalLink,
   FileClock,
@@ -30,7 +27,6 @@ import {
   Save,
   Search,
   Trash2,
-  UserRound,
   WalletCards,
   XCircle,
 } from "lucide-react";
@@ -51,6 +47,10 @@ import {
   parseCurrencyToCents,
   todayIsoDate,
 } from "@/lib/finance/calculations";
+import { FINANCE_CURRENCIES } from "@/lib/finance/currencies";
+import { DEFAULT_EXCHANGE_RATES, convertToEuroCents, expenseEuroCents, type FinanceExchangeRates } from "@/lib/finance/exchange-rates";
+import { MAX_FINANCE_INVOICE_BYTES } from "@/lib/finance/upload-limits";
+import { buildAnnualCashReport, buildQuarterlyVatReport, cashCollected } from "@/lib/finance/reporting";
 import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
 import type {
   FinanceAthlete,
@@ -63,10 +63,8 @@ import type {
   FinanceInvoiceIssuerSettings,
   FinanceInvoiceLineItem,
   FinanceManagementData,
-  FinanceMonthlyPoint,
   FinancePayment,
   FinancePaymentStatus,
-  FinancePlanOption,
 } from "@/lib/finance/types";
 
 type SessionUser = {
@@ -76,17 +74,18 @@ type SessionUser = {
 
 type AdminFinanceShellProps = {
   user: SessionUser;
+  section?: "overview" | "invoices";
 };
 
 type FinanceFormState = {
   athleteUsername: string;
   planKey: string;
   totalAmount: string;
+  reservationAmount: string;
   startDate: string;
   firstPaymentDate: string;
   financed: boolean;
   paymentCount: string;
-  paymentAmount: string;
   paymentIntervalMonths: string;
   previousContractId: string;
   notes: string;
@@ -103,6 +102,8 @@ type PaymentEditState = {
 };
 
 type ExpenseFormState = {
+  vatRate: string;
+  vatDeductible: boolean;
   date: string;
   category: string;
   description: string;
@@ -193,11 +194,11 @@ function defaultFinanceForm(): FinanceFormState {
     athleteUsername: "",
     planKey: "monthly",
     totalAmount: "",
+    reservationAmount: "",
     startDate: today,
     firstPaymentDate: today,
     financed: false,
     paymentCount: "1",
-    paymentAmount: "",
     paymentIntervalMonths: "1",
     previousContractId: "",
     notes: "",
@@ -206,6 +207,8 @@ function defaultFinanceForm(): FinanceFormState {
 
 function defaultExpenseForm(): ExpenseFormState {
   return {
+    vatRate: "0",
+    vatDeductible: false,
     date: todayIsoDate(),
     category: "General",
     description: "",
@@ -339,12 +342,6 @@ function statusClass(status: FinanceComputedPaymentStatus): string {
   return "border-amber-400/40 bg-amber-500/10 text-amber-200";
 }
 
-function contractStatusLabel(status: FinanceContract["status"]): string {
-  if (status === "finished") return "Finalizado";
-  if (status === "cancelled") return "Cancelado";
-  return "Activo";
-}
-
 function normalizeText(value: string): string {
   return value
     .normalize("NFD")
@@ -371,180 +368,23 @@ function SummaryCard({
   hint: string;
 }) {
   return (
-    <article className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.14em] text-brand-muted">
+    <article className="min-w-0 rounded-xl border border-white/10 bg-black/20 p-3" title={hint}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs leading-snug text-brand-muted">
             {label}
           </p>
-          <p className="mt-2 text-2xl font-semibold text-brand-text">{value}</p>
-          <p className="mt-1 text-xs text-brand-muted">{hint}</p>
+          <p className="mt-1 text-lg font-semibold leading-tight tabular-nums text-brand-text">{value}</p>
         </div>
-        <div className="rounded-xl border border-brand-accent/30 bg-brand-accent/10 p-2 text-brand-accent">
-          <Icon className="h-5 w-5" />
+        <div className="shrink-0 rounded-lg bg-brand-accent/10 p-1.5 text-brand-accent">
+          <Icon className="h-3.5 w-3.5" />
         </div>
       </div>
     </article>
   );
 }
 
-function EmptyChart() {
-  return (
-    <div className="flex h-56 items-center justify-center rounded-xl border border-white/10 bg-black/20 text-sm text-brand-muted">
-      No hay datos suficientes.
-    </div>
-  );
-}
-
-function ExpectedVsPaidChart({ points }: { points: FinanceMonthlyPoint[] }) {
-  const data = points.slice(-12);
-  const maxValue = Math.max(
-    1,
-    ...data.flatMap((point) => [
-      point.expectedCents,
-      point.paidCents,
-      point.expenseCents,
-    ]),
-  );
-  if (!data.length || maxValue <= 1) return <EmptyChart />;
-
-  const chartHeight = 150;
-  const barSlot = 42;
-  const width = data.length * barSlot + 32;
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-white/10 bg-black/20 p-3">
-      <div className="mb-3 flex flex-wrap gap-3 text-xs text-brand-muted">
-        <span className="inline-flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-brand-accent" />
-          Previsto
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-          Cobrado
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-red-400" />
-          Gastos
-        </span>
-      </div>
-      <svg viewBox={`0 0 ${width} 220`} className="h-56 w-full" role="img">
-        <line
-          x1="20"
-          y1="170"
-          x2={width - 8}
-          y2="170"
-          stroke="rgba(255,255,255,0.18)"
-        />
-        {data.map((point, index) => {
-          const x = 28 + index * barSlot;
-          const expectedHeight = (point.expectedCents / maxValue) * chartHeight;
-          const paidHeight = (point.paidCents / maxValue) * chartHeight;
-          const expenseHeight = (point.expenseCents / maxValue) * chartHeight;
-          return (
-            <g key={point.month}>
-              <rect
-                x={x}
-                y={170 - expectedHeight}
-                width="12"
-                height={expectedHeight}
-                rx="3"
-                fill="var(--brand-accent)"
-              />
-              <rect
-                x={x + 15}
-                y={170 - paidHeight}
-                width="12"
-                height={paidHeight}
-                rx="3"
-                fill="#34d399"
-              />
-              <rect
-                x={x + 30}
-                y={170 - expenseHeight}
-                width="12"
-                height={expenseHeight}
-                rx="3"
-                fill="#f87171"
-              />
-              <text
-                x={x + 13}
-                y="196"
-                textAnchor="middle"
-                className="fill-current text-[10px] text-brand-muted"
-              >
-                {formatMonthLabel(point.month)}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-function EvolutionChart({ points }: { points: FinanceMonthlyPoint[] }) {
-  const data = points.slice(-12);
-  const maxValue = Math.max(
-    1,
-    ...data.map((point) => Math.max(0, point.netCents)),
-  );
-  if (!data.length || maxValue <= 1) return <EmptyChart />;
-
-  const width = 560;
-  const height = 200;
-  const graphHeight = 140;
-  const step = data.length > 1 ? (width - 56) / (data.length - 1) : 0;
-  const coords = data.map((point, index) => {
-    const x = 28 + index * step;
-    const y = 160 - (Math.max(0, point.netCents) / maxValue) * graphHeight;
-    return `${x},${y}`;
-  });
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-white/10 bg-black/20 p-3">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="h-56 w-full"
-        role="img"
-      >
-        <line
-          x1="24"
-          y1="160"
-          x2={width - 24}
-          y2="160"
-          stroke="rgba(255,255,255,0.18)"
-        />
-        <polyline
-          points={coords.join(" ")}
-          fill="none"
-          stroke="#60a5fa"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="4"
-        />
-        {data.map((point, index) => {
-          const [x, y] = coords[index].split(",").map(Number);
-          return (
-            <g key={point.month}>
-              <circle cx={x} cy={y} r="5" fill="#60a5fa" />
-              <text
-                x={x}
-                y="187"
-                textAnchor="middle"
-                className="fill-current text-[10px] text-brand-muted"
-              >
-                {formatMonthLabel(point.month)}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
+export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceShellProps) {
   const [data, setData] = useState<FinanceManagementData>({
     athletes: [],
     contracts: [],
@@ -562,9 +402,10 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
   const [savingExpense, setSavingExpense] = useState(false);
   const [savingInvoiceSettings, setSavingInvoiceSettings] = useState(false);
   const [savingInvoice, setSavingInvoice] = useState(false);
-  const [contractActionId, setContractActionId] = useState<string | null>(null);
   const [invoiceSettingsOpen, setInvoiceSettingsOpen] = useState(false);
-  const [uploadingExpenseInvoice, setUploadingExpenseInvoice] = useState(false);
+  const [expenseAttachment, setExpenseAttachment] = useState<File | null>(null);
+  const [reportYear, setReportYear] = useState(new Date().getFullYear());
+  const [exchangeRates, setExchangeRates] = useState<FinanceExchangeRates>(DEFAULT_EXCHANGE_RATES);
   const [expenseInvoiceInputKey, setExpenseInvoiceInputKey] = useState(0);
   const [deletingExpenseInvoiceId, setDeletingExpenseInvoiceId] = useState<string | null>(null);
 
@@ -576,7 +417,6 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     "all" | "month" | "next30" | "overdue"
   >("all");
   const [search, setSearch] = useState("");
-  const [selectedAthlete, setSelectedAthlete] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(
     todayIsoDate().slice(0, 7),
   );
@@ -594,6 +434,13 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
   const [paymentEdit, setPaymentEdit] = useState<PaymentEditState | null>(null);
 
   const today = todayIsoDate();
+  const annualReport = buildAnnualCashReport(data.payments, data.contracts, data.expenses, reportYear);
+  const vatReport = buildQuarterlyVatReport(data.invoices, data.expenses, reportYear);
+  const pendingThisMonth = data.payments.filter(payment => payment.status === "pending" && payment.dueDate.startsWith(today.slice(0, 7))).reduce((sum, payment) => sum + payment.expectedAmountCents, 0);
+  const pendingThisYear = data.payments.filter(payment => payment.status === "pending" && payment.dueDate.startsWith(`${reportYear}-`)).reduce((sum, payment) => sum + payment.expectedAmountCents, 0);
+  const reportYears = Array.from(new Set([...Array.from({ length: 5 }, (_, index) => Number(today.slice(0, 4)) - index), reportYear, ...data.payments.map(item => Number((item.paidAt || item.dueDate).slice(0, 4))), ...data.invoices.map(item => Number(item.issueDate.slice(0, 4))), ...data.expenses.map(item => Number(item.date.slice(0, 4)))])).filter(Number.isFinite).sort((a, b) => b - a);
+  const remainingCents = (parseCurrencyToCents(form.totalAmount) ?? 0) - (parseCurrencyToCents(form.reservationAmount) ?? 0);
+  const autoPaymentAmount = form.totalAmount && remainingCents >= 0 && Number(form.paymentCount) > 0 ? centsToInput(Math.ceil(remainingCents / Number(form.paymentCount))) : "";
 
   async function loadData() {
     try {
@@ -610,8 +457,10 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
 
       const json = (await res.json()) as Partial<FinanceManagementData> & {
         error?: string;
+        exchangeRates?: FinanceExchangeRates;
       };
       if (!res.ok) throw new Error(json.error ?? "No se pudo cargar Finanzas.");
+      setExchangeRates(json.exchangeRates ?? DEFAULT_EXCHANGE_RATES);
       const invoiceSettings =
         json.invoiceSettings ?? DEFAULT_FINANCE_INVOICE_SETTINGS;
 
@@ -657,16 +506,6 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     () => data.planOptions.filter((option) => option.active),
     [data.planOptions],
   );
-
-  const contractsByAthlete = useMemo(() => {
-    const map = new Map<string, FinanceContract[]>();
-    data.contracts.forEach((contract) => {
-      const list = map.get(contract.athleteUsername) ?? [];
-      list.push(contract);
-      map.set(contract.athleteUsername, list);
-    });
-    return map;
-  }, [data.contracts]);
 
   const paymentsByDate = useMemo(() => {
     const map = new Map<string, FinancePayment[]>();
@@ -736,26 +575,10 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     () =>
       data.payments
         .filter((payment) => payment.status === "pending")
-        .filter((payment) => payment.dueDate >= today)
-        .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-        .slice(0, 8),
+        .filter((payment) => payment.dueDate >= today && payment.dueDate <= addDays(today, 30))
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
     [data.payments, today],
   );
-
-  const selectedAthleteData = useMemo(() => {
-    if (!selectedAthlete) return null;
-    const athlete = data.athletes.find(
-      (item) => item.username === selectedAthlete,
-    );
-    if (!athlete) return null;
-    const contracts = (contractsByAthlete.get(selectedAthlete) ?? []).sort(
-      (a, b) => b.startDate.localeCompare(a.startDate),
-    );
-    const payments = data.payments
-      .filter((payment) => payment.athleteUsername === selectedAthlete)
-      .sort((a, b) => b.dueDate.localeCompare(a.dueDate));
-    return { athlete, contracts, payments };
-  }, [contractsByAthlete, data.athletes, data.payments, selectedAthlete]);
 
   const invoicePreviewLineItems = useMemo(
     () => buildPreviewLineItems(invoiceForm),
@@ -991,6 +814,10 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
       return;
     }
 
+    if ((parseCurrencyToCents(form.reservationAmount) ?? 0) < 0 || remainingCents < 0) {
+      toast.error("La reserva debe estar entre cero y el importe total.");
+      return;
+    }
     setSavingContract(true);
     try {
       const res = await fetch("/api/admin/finance/contracts", {
@@ -1002,10 +829,11 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
           startDate: form.startDate,
           firstPaymentDate: form.firstPaymentDate,
           totalAmount: form.totalAmount,
+          reservationAmount: form.reservationAmount,
           currency: "EUR",
           financed: form.financed,
           paymentCount: Number(form.paymentCount || 1),
-          paymentAmount: form.paymentAmount || undefined,
+          paymentAmount: undefined,
           paymentIntervalMonths: Number(form.paymentIntervalMonths || 1),
           previousContractId: form.previousContractId || undefined,
           idempotencyKey: createClientId(),
@@ -1040,10 +868,12 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
 
     setSavingExpense(true);
     try {
-      const res = await fetch("/api/admin/finance/expenses", {
+      const formData = new FormData();
+      Object.entries(expenseForm).forEach(([key, value]) => formData.append(key, String(value)));
+      if (expenseAttachment) formData.append("invoice", expenseAttachment);
+      const res = await fetch(expenseAttachment ? "/api/admin/finance/expense-invoices" : "/api/admin/finance/expenses", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(expenseForm),
+        ...(expenseAttachment ? { body: formData } : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(expenseForm) })
       });
       const json = (await res.json()) as {
         expense?: FinanceExpense;
@@ -1061,6 +891,9 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
         dashboard: json.dashboard ?? current.dashboard,
       }));
       setExpenseForm(defaultExpenseForm());
+      setExpenseAttachment(null);
+      setExpenseInvoiceInputKey(current => current + 1);
+      await loadData();
       toast.success("Gasto registrado.");
     } catch (error) {
       console.error(error);
@@ -1069,69 +902,6 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
       );
     } finally {
       setSavingExpense(false);
-    }
-  }
-
-  async function handleUploadExpenseInvoice(
-    event: ChangeEvent<HTMLInputElement>,
-  ) {
-    const file = event.target.files?.[0] ?? null;
-    setExpenseInvoiceInputKey((current) => current + 1);
-    if (!file) return;
-    if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
-      toast.error("Selecciona un PDF de factura.");
-      return;
-    }
-
-    setUploadingExpenseInvoice(true);
-    try {
-      const formData = new FormData();
-      formData.append("invoice", file);
-      const res = await fetch("/api/admin/finance/expense-invoices", {
-        method: "POST",
-        body: formData,
-      });
-      const json = (await res.json()) as {
-        autoExpenseCreated?: boolean;
-        expense?: FinanceExpense | null;
-        expenseInvoiceFile?: FinanceExpenseInvoiceFile;
-        expenses?: FinanceExpense[];
-        expenseInvoiceFiles?: FinanceExpenseInvoiceFile[];
-        dashboard?: FinanceDashboard;
-        error?: string;
-      };
-      if (!res.ok || !json.expenseInvoiceFile) {
-        throw new Error(json.error ?? "No se pudo cargar la factura.");
-      }
-
-      setData((current) => ({
-        ...current,
-        expenses:
-          json.expenses ??
-          (json.expense
-            ? [json.expense, ...current.expenses].sort((a, b) =>
-                b.date.localeCompare(a.date),
-              )
-            : current.expenses),
-        expenseInvoiceFiles:
-          json.expenseInvoiceFiles ??
-          [json.expenseInvoiceFile!, ...current.expenseInvoiceFiles].sort(
-            (a, b) => b.createdAt.localeCompare(a.createdAt),
-          ),
-        dashboard: json.dashboard ?? current.dashboard,
-      }));
-      toast.success(
-        json.autoExpenseCreated
-          ? "Factura leida y gasto registrado."
-          : "Factura guardada. Revisa el gasto manualmente.",
-      );
-    } catch (error) {
-      console.error(error);
-      toast.error(
-        error instanceof Error ? error.message : "Error cargando factura.",
-      );
-    } finally {
-      setUploadingExpenseInvoice(false);
     }
   }
 
@@ -1179,7 +949,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
   function startPaymentEdit(payment: FinancePayment) {
     setPaymentEdit({
       paymentId: payment.id,
-      status: payment.status === "paid" ? "paid" : "paid",
+      status: payment.status,
       dueDate: payment.dueDate,
       expectedAmount: centsToInput(payment.expectedAmountCents),
       paidAt: payment.paidAt || today,
@@ -1228,76 +998,22 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
     }
   }
 
-  async function handleContractStatus(
-    contract: FinanceContract,
-    status: FinanceContract["status"],
-    cancelFuture = false,
-  ) {
-    if (status === "cancelled") {
-      const confirmed = window.confirm(
-        "Quieres cancelar este contrato? Los pagos futuros pendientes pueden marcarse como cancelados.",
-      );
-      if (!confirmed) return;
-    }
-
-    setContractActionId(contract.id);
-    try {
-      const res = await fetch(`/api/admin/finance/contracts/${contract.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          status,
-          cancelPendingFuturePayments: cancelFuture,
-        }),
-      });
-      const json = (await res.json()) as {
-        error?: string;
-        cancelledPayments?: number;
-      };
-      if (!res.ok) {
-        toast.error(json.error ?? "No se pudo actualizar el contrato.");
-        return;
-      }
-
-      toast.success(
-        status === "cancelled"
-          ? `Contrato cancelado. Pagos futuros cancelados: ${json.cancelledPayments ?? 0}.`
-          : "Contrato actualizado.",
-      );
-      await loadData();
-    } catch (error) {
-      console.error(error);
-      toast.error("Error actualizando contrato.");
-    } finally {
-      setContractActionId(null);
-    }
-  }
-
   function renewContract(contract: FinanceContract, sameConditions: boolean) {
-    setSelectedAthlete(contract.athleteUsername);
     setForm({
+      ...defaultFinanceForm(),
       athleteUsername: contract.athleteUsername,
       planKey: sameConditions ? contract.planKey : "monthly",
-      totalAmount: sameConditions
-        ? centsToInput(contract.totalAmountCents)
-        : "",
+      totalAmount: sameConditions ? centsToInput(contract.totalAmountCents) : "",
       startDate: contract.renewalDueDate,
       firstPaymentDate: contract.renewalDueDate,
       financed: sameConditions ? contract.financed : false,
       paymentCount: sameConditions ? String(contract.paymentCount) : "1",
-      paymentAmount:
-        sameConditions && contract.financed
-          ? centsToInput(contract.paymentAmountCents)
-          : "",
-      paymentIntervalMonths: sameConditions
-        ? String(contract.paymentIntervalMonths)
-        : "1",
+      paymentIntervalMonths: sameConditions ? String(contract.paymentIntervalMonths) : "1",
       previousContractId: contract.id,
-      notes: sameConditions ? contract.notes : "",
+      notes: sameConditions ? contract.notes : ""
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    document.getElementById("new-contract")?.scrollIntoView({ behavior: "smooth" });
   }
-
   function buildCalendarCells() {
     const monthStart = `${calendarMonth}-01`;
     const range = getMonthRange(monthStart);
@@ -1369,18 +1085,14 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                 Herramienta admin
               </p>
               <h1 className="mt-1 text-3xl font-semibold text-brand-text">
-                Finanzas
+                {section === "overview" ? "Finanzas" : "Facturas"}
               </h1>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm text-brand-muted">
-              <span className="inline-flex items-center gap-2 rounded-xl border border-white/15 px-3 py-2">
-                <WalletCards className="h-4 w-4 text-brand-accent" />
-                Contratos y pagos
-              </span>
-              <span className="inline-flex items-center gap-2 rounded-xl border border-white/15 px-3 py-2">
-                <CalendarDays className="h-4 w-4 text-brand-accent" />
-                Calendario financiero
-              </span>
+              <Link href={section === "overview" ? "/tools/finance/invoices" : "/tools/finance"} className="inline-flex items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-brand-text hover:bg-brand-accent/10">
+                <ReceiptText className="h-4 w-4" />
+                {section === "overview" ? "Facturas" : "Volver a Finanzas"}
+              </Link>
             </div>
           </div>
         </section>
@@ -1393,59 +1105,41 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
           </div>
         ) : (
           <>
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <SummaryCard
-                icon={CircleDollarSign}
-                label="Cobrado mes"
-                value={formatCents(data.dashboard.paidThisMonthCents)}
-                hint="Importe realmente registrado"
-              />
-              <SummaryCard
-                icon={FileClock}
-                label="Previsto mes"
-                value={formatCents(data.dashboard.expectedThisMonthCents)}
-                hint="Pagos con vencimiento este mes"
-              />
-              <SummaryCard
-                icon={ReceiptText}
-                label="Gastos mes"
-                value={formatCents(data.dashboard.expensesThisMonthCents)}
-                hint="Salidas registradas este mes"
-              />
-              <SummaryCard
-                icon={LineChart}
-                label="Neto mes"
-                value={formatCents(data.dashboard.netThisMonthCents)}
-                hint="Cobrado menos gastos"
-              />
-              <SummaryCard
-                icon={Clock3}
-                label="Pendiente"
-                value={formatCents(data.dashboard.pendingCents)}
-                hint="Pendiente total no cancelado"
-              />
-              <SummaryCard
-                icon={CalendarDays}
-                label="Prox. 30 dias"
-                value={formatCents(data.dashboard.next30DaysCents)}
-                hint="Cobros esperados cercanos"
-              />
-              <SummaryCard
-                icon={AlertTriangle}
-                label="Vencidos"
-                value={String(data.dashboard.overdueCount)}
-                hint="Pagos fuera de plazo"
-              />
-              <SummaryCard
-                icon={UserRound}
-                label="Atletas activos"
-                value={String(data.dashboard.activeAthletesCount)}
-                hint="Con contrato activo"
-              />
+            {section === "overview" ? (
+            <section aria-label="Resumen financiero" className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
+                <div className="mb-3 flex min-h-9 items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-brand-text">Mensual</h2>
+                  <span className="text-xs capitalize text-brand-muted">{formatMonthLabel(today.slice(0, 7))}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <SummaryCard icon={CircleDollarSign} label="Cash collector del mes" value={formatCents(cashCollected(data.payments, `${today.slice(0, 7)}-01`, today))} hint="Cobros registrados este mes hasta hoy" />
+                  <SummaryCard icon={FileClock} label="Pendiente mes" value={formatCents(pendingThisMonth)} hint="Pagos pendientes con vencimiento este mes" />
+                  <SummaryCard icon={ReceiptText} label="Gastos del mes" value={formatCents(data.dashboard.expensesThisMonthCents)} hint="Todos los gastos convertidos a euros" />
+                  <SummaryCard icon={LineChart} label="Neto del mes" value={formatCents(data.dashboard.netThisMonthCents)} hint="Cobros menos gastos del mes" />
+                </div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-3 sm:p-4">
+                <div className="mb-3 flex min-h-9 flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-brand-text">Anual</h2>
+                  <label className="flex items-center gap-2 text-xs text-brand-muted">Ejercicio
+                    <select aria-label="Ejercicio" value={reportYear} onChange={event => setReportYear(Number(event.target.value))} className="w-24 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60">
+                      {reportYears.map(year => <option key={year} value={year}>{year}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <SummaryCard icon={CircleDollarSign} label={`Cash collector ${today.slice(0, 4)}`} value={formatCents(cashCollected(data.payments, `${today.slice(0, 4)}-01-01`, today))} hint="Cobros desde el 1 de enero hasta hoy" />
+                  <SummaryCard icon={Clock3} label={`Pendiente ${reportYear}`} value={formatCents(pendingThisYear)} hint="Pagos pendientes con vencimiento en el ejercicio seleccionado" />
+                  <SummaryCard icon={ReceiptText} label={`Bruto anual ${reportYear}`} value={formatCents(annualReport.grossCents)} hint="Cobros registrados en el ejercicio seleccionado" />
+                  <SummaryCard icon={LineChart} label={`Neta anual ${reportYear}`} value={formatCents(annualReport.netCents)} hint="Cobros menos gastos en euros del ejercicio seleccionado" />
+                </div>
+              </div>
             </section>
+            ) : null}
 
-            {data.dashboard.renewalAlerts.length ||
-            data.dashboard.overdueCount ? (
+            {section === "overview" && (data.dashboard.renewalAlerts.length ||
+            data.dashboard.overdueCount) ? (
               <section className="grid gap-3 lg:grid-cols-2">
                 {data.dashboard.renewalAlerts.map((alert) => (
                   <article
@@ -1498,11 +1192,13 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
               </section>
             ) : null}
 
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
+            {section === "overview" ? <>
+            <section aria-label="Contratos y cobros" className="grid items-start gap-4 lg:grid-cols-3">
+              <div className="min-w-0 space-y-4">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h2 className="text-lg font-semibold text-brand-text">
+                    <h2 id="new-contract" className="text-lg font-semibold text-brand-text">
                       Nuevo contrato
                     </h2>
                     <p className="text-sm text-brand-muted">
@@ -1516,7 +1212,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     </span>
                   ) : null}
                 </div>
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
                   <label className="block text-sm text-brand-muted">
                     Atleta
                     <select
@@ -1560,6 +1256,11 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                       placeholder="540,00"
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
+                  </label>
+                  <label className="block text-sm text-brand-muted">
+                    Reserva
+                    <input value={form.reservationAmount} onChange={event => updateForm("reservationAmount", event.target.value)} placeholder="0,00" inputMode="decimal" className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none focus:border-brand-accent/60" />
+                    <span className="mt-1 block text-xs">Cobrada en la fecha de inicio. Se descuenta del total.</span>
                   </label>
                   <label className="block text-sm text-brand-muted">
                     Fecha inicio
@@ -1611,13 +1312,11 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                         />
                       </label>
                       <label className="block text-sm text-brand-muted">
-                        Importe por pago
+                        Importe por pago (automático)
                         <input
-                          value={form.paymentAmount}
-                          onChange={(event) =>
-                            updateForm("paymentAmount", event.target.value)
-                          }
-                          placeholder="Auto si queda vacio"
+                          value={autoPaymentAmount}
+                          readOnly
+                          placeholder="Calculado automáticamente"
                           className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                         />
                       </label>
@@ -1638,7 +1337,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                       </label>
                     </>
                   ) : null}
-                  <label className="block text-sm text-brand-muted md:col-span-2">
+                  <label className="block text-sm text-brand-muted sm:col-span-2 lg:col-span-1">
                     Notas
                     <textarea
                       value={form.notes}
@@ -1678,7 +1377,309 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+<div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+                <h2 className="text-lg font-semibold text-brand-text">
+                  Próximos cobros · 30 días
+                </h2>
+                <div className="mt-3 max-h-[640px] space-y-2 overflow-y-auto">
+                  {upcomingPayments.length ? (
+                    upcomingPayments.map((payment) => {
+                      const days = differenceInCalendarDays(
+                        payment.dueDate,
+                        today,
+                      );
+                      return (
+                        <button
+                          key={payment.id}
+                          type="button"
+                          onClick={() => startPaymentEdit(payment)}
+                          className="w-full rounded-xl border border-white/10 bg-black/20 p-3 text-left transition hover:border-brand-accent/40"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-brand-text">
+                                {payment.athleteName}
+                              </p>
+                              <p className="mt-1 text-xs text-brand-muted">
+                                {payment.planLabel} - pago{" "}
+                                {payment.sequenceIndex}/{payment.sequenceCount}
+                              </p>
+                            </div>
+                            <p className="text-sm font-semibold text-brand-text">
+                              {formatCents(payment.expectedAmountCents)}
+                            </p>
+                          </div>
+                          <p className="mt-2 text-xs text-brand-muted">
+                            {formatDate(payment.dueDate)} -{" "}
+                            {days === 0 ? "hoy" : `en ${days} dias`}
+                          </p>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <p className="text-sm text-brand-muted">
+                      No hay cobros proximos.
+                    </p>
+                  )}
+                </div>
+              </div>
+              </div>
+            <section className="min-w-0 lg:col-span-2 rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="flex flex-col gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-brand-text">
+                    Listado de pagos
+                  </h2>
+                  <p className="text-sm text-brand-muted">
+                    Buscar, filtrar y registrar cobros.
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  <label className="relative sm:col-span-2 xl:col-span-3">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-muted" />
+                    <input
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Buscar atleta o plan"
+                      className="w-full rounded-xl border border-white/10 bg-black/20 py-2.5 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                    />
+                  </label>
+                  <select
+                    value={athleteFilter}
+                    onChange={(event) => setAthleteFilter(event.target.value)}
+                    className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    <option value="">Todos los atletas</option>
+                    {data.athletes.map((athlete) => (
+                      <option key={athlete.username} value={athlete.username}>
+                        {athlete.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={statusFilter}
+                    onChange={(event) =>
+                      setStatusFilter(
+                        event.target.value as
+                          "all" | FinanceComputedPaymentStatus,
+                      )
+                    }
+                    className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    <option value="all">Todos</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="overdue">Vencido</option>
+                    <option value="paid">Cobrado</option>
+                    <option value="cancelled">Cancelado</option>
+                  </select>
+                  <select
+                    value={periodFilter}
+                    onChange={(event) =>
+                      setPeriodFilter(
+                        event.target.value as
+                          "all" | "month" | "next30" | "overdue",
+                      )
+                    }
+                    className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
+                  >
+                    <option value="all">Todo el periodo</option>
+                    <option value="month">Mes actual</option>
+                    <option value="next30">Prox. 30 dias</option>
+                    <option value="overdue">Solo vencidos</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
+                <table className="min-w-[680px] w-full text-sm">
+                  <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Atleta</th>
+                      <th className="px-3 py-2 text-left">Plan</th>
+                      <th className="px-3 py-2 text-left">Fecha prevista</th>
+                      <th className="px-3 py-2 text-left">Importe</th>
+                      <th className="px-3 py-2 text-left">Estado</th>
+                      <th className="px-3 py-2 text-left">Fecha cobro</th>
+                      <th className="w-12 px-3 py-2"><span className="sr-only">Modificar pago</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredPayments.length ? (
+                      filteredPayments.map((payment) => {
+                        const computed = getComputedPaymentStatus(
+                          payment,
+                          today,
+                        );
+                        return (
+                          <tr
+                            key={payment.id}
+                            className="border-t border-white/10"
+                          >
+                            <td className="px-3 py-2 text-brand-text">
+                              <Link
+                                href={`/tools/athlete-profile/${encodeURIComponent(payment.athleteUsername)}`}
+                                className="text-left font-medium transition hover:text-brand-accent"
+                              >
+                                {payment.athleteName ||
+                                  getAthleteName(
+                                    data.athletes,
+                                    payment.athleteUsername,
+                                  )}
+                              </Link>
+                            </td>
+                            <td className="px-3 py-2 text-brand-muted">
+                              {payment.planLabel}{" "}
+                              {payment.sequenceCount > 1
+                                ? `(${payment.sequenceIndex}/${payment.sequenceCount})`
+                                : ""}
+                            </td>
+                            <td className="px-3 py-2 text-brand-text">
+                              {formatDate(payment.dueDate)}
+                            </td>
+                            <td className="px-3 py-2 text-brand-text">
+                              {formatCents(payment.expectedAmountCents)}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span
+                                className={`rounded-full border px-2 py-1 text-xs ${statusClass(computed)}`}
+                              >
+                                {statusLabel(computed)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-brand-muted">
+                              {formatDate(payment.paidAt)}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <button type="button" onClick={() => startPaymentEdit(payment)} aria-label={`Modificar pago de ${payment.athleteName}`} title="Modificar pago" className="inline-flex rounded-lg border border-brand-accent/35 p-2 text-brand-text hover:bg-brand-accent/10"><WalletCards className="h-4 w-4" /></button>
+                            </td>
+
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="px-3 py-8 text-center text-brand-muted"
+                        >
+                          No hay pagos para los filtros seleccionados.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section></section>
+            <section aria-label="Calendario financiero" className="w-full min-w-0">              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-brand-text">
+                      Calendario financiero
+                    </h2>
+                    <p className="text-sm text-brand-muted">
+                      Pagos previstos y gastos registrados por dia.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCalendarMonth(
+                          addMonths(`${calendarMonth}-01`, -1).slice(0, 7),
+                        )
+                      }
+                      className="rounded-xl border border-white/15 p-2 text-brand-text transition hover:bg-white/10"
+                      aria-label="Mes anterior"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                    <p className="min-w-36 text-center text-sm font-semibold text-brand-text">
+                      {formatMonthLabel(calendarMonth)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCalendarMonth(
+                          addMonths(`${calendarMonth}-01`, 1).slice(0, 7),
+                        )
+                      }
+                      className="rounded-xl border border-white/15 p-2 text-brand-text transition hover:bg-white/10"
+                      aria-label="Mes siguiente"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-7 gap-1 text-center text-xs uppercase tracking-[0.12em] text-brand-muted">
+                  {["L", "M", "X", "J", "V", "S", "D"].map((day) => (
+                    <div key={day} className="py-2">
+                      {day}
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-1">
+                  {calendarCells.map((cell) => {
+                    const payments = (paymentsByDate.get(cell.date) ?? [])
+                      .filter(
+                        (payment) =>
+                          !athleteFilter ||
+                          payment.athleteUsername === athleteFilter,
+                      )
+                      .slice(0, 3);
+                    const expenses = (
+                      expensesByDate.get(cell.date) ?? []
+                    ).slice(0, 3);
+                    return (
+                      <div
+                        key={cell.date}
+                        className={`min-h-28 rounded-xl border p-2 ${
+                          cell.inMonth
+                            ? "border-white/10 bg-black/20"
+                            : "border-white/5 bg-black/10 opacity-60"
+                        }`}
+                      >
+                        <p className="text-xs font-semibold text-brand-text">
+                          {Number(cell.date.slice(-2))}
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          {payments.map((payment) => {
+                            const computed = getComputedPaymentStatus(
+                              payment,
+                              today,
+                            );
+                            return (
+                              <button
+                                key={payment.id}
+                                type="button"
+                                onClick={() => startPaymentEdit(payment)}
+                                className={`block w-full truncate rounded-md border px-1.5 py-1 text-left text-[11px] ${statusClass(computed)}`}
+                                title={`${payment.athleteName} - ${formatCents(payment.expectedAmountCents)}`}
+                              >
+                                {payment.athleteName} -{" "}
+                                {formatCents(payment.expectedAmountCents)}
+                              </button>
+                            );
+                          })}
+                          {expenses.map((expense) => (
+                            <div
+                              key={expense.id}
+                              className="block w-full truncate rounded-md border border-red-400/35 bg-red-500/10 px-1.5 py-1 text-left text-[11px] text-red-100"
+                              title={`${expense.description} - ${formatCents(expenseEuroCents(expense))}`}
+                            >
+                              {expense.description} -{" "}
+                              {formatCents(expenseEuroCents(expense))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+</section>
+            </> : <>
+            <section>              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-semibold text-brand-text">
@@ -1689,23 +1690,14 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <label
-                      className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-xs text-brand-text transition hover:bg-brand-accent/10 ${
-                        uploadingExpenseInvoice
-                          ? "pointer-events-none opacity-60"
-                          : ""
-                      }`}
-                    >
-                      <FileUp className="h-4 w-4" />
-                      {uploadingExpenseInvoice ? "Leyendo..." : "Cargar PDF"}
-                      <input
-                        key={expenseInvoiceInputKey}
-                        type="file"
-                        accept="application/pdf,.pdf"
-                        disabled={uploadingExpenseInvoice}
-                        className="hidden"
-                        onChange={handleUploadExpenseInvoice}
-                      />
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-xs text-brand-text hover:bg-brand-accent/10">
+                      <FileUp className="h-4 w-4" /> Adjuntar factura (PDF, máx. 4 MB)
+                      <input key={expenseInvoiceInputKey} type="file" accept="application/pdf,.pdf" disabled={savingExpense} className="hidden" onChange={event => {
+                        const file = event.target.files?.[0] ?? null;
+                        if (file && (file.size === 0 || file.size > MAX_FINANCE_INVOICE_BYTES)) { toast.error("Adjunta un PDF de hasta 4 MB que no esté vacío."); event.target.value = ""; return; }
+                        if (file && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) { toast.error("Selecciona un PDF."); return; }
+                        setExpenseAttachment(file);
+                      }} />
                     </label>
                     <ReceiptText className="h-5 w-5 text-brand-accent" />
                   </div>
@@ -1752,7 +1744,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     />
                   </label>
                   <label className="block text-sm text-brand-muted">
-                    Importe
+                    Importe bruto (IVA incluido)
                     <input
                       value={expenseForm.amount}
                       onChange={(event) =>
@@ -1765,6 +1757,24 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                       className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                     />
                   </label>
+                  <label className="block text-sm text-brand-muted">IVA aplicado (%)
+                    <input type="number" min="0" max="100" step="0.01" value={expenseForm.vatRate} onChange={event => setExpenseForm(current => ({ ...current, vatRate: event.target.value }))} className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none focus:border-brand-accent/60" />
+                  </label>
+                  <label className="block text-sm text-brand-muted">Moneda
+                    <select value={expenseForm.currency} onChange={event => setExpenseForm(current => ({ ...current, currency: event.target.value }))} className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none focus:border-brand-accent/60">
+                      {FINANCE_CURRENCIES.map(currency => <option key={currency.code} value={currency.code}>{currency.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-brand-muted md:col-span-2">
+                    <input type="checkbox" checked={expenseForm.vatDeductible} onChange={event => setExpenseForm(current => ({ ...current, vatDeductible: event.target.checked }))} /> IVA deducible para la actividad
+                  </label>
+                  {expenseForm.currency !== "EUR" ? (
+                    <div className="rounded-xl border border-brand-accent/25 bg-brand-accent/5 p-3 text-sm text-brand-text md:col-span-2">
+                      <p>Equivalente en euros: <strong>{formatCents(convertToEuroCents(parseCurrencyToCents(expenseForm.amount) ?? 0, expenseForm.currency, exchangeRates))}</strong></p>
+                      <p className="mt-1 text-xs text-brand-muted">1 {expenseForm.currency} = {new Intl.NumberFormat("es-ES", { maximumSignificantDigits: 7 }).format(exchangeRates.rates[expenseForm.currency])} EUR · Cambio de referencia del {formatDate(exchangeRates.date)}. Se guarda con la factura.</p>
+                    </div>
+                  ) : null}
+                  {expenseAttachment ? <p className="text-sm text-brand-muted md:col-span-2">{expenseAttachment.name} <button type="button" onClick={() => { setExpenseAttachment(null); setExpenseInvoiceInputKey(current => current + 1); }} className="underline">Quitar adjunto</button></p> : null}
                   <label className="block text-sm text-brand-muted md:col-span-2">
                     Notas
                     <textarea
@@ -1789,57 +1799,35 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     {savingExpense ? "Guardando..." : "Registrar gasto"}
                   </BrandButton>
                 </div>
+                <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                  <summary className="cursor-pointer text-sm text-brand-muted">Tipos de cambio a euros · {formatDate(exchangeRates.date)}</summary>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {FINANCE_CURRENCIES.map(currency => <p key={currency.code} className="text-xs text-brand-muted">1 {currency.code} = {new Intl.NumberFormat("es-ES", { maximumSignificantDigits: 7 }).format(exchangeRates.rates[currency.code])} EUR</p>)}
+                  </div>
+                  <p className="mt-3 text-xs text-brand-muted">Se aplica el último cambio disponible al registrar el gasto. El importe original se conserva.</p>
+                </details>
               </div>
 
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h2 className="text-lg font-semibold text-brand-text">
-                  Proximos cobros
-                </h2>
-                <div className="mt-3 space-y-2">
-                  {upcomingPayments.length ? (
-                    upcomingPayments.map((payment) => {
-                      const days = differenceInCalendarDays(
-                        payment.dueDate,
-                        today,
-                      );
-                      return (
-                        <button
-                          key={payment.id}
-                          type="button"
-                          onClick={() => startPaymentEdit(payment)}
-                          className="w-full rounded-xl border border-white/10 bg-black/20 p-3 text-left transition hover:border-brand-accent/40"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-semibold text-brand-text">
-                                {payment.athleteName}
-                              </p>
-                              <p className="mt-1 text-xs text-brand-muted">
-                                {payment.planLabel} - pago{" "}
-                                {payment.sequenceIndex}/{payment.sequenceCount}
-                              </p>
-                            </div>
-                            <p className="text-sm font-semibold text-brand-text">
-                              {formatCents(payment.expectedAmountCents)}
-                            </p>
-                          </div>
-                          <p className="mt-2 text-xs text-brand-muted">
-                            {formatDate(payment.dueDate)} -{" "}
-                            {days === 0 ? "hoy" : `en ${days} dias`}
-                          </p>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <p className="text-sm text-brand-muted">
-                      No hay cobros proximos.
-                    </p>
-                  )}
-                </div>
+</section>
+            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-brand-text">IVA trimestral · {reportYear} · EUR</h2>
+                <label className="flex items-center gap-2 text-xs text-brand-muted">Ejercicio
+                  <select aria-label="Ejercicio del IVA" value={reportYear} onChange={event => setReportYear(Number(event.target.value))} className="w-24 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-brand-text outline-none transition focus:border-brand-accent/60">
+                    {reportYears.map(year => <option key={year} value={year}>{year}</option>)}
+                  </select>
+                </label>
               </div>
-            </section>
-
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
+              <p className="mt-2 text-sm text-brand-muted">IVA de facturas emitidas menos IVA de gastos marcados como deducibles, por fecha de operación. Estimación sin compensaciones previas ni regímenes especiales. Los gastos en otras monedas se convierten a euros con el cambio guardado en la factura.</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {vatReport.map(quarter => <article key={quarter.quarter} className="rounded-xl border border-white/10 p-4 text-sm text-brand-muted">
+                  <h3 className="font-semibold text-brand-text">Trimestre {quarter.quarter}</h3>
+                  <p className="mt-2">Repercutido: {formatCents(quarter.outputVatCents)}</p>
+                  <p>Deducible: {formatCents(quarter.deductibleVatCents)}</p>
+                  <p className="mt-2 font-semibold text-brand-text">{quarter.balanceCents < 0 ? "Saldo a compensar" : "Saldo a ingresar"}: {formatCents(Math.abs(quarter.balanceCents))}</p>
+                </article>)}
+              </div>
+            </section>            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
               <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
@@ -2570,7 +2558,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                     </h2>
                   </div>
                   <div className="mt-4 space-y-2">
-                    {data.expenseInvoiceFiles.slice(0, 10).map((file) => {
+                    {data.expenseInvoiceFiles.map((file) => {
                       const expense = data.expenses.find(
                         (item) => item.id === file.expenseId,
                       );
@@ -2605,19 +2593,20 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                                 : "Fecha no detectada"}{" "}
                               -{" "}
                               {file.parsedAmountCents > 0
-                                ? formatCents(file.parsedAmountCents)
+                                ? formatCents(expense ? expenseEuroCents(expense) : file.parsedAmountCents)
                                 : "Importe no detectado"}
                             </span>
                           </div>
+                          {expense && expense.currency !== "EUR" ? <p className="mt-2 text-xs text-brand-muted">Original: {formatCents(expense.amountCents, expense.currency)} · Cambio del {formatDate(expense.exchangeRateDate || DEFAULT_EXCHANGE_RATES.date)}</p> : null}
                           {file.parseError ? (
                             <p className="mt-2 text-xs text-amber-100/80">
                               {file.parseError}
                             </p>
                           ) : null}
                           <div className="mt-3 flex flex-wrap justify-end gap-2">
-                            {file.webViewLink ? (
+                            {file.driveFileId ? (
                               <a
-                                href={file.webViewLink}
+                                href={`/api/admin/finance/expense-invoices/${file.id}/pdf`}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
@@ -2649,320 +2638,7 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                   </div>
                 </div>
               </div>
-            </section>
-
-            <section className="grid gap-4 xl:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <div className="mb-3 flex items-center gap-2">
-                  <LineChart className="h-5 w-5 text-brand-accent" />
-                  <h2 className="text-lg font-semibold text-brand-text">
-                    Previsto vs cobrado
-                  </h2>
-                </div>
-                <ExpectedVsPaidChart points={data.dashboard.monthlySeries} />
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <div className="mb-3 flex items-center gap-2">
-                  <LineChart className="h-5 w-5 text-brand-accent" />
-                  <h2 className="text-lg font-semibold text-brand-text">
-                    Evolucion cobrada
-                  </h2>
-                </div>
-                <EvolutionChart points={data.dashboard.monthlySeries} />
-                <p className="mt-3 text-sm text-brand-muted">
-                  Variacion mensual:{" "}
-                  <span className="font-semibold text-brand-text">
-                    {data.dashboard.monthlyVariationPercent === null
-                      ? "Sin datos previos"
-                      : `${data.dashboard.monthlyVariationPercent > 0 ? "+" : ""}${data.dashboard.monthlyVariationPercent}%`}
-                  </span>
-                </p>
-              </div>
-            </section>
-
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold text-brand-text">
-                      Calendario financiero
-                    </h2>
-                    <p className="text-sm text-brand-muted">
-                      Pagos previstos y gastos registrados por dia.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCalendarMonth(
-                          addMonths(`${calendarMonth}-01`, -1).slice(0, 7),
-                        )
-                      }
-                      className="rounded-xl border border-white/15 p-2 text-brand-text transition hover:bg-white/10"
-                      aria-label="Mes anterior"
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                    </button>
-                    <p className="min-w-36 text-center text-sm font-semibold text-brand-text">
-                      {formatMonthLabel(calendarMonth)}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCalendarMonth(
-                          addMonths(`${calendarMonth}-01`, 1).slice(0, 7),
-                        )
-                      }
-                      className="rounded-xl border border-white/15 p-2 text-brand-text transition hover:bg-white/10"
-                      aria-label="Mes siguiente"
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-4 grid grid-cols-7 gap-1 text-center text-xs uppercase tracking-[0.12em] text-brand-muted">
-                  {["L", "M", "X", "J", "V", "S", "D"].map((day) => (
-                    <div key={day} className="py-2">
-                      {day}
-                    </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-7 gap-1">
-                  {calendarCells.map((cell) => {
-                    const payments = (paymentsByDate.get(cell.date) ?? [])
-                      .filter(
-                        (payment) =>
-                          !athleteFilter ||
-                          payment.athleteUsername === athleteFilter,
-                      )
-                      .slice(0, 3);
-                    const expenses = (
-                      expensesByDate.get(cell.date) ?? []
-                    ).slice(0, 3);
-                    return (
-                      <div
-                        key={cell.date}
-                        className={`min-h-28 rounded-xl border p-2 ${
-                          cell.inMonth
-                            ? "border-white/10 bg-black/20"
-                            : "border-white/5 bg-black/10 opacity-60"
-                        }`}
-                      >
-                        <p className="text-xs font-semibold text-brand-text">
-                          {Number(cell.date.slice(-2))}
-                        </p>
-                        <div className="mt-2 space-y-1">
-                          {payments.map((payment) => {
-                            const computed = getComputedPaymentStatus(
-                              payment,
-                              today,
-                            );
-                            return (
-                              <button
-                                key={payment.id}
-                                type="button"
-                                onClick={() => startPaymentEdit(payment)}
-                                className={`block w-full truncate rounded-md border px-1.5 py-1 text-left text-[11px] ${statusClass(computed)}`}
-                                title={`${payment.athleteName} - ${formatCents(payment.expectedAmountCents)}`}
-                              >
-                                {payment.athleteName} -{" "}
-                                {formatCents(payment.expectedAmountCents)}
-                              </button>
-                            );
-                          })}
-                          {expenses.map((expense) => (
-                            <div
-                              key={expense.id}
-                              className="block w-full truncate rounded-md border border-red-400/35 bg-red-500/10 px-1.5 py-1 text-left text-[11px] text-red-100"
-                              title={`${expense.description} - ${formatCents(expense.amountCents)}`}
-                            >
-                              {expense.description} -{" "}
-                              {formatCents(expense.amountCents)}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-                <h2 className="text-lg font-semibold text-brand-text">
-                  Ficha financiera
-                </h2>
-                <label className="mt-3 block text-sm text-brand-muted">
-                  Atleta
-                  <select
-                    value={selectedAthlete}
-                    onChange={(event) => setSelectedAthlete(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                  >
-                    <option value="">Seleccionar atleta</option>
-                    {data.athletes.map((athlete) => (
-                      <option key={athlete.username} value={athlete.username}>
-                        {athlete.name} ({athlete.username})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {selectedAthleteData ? (
-                  <div className="mt-4 space-y-4">
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                      <p className="text-base font-semibold text-brand-text">
-                        {selectedAthleteData.athlete.name}
-                      </p>
-                      <p className="text-sm text-brand-muted">
-                        {selectedAthleteData.athlete.username}
-                      </p>
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-semibold text-brand-text">
-                        Contratos
-                      </h3>
-                      <div className="mt-2 space-y-2">
-                        {selectedAthleteData.contracts.length ? (
-                          selectedAthleteData.contracts.map((contract) => (
-                            <article
-                              key={contract.id}
-                              className="rounded-xl border border-white/10 bg-black/20 p-3"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <p className="text-sm font-semibold text-brand-text">
-                                    {contract.planLabel}
-                                  </p>
-                                  <p className="text-xs text-brand-muted">
-                                    {formatDate(contract.startDate)} -{" "}
-                                    {formatDate(contract.endDate)}
-                                  </p>
-                                </div>
-                                <span className="rounded-full border border-white/15 px-2 py-1 text-[11px] text-brand-muted">
-                                  {contractStatusLabel(contract.status)}
-                                </span>
-                              </div>
-                              <p className="mt-2 text-sm text-brand-text">
-                                {formatCents(
-                                  contract.totalAmountCents,
-                                  contract.currency,
-                                )}
-                              </p>
-                              <p className="mt-1 text-xs text-brand-muted">
-                                Renovacion:{" "}
-                                {formatDate(contract.renewalDueDate)}
-                              </p>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => renewContract(contract, true)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
-                                >
-                                  <RefreshCw className="h-3.5 w-3.5" />
-                                  Mismas condiciones
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => renewContract(contract, false)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-2.5 py-1.5 text-xs text-brand-muted transition hover:bg-white/10"
-                                >
-                                  Renovar distinto
-                                </button>
-                                {contract.status === "active" ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        handleContractStatus(
-                                          contract,
-                                          "finished",
-                                        )
-                                      }
-                                      disabled={
-                                        contractActionId === contract.id
-                                      }
-                                      className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/35 px-2.5 py-1.5 text-xs text-emerald-200 transition hover:bg-emerald-500/10 disabled:opacity-60"
-                                    >
-                                      <CheckCircle2 className="h-3.5 w-3.5" />
-                                      Finalizar
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        handleContractStatus(
-                                          contract,
-                                          "cancelled",
-                                          true,
-                                        )
-                                      }
-                                      disabled={
-                                        contractActionId === contract.id
-                                      }
-                                      className="inline-flex items-center gap-1 rounded-lg border border-red-400/35 px-2.5 py-1.5 text-xs text-red-200 transition hover:bg-red-500/10 disabled:opacity-60"
-                                    >
-                                      <XCircle className="h-3.5 w-3.5" />
-                                      Cancelar
-                                    </button>
-                                  </>
-                                ) : null}
-                              </div>
-                            </article>
-                          ))
-                        ) : (
-                          <p className="text-sm text-brand-muted">
-                            Sin contratos registrados.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-semibold text-brand-text">
-                        Ultimos pagos
-                      </h3>
-                      <div className="mt-2 space-y-2">
-                        {selectedAthleteData.payments
-                          .slice(0, 6)
-                          .map((payment) => {
-                            const computed = getComputedPaymentStatus(
-                              payment,
-                              today,
-                            );
-                            return (
-                              <button
-                                key={payment.id}
-                                type="button"
-                                onClick={() => startPaymentEdit(payment)}
-                                className="w-full rounded-xl border border-white/10 bg-black/20 p-3 text-left transition hover:border-brand-accent/40"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="text-sm text-brand-text">
-                                    {formatDate(payment.dueDate)}
-                                  </span>
-                                  <span
-                                    className={`rounded-full border px-2 py-1 text-[11px] ${statusClass(computed)}`}
-                                  >
-                                    {statusLabel(computed)}
-                                  </span>
-                                </div>
-                                <p className="mt-1 text-sm font-semibold text-brand-text">
-                                  {formatCents(payment.expectedAmountCents)}
-                                </p>
-                              </button>
-                            );
-                          })}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="mt-4 text-sm text-brand-muted">
-                    Selecciona un atleta para ver sus contratos, pagos e
-                    historico.
-                  </p>
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+            </section>            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
               <div className="flex items-center gap-2">
                 <ReceiptText className="h-5 w-5 text-brand-accent" />
                 <h2 className="text-lg font-semibold text-brand-text">
@@ -2987,9 +2663,10 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                           </p>
                         </div>
                         <p className="shrink-0 text-sm font-semibold text-red-100">
-                          {formatCents(expense.amountCents, expense.currency)}
+                          {formatCents(expenseEuroCents(expense))}
                         </p>
                       </div>
+                      {expense.currency !== "EUR" ? <p className="mt-2 text-xs text-brand-muted">Original: {formatCents(expense.amountCents, expense.currency)} · Cambio del {formatDate(expense.exchangeRateDate || DEFAULT_EXCHANGE_RATES.date)}</p> : null}
                       {expense.notes ? (
                         <p className="mt-2 text-xs text-brand-muted">
                           {expense.notes}
@@ -2997,9 +2674,9 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                       ) : null}
                       {invoiceFile ? (
                         <div className="mt-3 flex flex-wrap justify-end gap-2">
-                          {invoiceFile.webViewLink ? (
+                          {invoiceFile.driveFileId ? (
                             <a
-                              href={invoiceFile.webViewLink}
+                              href={`/api/admin/finance/expense-invoices/${invoiceFile.id}/pdf`}
                               target="_blank"
                               rel="noreferrer"
                               className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
@@ -3031,162 +2708,9 @@ export function AdminFinanceShell({ user }: AdminFinanceShellProps) {
                 ) : null}
               </div>
             </section>
+            </>}
+            <p className="text-center text-xs text-brand-muted">Importes contables en EUR · <a href="https://www.exchangerate-api.com" target="_blank" rel="noreferrer" className="underline underline-offset-2">Tipos de cambio de ExchangeRate-API</a></p>
 
-            <section className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-brand-text">
-                    Listado de pagos
-                  </h2>
-                  <p className="text-sm text-brand-muted">
-                    Buscar, filtrar y registrar cobros.
-                  </p>
-                </div>
-                <div className="grid gap-2 md:grid-cols-5 xl:min-w-[860px]">
-                  <label className="relative md:col-span-2">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-muted" />
-                    <input
-                      value={search}
-                      onChange={(event) => setSearch(event.target.value)}
-                      placeholder="Buscar atleta o plan"
-                      className="w-full rounded-xl border border-white/10 bg-black/20 py-2.5 pl-10 pr-3 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                    />
-                  </label>
-                  <select
-                    value={athleteFilter}
-                    onChange={(event) => setAthleteFilter(event.target.value)}
-                    className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                  >
-                    <option value="">Todos los atletas</option>
-                    {data.athletes.map((athlete) => (
-                      <option key={athlete.username} value={athlete.username}>
-                        {athlete.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={statusFilter}
-                    onChange={(event) =>
-                      setStatusFilter(
-                        event.target.value as
-                          "all" | FinanceComputedPaymentStatus,
-                      )
-                    }
-                    className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                  >
-                    <option value="all">Todos</option>
-                    <option value="pending">Pendiente</option>
-                    <option value="overdue">Vencido</option>
-                    <option value="paid">Cobrado</option>
-                    <option value="cancelled">Cancelado</option>
-                  </select>
-                  <select
-                    value={periodFilter}
-                    onChange={(event) =>
-                      setPeriodFilter(
-                        event.target.value as
-                          "all" | "month" | "next30" | "overdue",
-                      )
-                    }
-                    className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
-                  >
-                    <option value="all">Todo el periodo</option>
-                    <option value="month">Mes actual</option>
-                    <option value="next30">Prox. 30 dias</option>
-                    <option value="overdue">Solo vencidos</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
-                <table className="min-w-[980px] w-full text-sm">
-                  <thead className="bg-black/30 text-xs uppercase tracking-[0.14em] text-brand-muted">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Atleta</th>
-                      <th className="px-3 py-2 text-left">Plan</th>
-                      <th className="px-3 py-2 text-left">Fecha prevista</th>
-                      <th className="px-3 py-2 text-left">Importe</th>
-                      <th className="px-3 py-2 text-left">Estado</th>
-                      <th className="px-3 py-2 text-left">Fecha cobro</th>
-                      <th className="px-3 py-2 text-left">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredPayments.length ? (
-                      filteredPayments.map((payment) => {
-                        const computed = getComputedPaymentStatus(
-                          payment,
-                          today,
-                        );
-                        return (
-                          <tr
-                            key={payment.id}
-                            className="border-t border-white/10"
-                          >
-                            <td className="px-3 py-2 text-brand-text">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setSelectedAthlete(payment.athleteUsername)
-                                }
-                                className="text-left font-medium transition hover:text-brand-accent"
-                              >
-                                {payment.athleteName ||
-                                  getAthleteName(
-                                    data.athletes,
-                                    payment.athleteUsername,
-                                  )}
-                              </button>
-                            </td>
-                            <td className="px-3 py-2 text-brand-muted">
-                              {payment.planLabel}{" "}
-                              {payment.sequenceCount > 1
-                                ? `(${payment.sequenceIndex}/${payment.sequenceCount})`
-                                : ""}
-                            </td>
-                            <td className="px-3 py-2 text-brand-text">
-                              {formatDate(payment.dueDate)}
-                            </td>
-                            <td className="px-3 py-2 text-brand-text">
-                              {formatCents(payment.expectedAmountCents)}
-                            </td>
-                            <td className="px-3 py-2">
-                              <span
-                                className={`rounded-full border px-2 py-1 text-xs ${statusClass(computed)}`}
-                              >
-                                {statusLabel(computed)}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2 text-brand-muted">
-                              {formatDate(payment.paidAt)}
-                            </td>
-                            <td className="px-3 py-2">
-                              <button
-                                type="button"
-                                onClick={() => startPaymentEdit(payment)}
-                                className="inline-flex items-center gap-2 rounded-lg border border-brand-accent/35 px-3 py-1.5 text-xs text-brand-text transition hover:bg-brand-accent/10"
-                              >
-                                <CreditCard className="h-3.5 w-3.5" />
-                                Gestionar
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    ) : (
-                      <tr>
-                        <td
-                          colSpan={7}
-                          className="px-3 py-8 text-center text-brand-muted"
-                        >
-                          No hay pagos para los filtros seleccionados.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
           </>
         )}
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/auth/require-session";
 import { buildFinanceDashboard } from "@/lib/finance/calculations";
+import { getFinanceExchangeRates } from "@/lib/finance/exchange-rates-server";
 import { listFinanceRecords } from "@/lib/google/finance";
 import { readUsersFromSheetCached } from "@/lib/google/sheets";
 import { logError } from "@/lib/logger";
@@ -14,7 +15,7 @@ export async function GET() {
   if (!auth.session) return auth.response;
 
   try {
-    const [users, finance] = await Promise.all([readUsersFromSheetCached(), listFinanceRecords()]);
+    const [users, finance, exchangeRates] = await Promise.all([readUsersFromSheetCached(), listFinanceRecords(), getFinanceExchangeRates()]);
     const athletes = users
       .filter((user) => user.permission === "user")
       .map((user) => ({
@@ -26,6 +27,7 @@ export async function GET() {
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
 
     return NextResponse.json({
+      exchangeRates,
       athletes,
       contracts: finance.contracts,
       payments: finance.payments,

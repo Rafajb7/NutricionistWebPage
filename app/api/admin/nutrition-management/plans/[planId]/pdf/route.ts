@@ -26,7 +26,7 @@ function isValidId(value: string): boolean {
 }
 
 const pdfOptionsSchema = z.object({
-  includeMacros: z.boolean().optional().default(true),
+  includeMacros: z.boolean().optional().default(false),
   mode: z.enum(["review", "published"]).optional().default("review"),
   plan: nutritionPlanSaveSchema.optional()
 });

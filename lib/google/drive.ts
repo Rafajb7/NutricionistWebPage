@@ -444,21 +444,13 @@ export async function uploadFinanceExpenseInvoicePdf(
     env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
     "Facturas"
   );
-  const receivedFolderId = await ensureDriveFolder(
-    drive,
-    invoicesFolderId,
-    "Facturas recibidas"
-  );
-
-  const safeOriginal = sanitizeDriveFileName(input.originalFileName);
-  const hasPdfExtension = /\.pdf$/i.test(safeOriginal);
-  const baseName = hasPdfExtension ? safeOriginal : `${safeOriginal}.pdf`;
-  const driveFileName = `${new Date().toISOString().slice(0, 10)}_${Date.now()}_${baseName}`;
+  const safeOriginal = input.originalFileName.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").trim() || "factura.pdf";
+  const driveFileName = /\.pdf$/i.test(safeOriginal) ? safeOriginal : `${safeOriginal}.pdf`;
 
   const created = await drive.files.create({
     requestBody: {
       name: driveFileName,
-      parents: [receivedFolderId],
+      parents: [invoicesFolderId],
       appProperties: {
         matFileType: "finance-expense-invoice"
       }

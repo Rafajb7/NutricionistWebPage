@@ -166,6 +166,28 @@ describe("finance calculations", () => {
     ).toBe("overdue");
   });
 
+  it("registers the reservation at the start and distributes only the remainder", () => {
+    const payments = buildFinancePaymentsForContract(baseContractInput({
+      totalAmountCents: 120000, reservationAmountCents: 20000, paymentCount: 5,
+      startDate: "2026-08-25", firstPaymentDate: "2026-09-01", paymentAmountCents: 99999
+    }), "contract", "now", () => "id");
+    expect(payments).toHaveLength(6);
+    expect(payments[0]).toMatchObject({ status: "paid", dueDate: "2026-08-25", paidAt: "2026-08-25", paidAmountCents: 20000 });
+    expect(payments.slice(1).map(p => p.expectedAmountCents)).toEqual([20000, 20000, 20000, 20000, 20000]);
+    expect(payments.slice(1).map(p => p.dueDate)).toEqual(["2026-09-01", "2026-10-01", "2026-11-01", "2026-12-01", "2027-01-01"]);
+    expect(payments.reduce((sum, p) => sum + p.expectedAmountCents, 0)).toBe(120000);
+  });
+
+  it("keeps every cent and supports a fully prepaid contract", () => {
+    const build = (overrides: Partial<CreateFinanceContractInput>) => buildFinancePaymentsForContract(baseContractInput(overrides), "contract", "now", () => "id");
+    expect(build({ totalAmountCents: 10001, reservationAmountCents: 1000, paymentCount: 3 }).map(p => p.expectedAmountCents)).toEqual([1000, 3001, 3000, 3000]);
+    expect(build({ reservationAmountCents: 120000 })).toHaveLength(1);
+    expect(build({ financed: false, reservationAmountCents: 20000 }).map(p => p.expectedAmountCents)).toEqual([20000, 100000]);
+    expect(() => build({ reservationAmountCents: 120001 })).toThrow();
+    expect(() => build({ reservationAmountCents: -1 })).toThrow();
+    expect(() => build({ totalAmountCents: 10, paymentCount: 12 })).toThrow();
+  });
+
   it("builds dashboard totals and renewal alerts", () => {
     const contract: FinanceContract = {
       id: "contract-1",

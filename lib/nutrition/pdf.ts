@@ -1,3 +1,4 @@
+import { drawGuidanceSection } from "./pdf-guidance";
 import { normalizeFoodQuantity } from "@/lib/nutrition/quantity-units";
 import fs from "node:fs";
 import path from "node:path";
@@ -1181,33 +1182,13 @@ function drawRoadmapPage(doc: PDFKit.PDFDocument, steps: AthleteRoadmapStep[]) {
   }
 }
 
-function drawGuidanceSection(doc: PDFKit.PDFDocument, title: string, subtitle: string, text: string) {
-  const lines = wrapPdfText(doc, text, 848, 11);
-  const linesPerPage = 20;
-  const count = Math.max(1, Math.ceil(lines.length / linesPerPage));
-  for (let page = 0; page < count; page++) {
-    doc.addPage(MENU_PAGE);
-    paintPdfLines(doc, [uppercase(title)], 34, 36, 30, COLORS.white, true);
-    paintPdfLines(doc, [subtitle], 34, 85, 8, COLORS.yellow, true);
-    const batch = lines.slice(page * linesPerPage, (page + 1) * linesPerPage);
-    const height = Math.max(80, batch.length * 15.4 + 30);
-    doc.rect(34, 123, 892, height).fill(COLORS.panel);
-    doc.rect(34, 123, 2, height).fill(COLORS.yellow);
-    paintPdfLines(doc, batch, 56, 138, 11, "#D8D8D3");
-    if (count > 1) paintPdfLines(doc, [`${page + 1} / ${count}`], 852, 86, 8, COLORS.muted);
-    if (title === "Recomendaciones" && page === count - 1) {
-      paintPdfLines(doc, ["CADA PAUTA EXISTE PARA LLEGAR EN TU MEJOR ESTADO POSIBLE."], 34, 468, 8, COLORS.yellow, true);
-    }
-  }
-}
-
 export async function renderNutritionPlanPdf(
   plan: NutritionPlanFull,
   options: NutritionPlanPdfOptions = {}
 ): Promise<Buffer> {
   const primaryPlan = normalizePdfPlanQuantities(plan);
   const normalizedComparisonPlans = (options.comparisonPlans ?? []).map(normalizePdfPlanQuantities);
-  const includeMacros = options.includeMacros !== false;
+  const includeMacros = options.includeMacros === true;
   const roadmapSteps = [...(options.roadmapSteps ?? [])].sort((a, b) => a.position - b.position);
 
   return new Promise((resolve, reject) => {
@@ -1256,13 +1237,13 @@ export async function renderNutritionPlanPdf(
     });
     sections.push({ title: "Suplementacion", detail: "Indicaciones del nutricionista", referenceStyle: true,
       draw: () => drawGuidanceSection(doc, "Suplementacion", "APOYO COMPLEMENTARIO",
-        primaryPlan.supplementation.trim() || "Sin suplementacion pautada.") });
+        primaryPlan.supplementation, "Sin suplementacion pautada.") });
     sections.push({ title: "Observaciones", detail: "Aclaraciones del plan", referenceStyle: true,
       draw: () => drawGuidanceSection(doc, "Observaciones", "ACLARACIONES DEL NUTRICIONISTA",
-        primaryPlan.notes.trim() || "Sin observaciones adicionales.") });
+        primaryPlan.notes, "Sin observaciones adicionales.") });
     sections.push({ title: "Recomendaciones", detail: "Pautas generales", referenceStyle: true,
       draw: () => drawGuidanceSection(doc, "Recomendaciones", "PAUTAS GENERALES",
-        primaryPlan.recommendations.trim() || "Sin recomendaciones adicionales.") });
+        primaryPlan.recommendations, "Sin recomendaciones adicionales.") });
     if (roadmapSteps.length) sections.push({ title: "Hoja de ruta", detail: `${roadmapSteps.length} etapas del proceso`, referenceStyle: true,
       draw: () => drawRoadmapPage(doc, roadmapSteps) });
     if (includeMacros) sections.push({ title: "Comparativa de planes", detail: "Distribucion de macros y energia", draw: () => {
