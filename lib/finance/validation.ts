@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FINANCE_CURRENCY_CODES } from "./currencies";
 import { isIsoDate, parseCurrencyToCents } from "@/lib/finance/calculations";
 
 const optionalText = z.string().max(1000).optional();
@@ -28,7 +29,7 @@ const optionalAmountSchema = z
     return cents !== null && cents > 0;
   }, "Invalid amount.");
 
-export const financeContractRequestSchema = z.object({
+const financeContractBaseSchema = z.object({
   athleteUsername: z.string().min(1).max(120),
   planKey: z.string().min(1).max(80),
   planLabel: z.string().min(1).max(120).optional(),
@@ -36,7 +37,8 @@ export const financeContractRequestSchema = z.object({
   startDate: dateSchema,
   firstPaymentDate: dateSchema,
   totalAmount: amountSchema,
-  currency: z.string().trim().min(3).max(3).default("EUR"),
+  reservationAmount: z.string().max(40).optional().refine(value => !value?.trim() || (parseCurrencyToCents(value) !== null && parseCurrencyToCents(value)! >= 0), "Reserva no válida."),
+  currency: z.literal("EUR").default("EUR"),
   financed: z.coerce.boolean().default(false),
   paymentCount: z.coerce.number().int().min(1).max(120).default(1),
   paymentAmount: optionalAmountSchema,
@@ -46,9 +48,19 @@ export const financeContractRequestSchema = z.object({
   notes: optionalText
 });
 
-export const financeContractOnUserCreateSchema = financeContractRequestSchema.omit({
+function validateContractAmounts(value: z.infer<typeof financeContractBaseSchema> | Omit<z.infer<typeof financeContractBaseSchema>, "athleteUsername">, ctx: z.RefinementCtx) {
+  const total = parseCurrencyToCents(value.totalAmount);
+  const reservation = value.reservationAmount?.trim() ? parseCurrencyToCents(value.reservationAmount) : 0;
+  if (total === null || reservation === null) return;
+  if (reservation > total) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reservationAmount"], message: "La reserva no puede superar el importe total." });
+  const count = value.financed ? value.paymentCount : 1;
+  if (total > reservation && total - reservation < count) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentCount"], message: "El saldo no permite tantas cuotas." });
+}
+
+export const financeContractRequestSchema = financeContractBaseSchema.superRefine(validateContractAmounts);
+export const financeContractOnUserCreateSchema = financeContractBaseSchema.omit({
   athleteUsername: true
-});
+}).superRefine(validateContractAmounts);
 
 export const financePaymentUpdateRequestSchema = z
   .object({
@@ -74,7 +86,9 @@ export const financeExpenseRequestSchema = z.object({
   category: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(180),
   amount: amountSchema,
-  currency: z.string().trim().min(3).max(3).default("EUR"),
+  vatRate: z.coerce.number().min(0).max(100).default(0),
+  vatDeductible: z.boolean().default(false),
+  currency: z.enum(FINANCE_CURRENCY_CODES).default("EUR"),
   notes: optionalText
 });
 
@@ -128,7 +142,7 @@ export const financeInvoiceRequestSchema = z.object({
     .min(1)
     .max(20),
   irpfRate: z.coerce.number().min(0).max(100).default(0),
-  currency: z.string().trim().min(3).max(3).default("EUR"),
+  currency: z.literal("EUR").default("EUR"),
   paymentMethod: optionalShortText,
   notes: optionalText
 });

@@ -25,6 +25,11 @@ export function buildCreateFinanceContractInput(input: {
   }
 
   const financed = input.payload.financed;
+  const total = parseRequiredAmountToCents(input.payload.totalAmount);
+  const reservation = parseOptionalAmountToCents(input.payload.reservationAmount) ?? 0;
+  if (reservation > total) throw new Error("La reserva no puede superar el importe total.");
+  const count = financed ? input.payload.paymentCount : 1;
+  if (total > reservation && total - reservation < count) throw new Error("El saldo no permite tantas cuotas.");
   return {
     athleteUsername: input.athlete.username,
     athleteName: input.athlete.name,
@@ -33,13 +38,12 @@ export function buildCreateFinanceContractInput(input: {
     durationMonths,
     startDate: input.payload.startDate,
     firstPaymentDate: input.payload.firstPaymentDate,
-    totalAmountCents: parseRequiredAmountToCents(input.payload.totalAmount),
+    totalAmountCents: total,
+    reservationAmountCents: reservation,
     currency: input.payload.currency.toUpperCase(),
     financed,
     paymentCount: financed ? input.payload.paymentCount : 1,
-    paymentAmountCents: financed
-      ? parseOptionalAmountToCents(input.payload.paymentAmount)
-      : null,
+    paymentAmountCents: Math.ceil((total - reservation) / count),
     paymentIntervalMonths: financed ? input.payload.paymentIntervalMonths : 1,
     previousContractId: input.payload.previousContractId,
     idempotencyKey: input.payload.idempotencyKey,

@@ -25,6 +25,14 @@ async function inspect(data: Buffer) {
 }
 
 describe("nutrition PDF index and reference layout", () => {
+  it("omits macros unless explicitly requested", async () => {
+    const { pages } = await inspect(await renderNutritionPlanPdf(makeCardPlan()));
+    const text = pages.map((page) => page.text).join(" ");
+    expect(text).not.toContain("MACROS POR COMIDA");
+    expect(text).not.toContain("COMPARATIVA DE PLANES");
+    expect(text).toContain("RECOMENDACIONES");
+  });
+
   it.each([true, false])("links the index to real section pages and back (macros %s)", async (includeMacros) => {
     const { pages, destinations } = await inspect(await renderNutritionPlanPdf(makeCardPlan(), { includeMacros }));
     expect(destinations.get("nutrition-contents")).toBe(2);

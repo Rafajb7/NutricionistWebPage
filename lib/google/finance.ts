@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { google } from "googleapis";
 import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
+import { expenseEuroConversion } from "@/lib/finance/exchange-rates";
+import { getFinanceExchangeRates } from "@/lib/finance/exchange-rates-server";
 import { isGoogleRateLimitError, withGoogleApiRetry } from "@/lib/google/retry";
 import {
   buildFinancePaymentsForContract,
@@ -101,7 +103,8 @@ const CONTRACT_HEADERS = [
   "Idempotency key",
   "Notas",
   "Creado",
-  "Actualizado"
+  "Actualizado",
+  "Reserva cents"
 ];
 
 const PAYMENT_HEADERS = [
@@ -131,7 +134,12 @@ const EXPENSE_HEADERS = [
   "Moneda",
   "Notas",
   "Creado",
-  "Actualizado"
+  "Actualizado",
+  "IVA %",
+  "IVA deducible",
+  "Importe EUR cents",
+  "Cambio a EUR",
+  "Fecha cambio"
 ];
 
 const EXPENSE_INVOICE_FILE_HEADERS = [
@@ -690,7 +698,8 @@ function parseContract(row: string[]): FinanceContract | null {
     idempotencyKey: String(row[17] ?? "").trim(),
     notes: String(row[18] ?? "").trim(),
     createdAt: String(row[19] ?? "").trim(),
-    updatedAt: String(row[20] ?? "").trim()
+    updatedAt: String(row[20] ?? "").trim(),
+    reservationAmountCents: parseInteger(row[21])
   };
 }
 
@@ -734,7 +743,12 @@ function parseExpense(row: string[]): FinanceExpense | null {
     currency: String(row[5] ?? "EUR").trim() || "EUR",
     notes: String(row[6] ?? "").trim(),
     createdAt: String(row[7] ?? "").trim(),
-    updatedAt: String(row[8] ?? "").trim()
+    updatedAt: String(row[8] ?? "").trim(),
+    vatRate: parseNumber(row[9]),
+    vatDeductible: parseBoolean(row[10], false),
+    euroAmountCents: String(row[11] ?? "").trim() ? parseInteger(row[11]) : undefined,
+    exchangeRateToEur: String(row[12] ?? "").trim() ? parseNumber(row[12]) : undefined,
+    exchangeRateDate: String(row[13] ?? "").trim()
   };
 }
 
@@ -919,7 +933,8 @@ function serializeContract(contract: FinanceContract): Array<string | number> {
     contract.idempotencyKey,
     contract.notes,
     contract.createdAt,
-    contract.updatedAt
+    contract.updatedAt,
+    contract.reservationAmountCents ?? 0
   ];
 }
 
@@ -953,7 +968,12 @@ function serializeExpense(expense: FinanceExpense): Array<string | number> {
     expense.currency,
     expense.notes,
     expense.createdAt,
-    expense.updatedAt
+    expense.updatedAt,
+    expense.vatRate ?? 0,
+    toSheetBoolean(expense.vatDeductible ?? false),
+    expense.euroAmountCents ?? "",
+    expense.exchangeRateToEur !== undefined ? String(expense.exchangeRateToEur) : "",
+    expense.exchangeRateDate ?? ""
   ];
 }
 
@@ -1276,12 +1296,17 @@ export async function getFinanceInvoiceById(invoiceId: string): Promise<FinanceI
 
 export async function createFinanceExpense(input: CreateFinanceExpenseInput): Promise<FinanceExpense> {
   const now = new Date().toISOString();
+  const currency = input.currency.trim().toUpperCase() || "EUR";
+  const conversion = expenseEuroConversion(input.amountCents, currency, currency === "EUR" ? undefined : await getFinanceExchangeRates());
   const expense: FinanceExpense = {
+    ...conversion,
     id: randomUUID(),
     date: input.date,
     category: input.category.trim().slice(0, 120),
     description: input.description.trim().slice(0, 180),
     amountCents: Math.max(1, Math.trunc(input.amountCents)),
+    vatRate: input.vatRate ?? 0,
+    vatDeductible: input.vatDeductible ?? false,
     currency: input.currency.trim().toUpperCase() || "EUR",
     notes: input.notes?.trim().slice(0, 1000) ?? "",
     createdAt: now,
@@ -1296,13 +1321,18 @@ export async function createFinanceExpenseWithInvoiceFile(
   input: CreateFinanceExpenseInvoiceFileInput
 ): Promise<{ expense: FinanceExpense | null; expenseInvoiceFile: FinanceExpenseInvoiceFile }> {
   const now = new Date().toISOString();
+  const currency = input.expense?.currency.trim().toUpperCase() || "EUR";
+  const conversion = input.expense ? expenseEuroConversion(input.expense.amountCents, currency, currency === "EUR" ? undefined : await getFinanceExchangeRates()) : null;
   const expense = input.expense
     ? {
+        ...conversion,
         id: randomUUID(),
         date: input.expense.date,
         category: input.expense.category.trim().slice(0, 120),
         description: input.expense.description.trim().slice(0, 180),
         amountCents: Math.max(1, Math.trunc(input.expense.amountCents)),
+        vatRate: input.expense.vatRate ?? 0,
+        vatDeductible: input.expense.vatDeductible ?? false,
         currency: input.expense.currency.trim().toUpperCase() || "EUR",
         notes: input.expense.notes?.trim().slice(0, 1000) ?? "",
         createdAt: now,
@@ -1384,9 +1414,7 @@ export async function createFinanceContractWithPayments(
   const contractId = randomUUID();
   const contractDates = getContractDates(input.startDate, input.durationMonths);
   const paymentCount = input.financed ? Math.max(1, Math.trunc(input.paymentCount)) : 1;
-  const paymentAmountCents = input.financed
-    ? input.paymentAmountCents ?? Math.floor(input.totalAmountCents / paymentCount)
-    : input.totalAmountCents;
+  const paymentAmountCents = Math.ceil((input.totalAmountCents - (input.reservationAmountCents ?? 0)) / paymentCount);
 
   const contract: FinanceContract = {
     id: contractId,
@@ -1399,6 +1427,7 @@ export async function createFinanceContractWithPayments(
     endDate: contractDates.endDate,
     renewalDueDate: contractDates.renewalDueDate,
     totalAmountCents: Math.max(1, Math.trunc(input.totalAmountCents)),
+    reservationAmountCents: input.reservationAmountCents ?? 0,
     currency: input.currency.trim().toUpperCase() || "EUR",
     financed: input.financed,
     paymentCount,

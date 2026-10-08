@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   try {
     const parsed = financeContractRequestSchema.safeParse(await req.json());
     if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+      return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Revisa los datos del contrato." }, { status: 400 });
     }
 
     const targetUsername = normalizeUsername(parsed.data.athleteUsername);

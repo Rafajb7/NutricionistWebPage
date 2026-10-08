@@ -94,7 +94,7 @@ describe("nutrition PDF review route", () => {
     expect(response.headers.get("X-Nutrition-Pdf-Partial")).toBe("true");
     expect(mocks.getPlan).not.toHaveBeenCalled();
     expect(mocks.render).toHaveBeenCalledWith(plan, {
-      includeMacros: true, comparisonPlans: [plan], roadmapSteps: []
+      includeMacros: false, comparisonPlans: [plan], roadmapSteps: []
     });
   });
 
@@ -215,6 +215,7 @@ describe("nutrition PDF publication", () => {
   ])("identifies publication failures instead of a generic PDF error", async (error, status, code) => {
     mocks.upload.mockRejectedValue(error);
     const response = await publish(request({ includeMacros: true }), context);
+    expect(mocks.render).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeMacros: true }));
     expect(response.status).toBe(status);
     expect(await response.json()).toMatchObject({ code });
     expect(mocks.markPublished).not.toHaveBeenCalled();
@@ -225,5 +226,6 @@ describe("nutrition PDF publication", () => {
     const response = await publish(request({}), context);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, partial: true });
+    expect(mocks.render).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeMacros: false }));
   });
 });

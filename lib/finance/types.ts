@@ -25,6 +25,7 @@ export type FinanceContract = {
   endDate: string;
   renewalDueDate: string;
   totalAmountCents: number;
+  reservationAmountCents?: number;
   currency: string;
   financed: boolean;
   paymentCount: number;
@@ -62,6 +63,11 @@ export type FinanceExpense = {
   category: string;
   description: string;
   amountCents: number;
+  euroAmountCents?: number;
+  exchangeRateToEur?: number;
+  exchangeRateDate?: string;
+  vatRate?: number;
+  vatDeductible?: boolean;
   currency: string;
   notes: string;
   createdAt: string;
@@ -221,6 +227,7 @@ export type CreateFinanceContractInput = {
   startDate: string;
   firstPaymentDate: string;
   totalAmountCents: number;
+  reservationAmountCents?: number;
   currency: string;
   financed: boolean;
   paymentCount: number;
@@ -254,6 +261,8 @@ export type CreateFinanceExpenseInput = {
   category: string;
   description: string;
   amountCents: number;
+  vatRate?: number;
+  vatDeductible?: boolean;
   currency: string;
   notes?: string;
 };

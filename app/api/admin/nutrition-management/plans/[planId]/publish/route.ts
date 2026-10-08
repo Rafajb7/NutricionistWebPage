@@ -30,9 +30,9 @@ function isValidId(value: string): boolean {
 async function parsePdfOptions(req: Request): Promise<{ includeMacros: boolean }> {
   try {
     const body = (await req.json()) as { includeMacros?: unknown };
-    return { includeMacros: body.includeMacros !== false };
+    return { includeMacros: body.includeMacros === true };
   } catch {
-    return { includeMacros: true };
+    return { includeMacros: false };
   }
 }
 
