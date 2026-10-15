@@ -191,6 +191,69 @@ describe("nutrition editor saves with concurrent editing", () => {
     });
   }
 
+  async function openEditorWithGuidanceSource() {
+    const source = {
+      ...makePlan("source"), athleteUsername: "source-athlete", athleteName: "Atleta de origen",
+      notes: "Observación del origen\nSegunda observación",
+      supplementation: "Suplementación del origen",
+      recommendations: "Recomendación del origen\nSegunda recomendación"
+    };
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      const response = await originalFetch(url, options);
+      if (url !== "/api/admin/nutrition-management") return response;
+      const data = await response.json();
+      return Response.json({ ...data, plans: [...data.plans, source] });
+    });
+    await openEditor();
+    return source;
+  }
+
+  const guidanceFields = [
+    { field: "notes", title: "Observaciones" },
+    { field: "supplementation", title: "Suplementación" },
+    { field: "recommendations", title: "Recomendaciones" }
+  ] as const;
+
+  it.each(guidanceFields)("copies $title alone into recovery and autosave without changing menus", async ({ field, title }) => {
+    const source = await openEditorWithGuidanceSource();
+    const existing = { notes: "Notas propias", supplementation: "Suplementación propia", recommendations: "Recomendaciones propias" };
+    for (const item of guidanceFields) {
+      const label = `${item.title}: entrada 1`;
+      if (!renderer!.root.findAllByProps({ "aria-label": label }).length) {
+        act(() => renderer!.root.findByProps({ "aria-label": `Añadir entrada en ${item.title}` }).props.onClick());
+      }
+      act(() => renderer!.root.findByProps({ "aria-label": label }).props.onChange({ target: { value: existing[item.field] } }));
+    }
+    act(() => renderer!.root.findByProps({ "aria-label": `Copiar ${title} de otro usuario` }).props.onClick());
+    act(() => renderer!.root.findByProps({ "aria-label": `Usuario de origen para ${title}` }).props.onChange({ target: { value: source.athleteUsername } }));
+    expect(listNutritionDraftRecoveries(storage, "nutritionist").drafts[0].plan).toMatchObject(existing);
+    act(() => renderer!.root.findByProps({ "aria-label": `Aplicar copia de ${title}` }).props.onClick());
+    const expected = { ...existing, [field]: source[field] };
+    expect(listNutritionDraftRecoveries(storage, "nutritionist").drafts[0].plan).toMatchObject({
+      ...expected, id: "plan-000A", athleteUsername: "athlete", name: "Plan A",
+      meals: [{ id: "meal-A", name: "Comida", entries: [] }]
+    });
+    expect(putCount()).toBe(0);
+    await advance(30_000);
+    expect(submitted).toMatchObject({ ...expected, id: "plan-000A", athleteUsername: "athlete" });
+    expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method === "PUT").map(([url]) => url))
+      .toEqual(["/api/admin/nutrition-management/plans/plan-000A"]);
+    await respondToSave();
+    expect(renderer!.root.findByProps({ "aria-label": `${title}: entrada 1` }).props.value).toBe(source[field].split("\n")[0]);
+    expect(listNutritionDraftRecoveries(storage, "nutritionist").drafts).toEqual([]);
+  });
+
+  it("discards the copy preview when changing the destination plan", async () => {
+    await openEditorWithGuidanceSource();
+    act(() => renderer!.root.findByProps({ "aria-label": "Copiar Observaciones de otro usuario" }).props.onClick());
+    act(() => renderer!.root.findByProps({ "aria-label": "Usuario de origen para Observaciones" }).props.onChange({ target: { value: "source-athlete" } }));
+    await selectSecondPlan();
+    expect(renderer!.root.findAllByProps({ "aria-label": "Aplicar copia de Observaciones" })).toHaveLength(0);
+    expect(notesInput().props.value).toBe("Servidor B");
+    expect(putCount()).toBe(0);
+  });
+
   it("keeps edits made after pressing save, with their recovery copy and dirty state", async () => {
     await openEditor();
     const noMacros = renderer!.root.findAllByType("button").find((button) => visibleText(button).includes("PDF sin macros"))!;

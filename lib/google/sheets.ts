@@ -19,6 +19,7 @@ import {
   type AthleteSex
 } from "@/lib/athlete-profile";
 import type { RevisionRow } from "@/lib/google/types";
+import { parseRevisionQuestionRows, type SheetRevisionQuestion } from "@/lib/revision-questions";
 import { logError } from "@/lib/logger";
 import { DEFAULT_EXERCISE_CATALOG } from "@/lib/routines/default-exercises";
 
@@ -1312,12 +1313,10 @@ export async function updateUserInSheet(input: {
   };
 }
 
-export async function readQuestionsFromSheet(): Promise<string[]> {
+export async function readQuestionsFromSheet(): Promise<SheetRevisionQuestion[]> {
   const env = getEnv();
-  const values = await getValuesBySheetName(env.GOOGLE_QUESTIONS_SHEET_NAME, "A1:A");
-  return values
-    .map((row) => row[0]?.trim())
-    .filter((question): question is string => Boolean(question));
+  const values = await getValuesBySheetName(env.GOOGLE_QUESTIONS_SHEET_NAME, "A1:C");
+  return parseRevisionQuestionRows(values);
 }
 
 export async function appendRevisionRows(rows: RevisionRow[]): Promise<void> {

@@ -3,14 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { parseGuidanceEntries, serializeGuidanceEntries } from "@/lib/nutrition/guidance";
+import { NutritionGuidanceCopy, type NutritionGuidanceCopySource } from "@/components/admin/nutrition-guidance-copy";
 
 type Entry = { id: number; text: string };
 
-export function NutritionGuidanceEditor({ title, value, onChange, disabled = false }: {
+export function NutritionGuidanceEditor({ title, value, onChange, disabled = false, copyFrom }: {
   title: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  copyFrom?: NutritionGuidanceCopySource;
 }) {
   const nextId = useRef(0);
   const [entries, setEntries] = useState<Entry[]>(() =>
@@ -53,6 +55,13 @@ export function NutritionGuidanceEditor({ title, value, onChange, disabled = fal
         <h3 className="text-sm font-semibold text-brand-text">{title}</h3>
         <span className="text-xs text-brand-muted">{serializeGuidanceEntries(entries.map((entry) => entry.text)).length}/3000</span>
       </div>
+      {copyFrom ? <NutritionGuidanceCopy
+        title={title}
+        source={copyFrom}
+        hasContent={entries.some((entry) => entry.text.trim())}
+        disabled={disabled}
+        onCopy={(sourceValue) => commit(parseGuidanceEntries(sourceValue).map((text) => ({ id: nextId.current++, text })))}
+      /> : null}
       <div className="space-y-2">
         {entries.map((entry, index) => (
           <div key={entry.id} className="rounded-lg border border-white/10 bg-black/20 p-2">

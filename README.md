@@ -130,7 +130,13 @@ App:
   - Formulario en `/password/forgot` (usuario o email)
   - Envio de enlace por email con token firmado y expiracion (`PASSWORD_RESET_TTL_MINUTES`)
   - Cambio final en `/password/reset` pidiendo la nueva contrasena dos veces
-- Boton `Nueva revision` abre wizard 1 pregunta/paso leyendo `Preguntas` columna A.
+- Boton `Nueva revision` abre un wizard con este orden: peso medio semanal y pasos (los unicos fijos), seguidos por las preguntas del spreadsheet `Preguntas`, en el orden de sus filas.
+  - Todo el contenido editable, incluidas las 11 preguntas importadas del PDF, se lee de la primera pestaña del Sheet: columna A = pregunta, B = texto de ayuda, C = tipo (`texto` o `ciclo_menstrual`). Los cambios se reflejan al volver a cargar el formulario tras una cache de hasta 5 minutos, sin desplegar codigo.
+  - El Sheet actual no tiene fila de encabezados para conservar compatibilidad. Las notas de A1, B1 y C1 explican cada columna, y C tiene un desplegable de tipos. La app tambien admite un encabezado opcional `Pregunta | Ayuda | Tipo`.
+  - Las preguntas existentes que solo tienen columna A siguen funcionando como preguntas de texto; las medidas corporales mantienen su tratamiento numerico opcional.
+  - La pregunta marcada como `ciclo_menstrual` solo aparece si el perfil en `Users` tiene sexo mujer/femenino/female. Si el sexo no esta definido, no se muestra. Se puede editar su titulo y ayuda sin perder el calendario: la app usa el tipo de la columna C, no el texto, para reconocerla.
+  - Incluye selector de fase y un calendario compartido: inicio en rosa, fin previsto en violeta y proxima menstruacion opcional en ambar. Permite indicar fechas desconocidas o que no aplica.
+  - La respuesta del ciclo se guarda como texto legible con fase, dia del ciclo, estado, fechas y observaciones en el mismo registro de revisiones.
 - Guardado en `Revisiones` / worksheet `Revision`:
   - `Nombre | Fecha | Telegram | Pregunta | Respuesta`
 - Fotos:
@@ -145,6 +151,7 @@ App:
 - Herramientas admin > Gestion nutricional:
   - crea planes dinamicos por atleta usando usuarios existentes
   - guarda borradores en Google Sheets (`Gestion nutricional` por defecto)
+  - Observaciones, Suplementacion y Recomendaciones tienen su propia opcion `Copiar de otro usuario`: permite elegir usuario y plan de origen, ver las entradas y sustituir solo ese apartado. La copia mantiene el orden, respeta el limite de 3000 caracteres y entra en la recuperacion de borradores y el autoguardado habituales. Los planes publicados siguen siendo de solo lectura.
   - el catalogo de alimentos usa valores por 100 g: proteinas, carbohidratos, grasas, sodio y agua
   - cada alimento prescrito guarda snapshot nutricional para proteger planes historicos
   - cada alternativa admite de 1 a 5 alimentos desde `Anadir alimento a la alternativa`: forman una sola opcion, con cantidades editables y nutrientes totales conjuntos
