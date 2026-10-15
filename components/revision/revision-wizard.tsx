@@ -10,6 +10,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { MotionPage } from "@/components/ui/motion-page";
 import { readResponseErrorMessage, reportClientEvent } from "@/lib/client-events";
 import { prepareRevisionPhotoForUpload } from "@/lib/revision-photo-client";
+import { CycleQuestion } from "@/components/revision/cycle-question";
+import type { RevisionQuestion } from "@/lib/revision-questions";
+import {
+  emptyRevisionCycleAnswer, formatRevisionCycleAnswer, validateRevisionCycleAnswer
+} from "@/lib/revision-cycle";
 import {
   isLikelyAcceptedRevisionPhotoFile,
   REVISION_PHOTO_ACCEPT_ATTRIBUTE,
@@ -22,8 +27,6 @@ import {
 } from "@/lib/revision-measurements";
 
 const photoLabels = ["Frente", "Perfil izquierdo", "Perfil derecho", "Espalda"];
-const WEIGHT_AVERAGE_QUESTION = "PESO MEDIO SEMANAL (KG)";
-const STEPS_AVERAGE_QUESTION = "NUMERO DE PASOS";
 const PREVIOUS_WEEK_DAY_NAMES = [
   "Lunes",
   "Martes",
@@ -37,14 +40,6 @@ const PREVIOUS_WEEK_DAY_NAMES = [
 type WizardStage = "questions" | "photos" | "done";
 type StepsEntryMode = "average" | "daily";
 type WeeklyStepEntry = { date: string; steps: number };
-
-function normalizeQuestionKey(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim()
-    .toLowerCase();
-}
 
 function toLocalIsoDate(value: Date): string {
   const year = value.getFullYear();
@@ -93,10 +88,13 @@ function getPreviousWeekDates(referenceDate = new Date()): Array<{ date: string;
 
 export function RevisionWizard() {
   const previousWeekDates = useMemo(() => getPreviousWeekDates(), []);
-  const [questions, setQuestions] = useState<string[]>([]);
+  const [questions, setQuestions] = useState<RevisionQuestion[]>([]);
   const [loadingQuestions, setLoadingQuestions] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
+  const [cycleAnswer, setCycleAnswer] = useState(emptyRevisionCycleAnswer);
+  const [questionsError, setQuestionsError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [weightEntries, setWeightEntries] = useState<string[]>([""]);
   const [stepsEntryMode, setStepsEntryMode] = useState<StepsEntryMode>("average");
   const [stepsAverageEntry, setStepsAverageEntry] = useState("");
@@ -110,13 +108,18 @@ export function RevisionWizard() {
     "Tus respuestas se guardaron correctamente y el historico ya esta actualizado."
   );
 
-  const isWeightQuestion = questions[currentIndex] === WEIGHT_AVERAGE_QUESTION;
-  const isStepsQuestion = questions[currentIndex] === STEPS_AVERAGE_QUESTION;
-  const isMeasurementQuestion = isRevisionMeasurementQuestion(questions[currentIndex] ?? "");
+  const currentQuestion = questions[currentIndex];
+  const isWeightQuestion = currentQuestion?.type === "weight";
+  const isStepsQuestion = currentQuestion?.type === "steps";
+  const isCycleQuestion = currentQuestion?.type === "menstrual_cycle";
+  const questionHelp = currentQuestion?.help;
+  const isMeasurementQuestion = currentQuestion?.type === "text" && isRevisionMeasurementQuestion(currentQuestion.title);
 
   useEffect(() => {
     let active = true;
     async function load() {
+      setLoadingQuestions(true);
+      setQuestionsError(false);
       try {
         const res = await fetch("/api/questions");
         if (res.status === 401) {
@@ -124,23 +127,20 @@ export function RevisionWizard() {
           return;
         }
         if (!res.ok) throw new Error("No se pudieron cargar preguntas.");
-        const json = (await res.json()) as { questions: string[] };
+        const json = (await res.json()) as { questions: RevisionQuestion[] };
         if (!active) return;
-        const loadedFromSheet = json.questions ?? [];
-        const reservedQuestions = new Set([
-          normalizeQuestionKey(WEIGHT_AVERAGE_QUESTION),
-          normalizeQuestionKey(STEPS_AVERAGE_QUESTION)
-        ]);
-        const loaded = [
-          WEIGHT_AVERAGE_QUESTION,
-          STEPS_AVERAGE_QUESTION,
-          ...loadedFromSheet.filter(
-            (question) => !reservedQuestions.has(normalizeQuestionKey(question))
-          )
-        ];
+        const loaded = json.questions;
+        if (!Array.isArray(loaded) || !loaded.length || loaded.some((question) =>
+          !question || typeof question.title !== "string" || typeof question.help !== "string" ||
+          !["text", "weight", "steps", "menstrual_cycle"].includes(question.type)
+        )) {
+          throw new Error("No se pudieron cargar preguntas.");
+        }
         setQuestions(loaded);
         setAnswers(new Array(loaded.length).fill(""));
       } catch (error) {
+        if (!active) return;
+        setQuestionsError(true);
         console.error(error);
         toast.error("Error al cargar las preguntas.");
       } finally {
@@ -151,7 +151,7 @@ export function RevisionWizard() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadAttempt]);
 
   const progress = useMemo(() => {
     if (!questions.length) return 0;
@@ -297,18 +297,20 @@ export function RevisionWizard() {
     return questions
       .map((question, index) => {
         const rawAnswer = answers[index] ?? "";
-        const isMeasurement = isRevisionMeasurementQuestion(question);
+        const isMeasurement = question.type === "text" && isRevisionMeasurementQuestion(question.title);
         const normalizedAnswer =
-          question === WEIGHT_AVERAGE_QUESTION
+          question.type === "weight"
             ? getWeightAverageAnswer()
-            : question === STEPS_AVERAGE_QUESTION
+            : question.type === "steps"
               ? (stepsAverage === null ? "" : `${Math.round(stepsAverage)} pasos`)
-              : isMeasurement
-                ? normalizeRevisionMeasurementAnswer(rawAnswer)
-                : rawAnswer.trim();
+              : question.type === "menstrual_cycle"
+                ? formatRevisionCycleAnswer(cycleAnswer)
+                : isMeasurement
+                  ? normalizeRevisionMeasurementAnswer(rawAnswer)
+                  : rawAnswer.trim();
 
         return {
-          question,
+          question: question.title,
           answer: normalizedAnswer,
           rawAnswer,
           isMeasurement
@@ -319,11 +321,12 @@ export function RevisionWizard() {
   }
 
   function validateAllAnswers() {
+    if (questions.some((question) => question.type === "menstrual_cycle") && !validateCycleAnswer()) return null;
     const normalizedAnswers = getNormalizedAnswers();
     const hasInvalidMeasurement = questions.some((question, index) => {
       const rawAnswer = answers[index] ?? "";
       return (
-        isRevisionMeasurementQuestion(question) &&
+        question.type === "text" && isRevisionMeasurementQuestion(question.title) &&
         rawAnswer.trim().length > 0 &&
         parseRevisionMeasurementValue(rawAnswer) === null
       );
@@ -337,6 +340,15 @@ export function RevisionWizard() {
       return null;
     }
     return normalizedAnswers;
+  }
+
+  function validateCycleAnswer(): boolean {
+    const error = validateRevisionCycleAnswer(cycleAnswer);
+    if (error) {
+      toast.error(error);
+      return false;
+    }
+    return true;
   }
 
   function moveToPhotosStage() {
@@ -523,6 +535,11 @@ export function RevisionWizard() {
             <Skeleton className="mt-4 h-10 w-full" />
             <Skeleton className="mt-3 h-32 w-full" />
           </div>
+        ) : questionsError ? (
+          <div role="alert" className="rounded-3xl border border-white/10 bg-brand-surface/80 p-6">
+            <p className="mb-4 text-brand-text">No se pudieron cargar las preguntas. Vuelve a intentarlo para iniciar la revisión.</p>
+            <BrandButton onClick={() => setLoadAttempt((attempt) => attempt + 1)}>Reintentar</BrandButton>
+          </div>
         ) : stage === "questions" ? (
           <div className="rounded-3xl border border-white/10 bg-brand-surface/80 p-6">
             <div className="mb-5 h-2 w-full overflow-hidden rounded-full bg-white/10">
@@ -544,7 +561,8 @@ export function RevisionWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 transition={{ duration: 0.2 }}
               >
-                <h1 className="mt-3 text-2xl font-semibold text-brand-text">{questions[currentIndex]}</h1>
+                <h1 id="revision-question-title" className="mt-3 text-2xl font-semibold text-brand-text">{currentQuestion?.title}</h1>
+                {questionHelp ? <p id="revision-question-help" className="mt-3 text-sm leading-relaxed text-brand-muted">{questionHelp}</p> : null}
                 {isWeightQuestion ? (
                   <div className="mt-4 space-y-3">
                     <p className="text-sm text-brand-muted">
@@ -724,6 +742,8 @@ export function RevisionWizard() {
                       </div>
                     )}
                   </div>
+                ) : isCycleQuestion ? (
+                  <CycleQuestion value={cycleAnswer} onChange={setCycleAnswer} />
                 ) : isMeasurementQuestion ? (
                   <div className="mt-4 space-y-3">
                     <p className="text-sm text-brand-muted">
@@ -754,6 +774,9 @@ export function RevisionWizard() {
                   </div>
                 ) : (
                   <textarea
+                    aria-labelledby="revision-question-title"
+                    aria-describedby={questionHelp ? "revision-question-help" : undefined}
+                    maxLength={3000}
                     value={currentAnswer}
                     onChange={(event) => updateCurrentAnswer(event.target.value)}
                     rows={6}
@@ -784,6 +807,8 @@ export function RevisionWizard() {
                       if (!validateWeightEntries()) return;
                     } else if (isStepsQuestion) {
                       if (!validateStepsEntries()) return;
+                    } else if (isCycleQuestion) {
+                      if (!validateCycleAnswer()) return;
                     } else if (isMeasurementQuestion) {
                       if (
                         currentAnswer.trim().length > 0 &&

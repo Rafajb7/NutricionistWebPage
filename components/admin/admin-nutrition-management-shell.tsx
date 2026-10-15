@@ -4992,10 +4992,13 @@ export function AdminNutritionManagementShell({
 
                     <div className="mt-4 grid gap-3 lg:grid-cols-3">
                       <NutritionGuidanceEditor key={`${plan.id}:notes`} title="Observaciones" value={plan.notes}
+                        copyFrom={{ field: "notes", athleteUsername: plan.athleteUsername, plans }}
                         onChange={(value) => updatePlanField("notes", value)} disabled={isCurrentPlanPublished} />
                       <NutritionGuidanceEditor key={`${plan.id}:supplementation`} title="Suplementación" value={plan.supplementation}
+                        copyFrom={{ field: "supplementation", athleteUsername: plan.athleteUsername, plans }}
                         onChange={(value) => updatePlanField("supplementation", value)} disabled={isCurrentPlanPublished} />
                       <NutritionGuidanceEditor key={`${plan.id}:recommendations`} title="Recomendaciones" value={plan.recommendations}
+                        copyFrom={{ field: "recommendations", athleteUsername: plan.athleteUsername, plans }}
                         onChange={(value) => updatePlanField("recommendations", value)} disabled={isCurrentPlanPublished} />
                     </div>
 
