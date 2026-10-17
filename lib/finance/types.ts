@@ -2,6 +2,8 @@ export type FinanceContractStatus = "active" | "finished" | "cancelled";
 
 export type FinancePaymentStatus = "pending" | "paid" | "cancelled";
 
+export type FinancePaymentMethod = "cash" | "bank_transfer";
+
 export type FinanceComputedPaymentStatus = FinancePaymentStatus | "overdue";
 
 export type FinanceInvoiceStatus = "issued" | "cancelled";
@@ -15,6 +17,7 @@ export type FinancePlanOption = {
 };
 
 export type FinanceContract = {
+  paymentMethod?: FinancePaymentMethod;
   id: string;
   athleteUsername: string;
   athleteName: string;
@@ -40,6 +43,7 @@ export type FinanceContract = {
 };
 
 export type FinancePayment = {
+  paymentMethod?: FinancePaymentMethod;
   id: string;
   contractId: string;
   athleteUsername: string;
@@ -219,6 +223,7 @@ export type FinanceManagementData = {
 };
 
 export type CreateFinanceContractInput = {
+  paymentMethod: FinancePaymentMethod;
   athleteUsername: string;
   athleteName: string;
   planKey: string;
@@ -239,6 +244,7 @@ export type CreateFinanceContractInput = {
 };
 
 export type UpdateFinancePaymentInput = {
+  paymentMethod?: FinancePaymentMethod;
   paymentId: string;
   status?: FinancePaymentStatus;
   dueDate?: string;

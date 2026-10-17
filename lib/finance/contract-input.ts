@@ -41,6 +41,7 @@ export function buildCreateFinanceContractInput(input: {
     totalAmountCents: total,
     reservationAmountCents: reservation,
     currency: input.payload.currency.toUpperCase(),
+    paymentMethod: input.payload.paymentMethod,
     financed,
     paymentCount: financed ? input.payload.paymentCount : 1,
     paymentAmountCents: Math.ceil((total - reservation) / count),

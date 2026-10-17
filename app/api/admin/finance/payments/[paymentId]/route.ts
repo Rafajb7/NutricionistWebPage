@@ -40,6 +40,7 @@ export async function PATCH(req: Request, context: RouteContext) {
 
     const payment = await updateFinancePayment({
       paymentId,
+      paymentMethod: parsed.data.paymentMethod,
       status: parsed.data.status,
       dueDate: parsed.data.dueDate,
       expectedAmountCents: expectedAmountCents ?? undefined,

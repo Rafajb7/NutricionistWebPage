@@ -22,6 +22,8 @@ import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { parseHeightCmInput, type AthleteSex } from "@/lib/athlete-profile";
 import { DEFAULT_FINANCE_PLAN_OPTIONS } from "@/lib/finance/types";
+import type { FinancePaymentMethod } from "@/lib/finance/types";
+import { FinancePaymentMethodSelect } from "@/components/admin/finance-payment-method-select";
 import type { NutritionChangeRequest } from "@/lib/nutrition/types";
 
 type SessionUser = {
@@ -143,6 +145,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
     "user",
   );
   const [newUserFinanceEnabled, setNewUserFinanceEnabled] = useState(false);
+  const [newUserFinancePaymentMethod, setNewUserFinancePaymentMethod] = useState<FinancePaymentMethod | "">("");
   const [newUserFinancePlanKey, setNewUserFinancePlanKey] = useState("monthly");
   const [newUserFinanceTotalAmount, setNewUserFinanceTotalAmount] =
     useState("");
@@ -381,6 +384,10 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       toast.error("Indica el importe financiero acordado.");
       return;
     }
+    if (newUserFinanceEnabled && !newUserFinancePaymentMethod) {
+      toast.error("Selecciona la forma de pago del contrato.");
+      return;
+    }
     const normalizedNewUserHeight = parseHeightCmInput(newUserHeightCm);
     if (newUserPermission === "user") {
       if (
@@ -414,6 +421,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 planKey: newUserFinancePlanKey,
                 startDate: newUserFinanceStartDate,
                 firstPaymentDate: newUserFinanceFirstPaymentDate,
+                paymentMethod: newUserFinancePaymentMethod,
                 totalAmount: newUserFinanceTotalAmount,
                 currency: "EUR",
                 financed: newUserFinanceFinanced,
@@ -465,6 +473,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       setNewUserHeightCm("");
       setNewUserPermission("user");
       setNewUserFinanceEnabled(false);
+      setNewUserFinancePaymentMethod("");
       setNewUserFinancePlanKey("monthly");
       setNewUserFinanceTotalAmount("");
       setNewUserFinanceStartDate(toDefaultDate());
@@ -909,6 +918,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
 
                     {newUserFinanceEnabled ? (
                       <div className="mt-3 space-y-3">
+                        <FinancePaymentMethodSelect value={newUserFinancePaymentMethod} onChange={setNewUserFinancePaymentMethod} disabled={creatingUser} />
                         <label className="block text-sm text-brand-muted">
                           Plan contratado
                           <select

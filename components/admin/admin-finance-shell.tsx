@@ -22,6 +22,7 @@ import {
   LineChart,
   LogOut,
   Plus,
+  Pencil,
   ReceiptText,
   RefreshCw,
   Save,
@@ -52,6 +53,9 @@ import { DEFAULT_EXCHANGE_RATES, convertToEuroCents, expenseEuroCents, type Fina
 import { MAX_FINANCE_INVOICE_BYTES } from "@/lib/finance/upload-limits";
 import { buildAnnualCashReport, buildQuarterlyVatReport, cashCollected } from "@/lib/finance/reporting";
 import { DEFAULT_FINANCE_INVOICE_SETTINGS } from "@/lib/finance/types";
+import { FinanceQuarterlyAnalysis } from "@/components/admin/finance-quarterly-analysis";
+import { FinancePaymentMethodSelect } from "@/components/admin/finance-payment-method-select";
+import { financePaymentMethodLabel } from "@/lib/finance/payment-methods";
 import type {
   FinanceAthlete,
   FinanceComputedPaymentStatus,
@@ -65,6 +69,7 @@ import type {
   FinanceManagementData,
   FinancePayment,
   FinancePaymentStatus,
+  FinancePaymentMethod,
 } from "@/lib/finance/types";
 
 type SessionUser = {
@@ -74,10 +79,11 @@ type SessionUser = {
 
 type AdminFinanceShellProps = {
   user: SessionUser;
-  section?: "overview" | "invoices";
+  section?: "overview" | "invoices" | "quarterly";
 };
 
 type FinanceFormState = {
+  paymentMethod: FinancePaymentMethod | "";
   athleteUsername: string;
   planKey: string;
   totalAmount: string;
@@ -92,6 +98,7 @@ type FinanceFormState = {
 };
 
 type PaymentEditState = {
+  paymentMethod: FinancePaymentMethod | "";
   paymentId: string;
   status: FinancePaymentStatus;
   dueDate: string;
@@ -191,6 +198,7 @@ function createClientId(): string {
 function defaultFinanceForm(): FinanceFormState {
   const today = todayIsoDate();
   return {
+    paymentMethod: "",
     athleteUsername: "",
     planKey: "monthly",
     totalAmount: "",
@@ -400,6 +408,8 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
   const [savingContract, setSavingContract] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
   const [savingExpense, setSavingExpense] = useState(false);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
   const [savingInvoiceSettings, setSavingInvoiceSettings] = useState(false);
   const [savingInvoice, setSavingInvoice] = useState(false);
   const [invoiceSettingsOpen, setInvoiceSettingsOpen] = useState(false);
@@ -440,6 +450,13 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
   const pendingThisYear = data.payments.filter(payment => payment.status === "pending" && payment.dueDate.startsWith(`${reportYear}-`)).reduce((sum, payment) => sum + payment.expectedAmountCents, 0);
   const reportYears = Array.from(new Set([...Array.from({ length: 5 }, (_, index) => Number(today.slice(0, 4)) - index), reportYear, ...data.payments.map(item => Number((item.paidAt || item.dueDate).slice(0, 4))), ...data.invoices.map(item => Number(item.issueDate.slice(0, 4))), ...data.expenses.map(item => Number(item.date.slice(0, 4)))])).filter(Number.isFinite).sort((a, b) => b - a);
   const remainingCents = (parseCurrencyToCents(form.totalAmount) ?? 0) - (parseCurrencyToCents(form.reservationAmount) ?? 0);
+  const originalExpense = data.expenses.find(expense => expense.id === editingExpenseId);
+  const expensePreviewRates = originalExpense?.currency === expenseForm.currency
+    ? originalExpense.exchangeRateToEur
+      ? { ...exchangeRates, date: originalExpense.exchangeRateDate || DEFAULT_EXCHANGE_RATES.date,
+          rates: { ...exchangeRates.rates, [originalExpense.currency]: originalExpense.exchangeRateToEur } }
+      : DEFAULT_EXCHANGE_RATES
+    : exchangeRates;
   const autoPaymentAmount = form.totalAmount && remainingCents >= 0 && Number(form.paymentCount) > 0 ? centsToInput(Math.ceil(remainingCents / Number(form.paymentCount))) : "";
 
   async function loadData() {
@@ -809,6 +826,10 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
   }
 
   async function handleCreateContract() {
+    if (!form.paymentMethod) {
+      toast.error("Selecciona la forma de pago del contrato.");
+      return;
+    }
     if (!form.athleteUsername || !form.totalAmount.trim()) {
       toast.error("Selecciona atleta e importe.");
       return;
@@ -830,6 +851,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
           firstPaymentDate: form.firstPaymentDate,
           totalAmount: form.totalAmount,
           reservationAmount: form.reservationAmount,
+          paymentMethod: form.paymentMethod,
           currency: "EUR",
           financed: form.financed,
           paymentCount: Number(form.paymentCount || 1),
@@ -860,6 +882,44 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
     }
   }
 
+  function cancelExpenseEdit() {
+    setEditingExpenseId(null);
+    setExpenseForm(defaultExpenseForm());
+    setExpenseAttachment(null);
+    setExpenseInvoiceInputKey(current => current + 1);
+  }
+
+  function startExpenseEdit(expense: FinanceExpense) {
+    setEditingExpenseId(expense.id);
+    setExpenseForm({ date: expense.date, category: expense.category, description: expense.description,
+      amount: centsToInput(expense.amountCents), currency: expense.currency,
+      vatRate: String(expense.vatRate ?? 0), vatDeductible: expense.vatDeductible ?? false, notes: expense.notes });
+    setExpenseAttachment(null);
+    setExpenseInvoiceInputKey(current => current + 1);
+    document.getElementById("expense-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  async function handleDeleteExpense(expense: FinanceExpense) {
+    const attached = data.expenseInvoiceFiles.some(file => file.expenseId === expense.id);
+    if (!window.confirm(`¿Eliminar el gasto «${expense.description}» (${formatCents(expenseEuroCents(expense))})${attached ? " y sus PDF adjuntos" : ""}? Esta acción no se puede deshacer.`)) return;
+    setDeletingExpenseId(expense.id);
+    try {
+      const res = await fetch(`/api/admin/finance/expenses/${expense.id}`, { method: "DELETE" });
+      const json = await res.json() as { expenses?: FinanceExpense[]; expenseInvoiceFiles?: FinanceExpenseInvoiceFile[]; dashboard?: FinanceDashboard; error?: string; warning?: string };
+      if (!res.ok) throw new Error(json.error ?? "No se pudo eliminar el gasto.");
+      setData(current => ({ ...current,
+        expenses: json.expenses ?? current.expenses.filter(item => item.id !== expense.id),
+        expenseInvoiceFiles: json.expenseInvoiceFiles ?? current.expenseInvoiceFiles.filter(file => file.expenseId !== expense.id),
+        dashboard: json.dashboard ?? current.dashboard
+      }));
+      if (editingExpenseId === expense.id) cancelExpenseEdit();
+      toast.success("Gasto eliminado.");
+      if (json.warning) toast.error(json.warning);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo eliminar el gasto.");
+    } finally { setDeletingExpenseId(null); }
+  }
+
   async function handleCreateExpense() {
     if (!expenseForm.description.trim() || !expenseForm.amount.trim()) {
       toast.error("Descripcion e importe del gasto son obligatorios.");
@@ -871,9 +931,9 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
       const formData = new FormData();
       Object.entries(expenseForm).forEach(([key, value]) => formData.append(key, String(value)));
       if (expenseAttachment) formData.append("invoice", expenseAttachment);
-      const res = await fetch(expenseAttachment ? "/api/admin/finance/expense-invoices" : "/api/admin/finance/expenses", {
-        method: "POST",
-        ...(expenseAttachment ? { body: formData } : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(expenseForm) })
+      const res = await fetch(editingExpenseId ? `/api/admin/finance/expenses/${editingExpenseId}` : expenseAttachment ? "/api/admin/finance/expense-invoices" : "/api/admin/finance/expenses", {
+        method: editingExpenseId ? "PATCH" : "POST",
+        ...(!editingExpenseId && expenseAttachment ? { body: formData } : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(expenseForm) })
       });
       const json = (await res.json()) as {
         expense?: FinanceExpense;
@@ -885,16 +945,17 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
 
       setData((current) => ({
         ...current,
-        expenses: [json.expense!, ...current.expenses].sort((a, b) =>
+        expenses: [json.expense!, ...current.expenses.filter(item => item.id !== json.expense!.id)].sort((a, b) =>
           b.date.localeCompare(a.date),
         ),
         dashboard: json.dashboard ?? current.dashboard,
       }));
       setExpenseForm(defaultExpenseForm());
+      setEditingExpenseId(null);
       setExpenseAttachment(null);
       setExpenseInvoiceInputKey(current => current + 1);
       await loadData();
-      toast.success("Gasto registrado.");
+      toast.success(editingExpenseId ? "Gasto actualizado." : "Gasto registrado.");
     } catch (error) {
       console.error(error);
       toast.error(
@@ -906,6 +967,9 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
   }
 
   async function handleDeleteExpenseInvoice(file: FinanceExpenseInvoiceFile) {
+    const expense = data.expenses.find(item => item.id === file.expenseId);
+    if (expense) return handleDeleteExpense(expense);
+    if (!window.confirm(`¿Eliminar la factura «${file.fileName}» y su archivo PDF?`)) return;
     setDeletingExpenseInvoiceId(file.id);
     try {
       const res = await fetch(`/api/admin/finance/expense-invoices/${file.id}`, {
@@ -948,6 +1012,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
 
   function startPaymentEdit(payment: FinancePayment) {
     setPaymentEdit({
+      paymentMethod: payment.paymentMethod ?? "",
       paymentId: payment.id,
       status: payment.status,
       dueDate: payment.dueDate,
@@ -962,6 +1027,10 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
 
   async function handleSavePayment() {
     if (!paymentEdit) return;
+    if (paymentEdit.status === "paid" && !paymentEdit.paymentMethod) {
+      toast.error("Selecciona la forma de pago del cobro.");
+      return;
+    }
 
     setSavingPayment(true);
     try {
@@ -972,6 +1041,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             status: paymentEdit.status,
+            paymentMethod: paymentEdit.paymentMethod || undefined,
             dueDate: paymentEdit.dueDate,
             expectedAmount: paymentEdit.expectedAmount,
             paidAt: paymentEdit.status === "paid" ? paymentEdit.paidAt : "",
@@ -1002,6 +1072,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
     setForm({
       ...defaultFinanceForm(),
       athleteUsername: contract.athleteUsername,
+      paymentMethod: sameConditions ? contract.paymentMethod ?? "" : "",
       planKey: sameConditions ? contract.planKey : "monthly",
       totalAmount: sameConditions ? centsToInput(contract.totalAmountCents) : "",
       startDate: contract.renewalDueDate,
@@ -1085,14 +1156,13 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                 Herramienta admin
               </p>
               <h1 className="mt-1 text-3xl font-semibold text-brand-text">
-                {section === "overview" ? "Finanzas" : "Facturas"}
+                {section === "overview" ? "Finanzas" : section === "quarterly" ? "Análisis Trimestral" : "Facturas"}
               </h1>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm text-brand-muted">
-              <Link href={section === "overview" ? "/tools/finance/invoices" : "/tools/finance"} className="inline-flex items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-brand-text hover:bg-brand-accent/10">
-                <ReceiptText className="h-4 w-4" />
-                {section === "overview" ? "Facturas" : "Volver a Finanzas"}
-              </Link>
+              {([ ["overview", "/tools/finance", "Finanzas"], ["invoices", "/tools/finance/invoices", "Facturas y gastos"], ["quarterly", "/tools/finance/quarterly", "Análisis Trimestral"] ] as const).map(([key, href, label]) => (
+                <Link key={key} href={href} aria-current={section === key ? "page" : undefined} className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 ${section === key ? "border-brand-accent/60 bg-brand-accent/15 text-brand-accent" : "border-white/15 text-brand-text hover:bg-white/5"}`}>{label}</Link>
+              ))}
             </div>
           </div>
         </section>
@@ -1262,6 +1332,8 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                     <input value={form.reservationAmount} onChange={event => updateForm("reservationAmount", event.target.value)} placeholder="0,00" inputMode="decimal" className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none focus:border-brand-accent/60" />
                     <span className="mt-1 block text-xs">Cobrada en la fecha de inicio. Se descuenta del total.</span>
                   </label>
+                  <FinancePaymentMethodSelect value={form.paymentMethod} onChange={value => updateForm("paymentMethod", value)} disabled={savingContract} />
+                  {form.paymentMethod === "cash" && (parseCurrencyToCents(form.totalAmount) ?? 0) >= 100000 ? <p className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">El contrato alcanza el límite general de 1.000 € por operación para pagos en efectivo, aunque se fraccione. Revisa la forma de pago y las excepciones aplicables.</p> : null}
                   <label className="block text-sm text-brand-muted">
                     Fecha inicio
                     <input
@@ -1532,6 +1604,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                               {payment.sequenceCount > 1
                                 ? `(${payment.sequenceIndex}/${payment.sequenceCount})`
                                 : ""}
+                              <span className="mt-1 block text-xs">{financePaymentMethodLabel(payment.paymentMethod)}</span>
                             </td>
                             <td className="px-3 py-2 text-brand-text">
                               {formatDate(payment.dueDate)}
@@ -1678,19 +1751,19 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
               </div>
 
 </section>
-            </> : <>
-            <section>              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
+            </> : section === "quarterly" ? <FinanceQuarterlyAnalysis data={data} /> : <>
+            <section id="expense-form">              <div className="rounded-2xl border border-white/10 bg-brand-surface/70 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-semibold text-brand-text">
-                      Nuevo gasto
+                      {editingExpenseId ? "Editar gasto" : "Nuevo gasto"}
                     </h2>
                     <p className="text-sm text-brand-muted">
                       Se registra en calendario y cuentas actuales.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-xs text-brand-text hover:bg-brand-accent/10">
+                    {!editingExpenseId ? <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-brand-accent/35 px-3 py-2 text-xs text-brand-text hover:bg-brand-accent/10">
                       <FileUp className="h-4 w-4" /> Adjuntar factura (PDF, máx. 4 MB)
                       <input key={expenseInvoiceInputKey} type="file" accept="application/pdf,.pdf" disabled={savingExpense} className="hidden" onChange={event => {
                         const file = event.target.files?.[0] ?? null;
@@ -1698,7 +1771,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                         if (file && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) { toast.error("Selecciona un PDF."); return; }
                         setExpenseAttachment(file);
                       }} />
-                    </label>
+                    </label> : <p className="text-xs text-brand-muted">{expenseInvoiceByExpenseId.has(editingExpenseId) ? "El PDF adjunto se conserva." : "Gasto sin PDF adjunto."}</p>}
                     <ReceiptText className="h-5 w-5 text-brand-accent" />
                   </div>
                 </div>
@@ -1770,8 +1843,8 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                   </label>
                   {expenseForm.currency !== "EUR" ? (
                     <div className="rounded-xl border border-brand-accent/25 bg-brand-accent/5 p-3 text-sm text-brand-text md:col-span-2">
-                      <p>Equivalente en euros: <strong>{formatCents(convertToEuroCents(parseCurrencyToCents(expenseForm.amount) ?? 0, expenseForm.currency, exchangeRates))}</strong></p>
-                      <p className="mt-1 text-xs text-brand-muted">1 {expenseForm.currency} = {new Intl.NumberFormat("es-ES", { maximumSignificantDigits: 7 }).format(exchangeRates.rates[expenseForm.currency])} EUR · Cambio de referencia del {formatDate(exchangeRates.date)}. Se guarda con la factura.</p>
+                      <p>Equivalente en euros: <strong>{formatCents(convertToEuroCents(parseCurrencyToCents(expenseForm.amount) ?? 0, expenseForm.currency, expensePreviewRates))}</strong></p>
+                      <p className="mt-1 text-xs text-brand-muted">1 {expenseForm.currency} = {new Intl.NumberFormat("es-ES", { maximumSignificantDigits: 7 }).format(expensePreviewRates.rates[expenseForm.currency])} EUR · Cambio de referencia del {formatDate(expensePreviewRates.date)}. {editingExpenseId && originalExpense?.currency === expenseForm.currency ? "Se conserva el cambio del gasto original." : "Se guarda con la factura."}</p>
                     </div>
                   ) : null}
                   {expenseAttachment ? <p className="text-sm text-brand-muted md:col-span-2">{expenseAttachment.name} <button type="button" onClick={() => { setExpenseAttachment(null); setExpenseInvoiceInputKey(current => current + 1); }} className="underline">Quitar adjunto</button></p> : null}
@@ -1796,8 +1869,9 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                     disabled={savingExpense}
                   >
                     <Plus className="mr-2 h-4 w-4" />
-                    {savingExpense ? "Guardando..." : "Registrar gasto"}
+                    {savingExpense ? "Guardando..." : editingExpenseId ? "Guardar cambios del gasto" : "Registrar gasto"}
                   </BrandButton>
+                  {editingExpenseId ? <BrandButton variant="ghost" className="ml-2" onClick={cancelExpenseEdit} disabled={savingExpense}>Cancelar edición</BrandButton> : null}
                 </div>
                 <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
                   <summary className="cursor-pointer text-sm text-brand-muted">Tipos de cambio a euros · {formatDate(exchangeRates.date)}</summary>
@@ -2618,14 +2692,15 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                             <button
                               type="button"
                               onClick={() => void handleDeleteExpenseInvoice(file)}
-                              disabled={deletingExpenseInvoiceId === file.id}
+                              disabled={deletingExpenseInvoiceId !== null || deletingExpenseId !== null || savingExpense}
                               className="inline-flex items-center gap-1 rounded-lg border border-red-400/35 px-2.5 py-1.5 text-xs text-red-100 transition hover:bg-red-500/10 disabled:opacity-60"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                              {deletingExpenseInvoiceId === file.id
+                              {deletingExpenseInvoiceId === file.id || deletingExpenseId === file.expenseId
                                 ? "Eliminando..."
                                 : "Eliminar"}
                             </button>
+                            {expense ? <button type="button" onClick={() => startExpenseEdit(expense)} disabled={savingExpense || deletingExpenseId !== null} className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text hover:bg-brand-accent/10 disabled:opacity-60"><Pencil className="h-3.5 w-3.5" />Editar gasto</button> : null}
                           </div>
                         </article>
                       );
@@ -2646,7 +2721,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                 </h2>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {data.expenses.slice(0, 9).map((expense) => {
+                {data.expenses.map((expense) => {
                   const invoiceFile = expenseInvoiceByExpenseId.get(expense.id);
                   return (
                     <article
@@ -2672,9 +2747,8 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                           {expense.notes}
                         </p>
                       ) : null}
-                      {invoiceFile ? (
                         <div className="mt-3 flex flex-wrap justify-end gap-2">
-                          {invoiceFile.driveFileId ? (
+                          {invoiceFile?.driveFileId ? (
                             <a
                               href={`/api/admin/finance/expense-invoices/${invoiceFile.id}/pdf`}
                               target="_blank"
@@ -2685,19 +2759,20 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                               PDF
                             </a>
                           ) : null}
+                          <button type="button" aria-label={`Editar gasto ${expense.description}`} onClick={() => startExpenseEdit(expense)} disabled={savingExpense || deletingExpenseId !== null} className="inline-flex items-center gap-1 rounded-lg border border-brand-accent/35 px-2.5 py-1.5 text-xs text-brand-text hover:bg-brand-accent/10 disabled:opacity-60"><Pencil className="h-3.5 w-3.5" />Editar</button>
                           <button
                             type="button"
-                            onClick={() => void handleDeleteExpenseInvoice(invoiceFile)}
-                            disabled={deletingExpenseInvoiceId === invoiceFile.id}
+                            aria-label={`Eliminar gasto ${expense.description}`}
+                            onClick={() => void handleDeleteExpense(expense)}
+                            disabled={deletingExpenseId !== null || savingExpense}
                             className="inline-flex items-center gap-1 rounded-lg border border-red-400/35 px-2.5 py-1.5 text-xs text-red-100 transition hover:bg-red-500/10 disabled:opacity-60"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                            {deletingExpenseInvoiceId === invoiceFile.id
+                            {deletingExpenseId === expense.id
                               ? "Eliminando..."
                               : "Eliminar"}
                           </button>
                         </div>
-                      ) : null}
                     </article>
                   );
                 })}
@@ -2791,6 +2866,7 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
                     className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                   />
                 </label>
+                <FinancePaymentMethodSelect value={paymentEdit.paymentMethod} onChange={value => setPaymentEdit(current => current ? { ...current, paymentMethod: value } : current)} disabled={savingPayment} required={paymentEdit.status === "paid"} />
                 {paymentEdit.status === "paid" ? (
                   <>
                     <label className="block text-sm text-brand-muted">

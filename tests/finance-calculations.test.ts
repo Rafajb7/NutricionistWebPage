@@ -24,6 +24,7 @@ function baseContractInput(overrides: Partial<CreateFinanceContractInput> = {}):
     firstPaymentDate: "2026-09-01",
     totalAmountCents: 120000,
     currency: "EUR",
+    paymentMethod: "bank_transfer",
     financed: true,
     paymentCount: 12,
     paymentAmountCents: null,

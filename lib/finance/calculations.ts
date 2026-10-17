@@ -210,6 +210,7 @@ export function buildFinancePaymentsForContract(
     athleteUsername: input.athleteUsername,
     athleteName: input.athleteName,
     planLabel: input.planLabel,
+    paymentMethod: input.paymentMethod,
     dueDate: addMonths(input.firstPaymentDate, index * intervalMonths),
     expectedAmountCents: amounts[index] ?? 0,
     status: "pending",
@@ -225,6 +226,7 @@ export function buildFinancePaymentsForContract(
     payments.unshift({
       id: createId(), contractId, athleteUsername: input.athleteUsername,
       athleteName: input.athleteName, planLabel: `${input.planLabel} · Reserva`,
+      paymentMethod: input.paymentMethod,
       dueDate: input.startDate, expectedAmountCents: reservation, status: "paid",
       paidAt: input.startDate, paidAmountCents: reservation, sequenceIndex: 1,
       sequenceCount: 1, notes: "Reserva del contrato", createdAt: now, updatedAt: now

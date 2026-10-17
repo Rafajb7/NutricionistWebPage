@@ -2,9 +2,10 @@ import React from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminFinanceShell } from "@/components/admin/admin-finance-shell";
-import { addDays, buildFinanceDashboard, todayIsoDate } from "@/lib/finance/calculations";
+import { addDays, buildFinanceDashboard, todayIsoDate, formatCents } from "@/lib/finance/calculations";
 import { DEFAULT_FINANCE_INVOICE_SETTINGS, DEFAULT_FINANCE_PLAN_OPTIONS } from "@/lib/finance/types";
 import type { FinancePayment } from "@/lib/finance/types";
+import { expense, invoice, payment as collectedPayment, contract } from "./fixtures/finance";
 
 vi.mock("next/link", () => ({ default: (props: React.ComponentProps<"a">) => React.createElement("a", props) }));
 vi.mock("@/components/brand-logo", () => ({ BrandLogo: () => null }));
@@ -21,9 +22,11 @@ const dataset = { athletes: [{ username: "cliente", name: "Cliente", email: "" }
 beforeEach(() => {
   vi.stubGlobal("React", React);
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => dataset }));
+  vi.stubGlobal("window", { confirm: vi.fn().mockReturnValue(true) });
+  vi.stubGlobal("document", { getElementById: () => ({ scrollIntoView: vi.fn() }) });
 });
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.unstubAllGlobals(); });
-async function mount(section: "overview" | "invoices" = "overview") {
+async function mount(section: "overview" | "invoices" | "quarterly" = "overview") {
   await act(async () => { renderer = create(React.createElement(AdminFinanceShell, { user: { username: "admin", name: "Admin" }, section })); });
 }
 function field(label: string, type: React.ElementType = "input") {
@@ -31,6 +34,89 @@ function field(label: string, type: React.ElementType = "input") {
 }
 
 describe("finance user flows", () => {
+  it("requires an explicit payment method when creating a contract", async () => {
+    await mount();
+    expect(field("Forma de Pago", "select").props).toMatchObject({ required: true, value: "" });
+    expect(field("Forma de Pago", "select").findAllByType("option").map(option => option.props.value)).toEqual(["", "cash", "bank_transfer"]);
+    act(() => {
+      field("Atleta", "select").props.onChange({ target: { value: "cliente" } });
+      field("Precio total / cuota").props.onChange({ target: { value: "200" } });
+    });
+    const button = renderer.root.findAllByType("button").find(item => item.children.includes("Crear contrato"))!;
+    await act(async () => { await button.props.onClick(); });
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    act(() => field("Forma de Pago", "select").props.onChange({ target: { value: "cash" } }));
+    await act(async () => { await button.props.onClick(); });
+    const posted = vi.mocked(fetch).mock.calls.find(([url, init]) => url === "/api/admin/finance/contracts" && init?.method === "POST")!;
+    expect(JSON.parse(String(posted[1]?.body))).toMatchObject({ paymentMethod: "cash", athleteUsername: "cliente" });
+  });
+
+  it.each([false, true])("edits every historical expense and preserves an optional PDF (attached=%s)", async attached => {
+    const expenses = Array.from({ length: 12 }, (_, index) => ({ ...expense, id: `expense-${index}`, description: `Gasto ${index}` }));
+    const files = attached ? [{ id: "invoice-file", expenseId: "expense-11", driveFileId: "drive-id", fileName: "Factura.pdf", status: "expense-created" }] : [];
+    let current = { ...dataset, expenses, expenseInvoiceFiles: files };
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        const updated = { ...expenses[11], description: payload.description };
+        current = { ...current, expenses: current.expenses.map(item => item.id === updated.id ? updated : item) };
+        return { ok: true, json: async () => ({ expense: updated }) } as Response;
+      }
+      return { ok: true, json: async () => current } as Response;
+    });
+    await mount("invoices");
+    expect(renderer.root.findAllByType("button").filter(item => item.props["aria-label"]?.startsWith("Editar gasto "))).toHaveLength(12);
+    act(() => renderer.root.findByProps({ "aria-label": "Editar gasto Gasto 11" }).props.onClick());
+    expect(field("Descripcion").props.value).toBe("Gasto 11");
+    expect(field("Importe bruto (IVA incluido)").props.value).toBe("121,00");
+    expect(field("IVA aplicado (%)").props.value).toBe("21");
+    act(() => field("Descripcion").props.onChange({ target: { value: "Gasto editado" } }));
+    const save = renderer.root.findAllByType("button").find(item => item.children.includes("Guardar cambios del gasto"))!;
+    await act(async () => { await save.props.onClick(); });
+    expect(vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "PATCH")?.[0]).toBe("/api/admin/finance/expenses/expense-11");
+    expect(current.expenses).toHaveLength(12);
+    expect(current.expenseInvoiceFiles).toEqual(files);
+    expect(renderer.root.findAllByType("h2").some(item => item.children.includes("Nuevo gasto"))).toBe(true);
+  });
+
+  it("confirms before deleting a standalone expense and removes it only after success", async () => {
+    vi.mocked(fetch).mockImplementation(async (_url, init) => ({ ok: true, json: async () => init?.method === "DELETE" ? { expenses: [], expenseInvoiceFiles: [] } : { ...dataset, expenses: [expense] } }) as Response);
+    await mount("invoices");
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await act(async () => { await renderer.root.findByProps({ "aria-label": "Eliminar gasto Alquiler" }).props.onClick(); });
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Alquiler"));
+    vi.mocked(window.confirm).mockReturnValue(true);
+    await act(async () => { await renderer.root.findByProps({ "aria-label": "Eliminar gasto Alquiler" }).props.onClick(); });
+    expect(vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "DELETE")?.[0]).toBe(`/api/admin/finance/expenses/${expense.id}`);
+    expect(renderer.root.findAllByProps({ "aria-label": "Eliminar gasto Alquiler" })).toHaveLength(0);
+  });
+
+  it("keeps the expense and entered changes when saving fails", async () => {
+    vi.mocked(fetch).mockImplementation(async (_url, init) => ({ ok: init?.method !== "PATCH", json: async () => init?.method === "PATCH" ? { error: "No guardado" } : { ...dataset, expenses: [expense] } }) as Response);
+    await mount("invoices");
+    act(() => renderer.root.findByProps({ "aria-label": "Editar gasto Alquiler" }).props.onClick());
+    act(() => field("Descripcion").props.onChange({ target: { value: "Conservar esta edición" } }));
+    await act(async () => { await renderer.root.findAllByType("button").find(item => item.children.includes("Guardar cambios del gasto"))!.props.onClick(); });
+    expect(field("Descripcion").props.value).toBe("Conservar esta edición");
+    expect(renderer.root.findByProps({ "aria-label": "Editar gasto Alquiler" })).toBeDefined();
+  });
+
+  it("offers a dedicated quarterly view with year and quarter filters and matching monthly data", async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ ...dataset, contracts: [contract], invoices: [invoice, { ...invoice, id: "old-invoice", operationDate: "2025-12-31" }], expenses: [expense], payments: [collectedPayment] }) } as Response);
+    await mount("quarterly");
+    const year = renderer.root.findByProps({ "aria-label": "Año del análisis trimestral" });
+    act(() => year.props.onChange({ target: { value: "2026" } }));
+    act(() => renderer.root.findByProps({ "aria-label": "Ver trimestre 1" }).props.onClick());
+    const detail = renderer.root.findByProps({ "aria-label": "Detalle del trimestre 1" });
+    expect(detail.findAllByType("h3").map(item => item.children.join(" ")).join(" ")).toContain("Total Recibido en Efectivo");
+    expect(detail.findByType("tbody").findAllByType("tr")).toHaveLength(3);
+    expect(detail.findByType("tbody").findAllByType("tr")[2].findAllByType("td")[0].children.join("")).toBe(formatCents(121000));
+    expect(renderer.root.findAllByProps({ id: "new-contract" })).toHaveLength(0);
+    act(() => year.props.onChange({ target: { value: "2025" } }));
+    act(() => renderer.root.findByProps({ "aria-label": "Ver trimestre 4" }).props.onClick());
+    expect(renderer.root.findByProps({ "aria-label": "Detalle del trimestre 4" }).findByType("tbody").findAllByType("tr")[2].findAllByType("td")[0].children.join("")).toBe(formatCents(121000));
+  });
   it("recalculates the displayed installment as total, reservation and count change", async () => {
     await mount();
     act(() => {
