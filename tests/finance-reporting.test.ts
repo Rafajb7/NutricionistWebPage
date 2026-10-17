@@ -50,7 +50,7 @@ describe("finance reporting", () => {
     expect(financeExpenseRequestSchema.safeParse({ ...input, currency: "XYZ" }).success).toBe(false);
   });
   it("recalculates installments server-side and rejects oversized reservations", () => {
-    const payload = financeContractRequestSchema.parse({ athleteUsername: "cliente", planKey: "annual", startDate: "2026-09-01", firstPaymentDate: "2026-10-01", totalAmount: "1200", reservationAmount: "200", financed: true, paymentCount: 5, paymentAmount: "999" });
+    const payload = financeContractRequestSchema.parse({ athleteUsername: "cliente", planKey: "annual", startDate: "2026-09-01", firstPaymentDate: "2026-10-01", totalAmount: "1200", reservationAmount: "200", financed: true, paymentCount: 5, paymentAmount: "999", paymentMethod: "bank_transfer" });
     const input = { payload, athlete: { username: "cliente", name: "Cliente" }, planOptions: DEFAULT_FINANCE_PLAN_OPTIONS };
     expect(buildCreateFinanceContractInput(input)).toMatchObject({ paymentAmountCents: 20000, reservationAmountCents: 20000 });
     expect(() => buildCreateFinanceContractInput({ ...input, payload: { ...payload, reservationAmount: "1201" } })).toThrow();

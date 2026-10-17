@@ -30,6 +30,7 @@ const optionalAmountSchema = z
   }, "Invalid amount.");
 
 const financeContractBaseSchema = z.object({
+  paymentMethod: z.enum(["cash", "bank_transfer"], { message: "Selecciona la forma de pago." }),
   athleteUsername: z.string().min(1).max(120),
   planKey: z.string().min(1).max(80),
   planLabel: z.string().min(1).max(120).optional(),
@@ -64,6 +65,7 @@ export const financeContractOnUserCreateSchema = financeContractBaseSchema.omit(
 
 export const financePaymentUpdateRequestSchema = z
   .object({
+    paymentMethod: z.enum(["cash", "bank_transfer"]).optional(),
     status: z.enum(["pending", "paid", "cancelled"]).optional(),
     dueDate: dateSchema.optional(),
     expectedAmount: optionalAmountSchema,
@@ -71,7 +73,8 @@ export const financePaymentUpdateRequestSchema = z
     paidAmount: optionalAmountSchema,
     notes: optionalText
   })
-  .refine((value) => Object.keys(value).length > 0, "Empty update.");
+  .refine((value) => Object.keys(value).length > 0, "Empty update.")
+  .refine(value => value.status !== "paid" || Boolean(value.paymentMethod), "Selecciona la forma de pago del cobro.");
 
 export const financeContractUpdateRequestSchema = z
   .object({

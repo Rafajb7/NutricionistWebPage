@@ -4,6 +4,7 @@ import { getEnv } from "@/lib/env";
 import { getGoogleAuth } from "@/lib/google/auth";
 import { expenseEuroConversion } from "@/lib/finance/exchange-rates";
 import { getFinanceExchangeRates } from "@/lib/finance/exchange-rates-server";
+import { parseFinancePaymentMethod } from "@/lib/finance/payment-methods";
 import { isGoogleRateLimitError, withGoogleApiRetry } from "@/lib/google/retry";
 import {
   buildFinancePaymentsForContract,
@@ -104,7 +105,8 @@ const CONTRACT_HEADERS = [
   "Notas",
   "Creado",
   "Actualizado",
-  "Reserva cents"
+  "Reserva cents",
+  "Forma de pago"
 ];
 
 const PAYMENT_HEADERS = [
@@ -122,7 +124,8 @@ const PAYMENT_HEADERS = [
   "Total pagos",
   "Notas",
   "Creado",
-  "Actualizado"
+  "Actualizado",
+  "Forma de pago"
 ];
 
 const EXPENSE_HEADERS = [
@@ -699,7 +702,8 @@ function parseContract(row: string[]): FinanceContract | null {
     notes: String(row[18] ?? "").trim(),
     createdAt: String(row[19] ?? "").trim(),
     updatedAt: String(row[20] ?? "").trim(),
-    reservationAmountCents: parseInteger(row[21])
+    reservationAmountCents: parseInteger(row[21]),
+    paymentMethod: parseFinancePaymentMethod(row[22])
   };
 }
 
@@ -724,7 +728,8 @@ function parsePayment(row: string[]): FinancePayment | null {
     sequenceCount: Math.max(1, parseInteger(row[11])),
     notes: String(row[12] ?? "").trim(),
     createdAt: String(row[13] ?? "").trim(),
-    updatedAt: String(row[14] ?? "").trim()
+    updatedAt: String(row[14] ?? "").trim(),
+    paymentMethod: parseFinancePaymentMethod(row[15])
   };
 }
 
@@ -934,7 +939,8 @@ function serializeContract(contract: FinanceContract): Array<string | number> {
     contract.notes,
     contract.createdAt,
     contract.updatedAt,
-    contract.reservationAmountCents ?? 0
+    contract.reservationAmountCents ?? 0,
+    contract.paymentMethod ?? ""
   ];
 }
 
@@ -954,7 +960,8 @@ function serializePayment(payment: FinancePayment): Array<string | number> {
     payment.sequenceCount,
     payment.notes,
     payment.createdAt,
-    payment.updatedAt
+    payment.updatedAt,
+    payment.paymentMethod ?? ""
   ];
 }
 
@@ -1374,6 +1381,64 @@ export async function createFinanceExpenseWithInvoiceFile(
   return { expense, expenseInvoiceFile };
 }
 
+export async function updateFinanceExpense(
+  expenseId: string,
+  input: CreateFinanceExpenseInput
+): Promise<FinanceExpense | null> {
+  const dataset = await readFinanceDataset({ force: true });
+  const current = dataset.expenses.find(expense => expense.id === expenseId);
+  if (!current) return null;
+  const currency = input.currency.trim().toUpperCase();
+  let conversion = {
+    euroAmountCents: current.euroAmountCents,
+    exchangeRateToEur: current.exchangeRateToEur,
+    exchangeRateDate: current.exchangeRateDate
+  };
+  // Keep the recorded exchange rate when editing an existing amount or its description.
+  if (currency !== current.currency) {
+    conversion = expenseEuroConversion(input.amountCents, currency,
+      currency === "EUR" ? undefined : await getFinanceExchangeRates());
+  } else if (input.amountCents !== current.amountCents) {
+    conversion = current.exchangeRateToEur && current.exchangeRateToEur > 0
+      ? { ...conversion, euroAmountCents: Math.round(input.amountCents * current.exchangeRateToEur) }
+      : expenseEuroConversion(input.amountCents, currency);
+  }
+  const expense: FinanceExpense = {
+    ...current, ...input, ...conversion, currency,
+    category: input.category.trim(), description: input.description.trim(),
+    notes: input.notes?.trim() ?? "", updatedAt: new Date().toISOString()
+  };
+  const saved = await updateWorksheetRowById(WORKSHEETS.expenses, EXPENSE_HEADERS, expenseId, serializeExpense(expense));
+  return saved ? expense : null;
+}
+
+export async function deleteFinanceExpense(expenseId: string): Promise<{
+  expense: FinanceExpense;
+  files: FinanceExpenseInvoiceFile[];
+} | null> {
+  const info = await ensureFinanceSheetsReady();
+  const [expenseRows, fileRows] = await Promise.all([
+    readWorksheetRowsWithNumbers(WORKSHEETS.expenses, EXPENSE_HEADERS),
+    readWorksheetRowsWithNumbers(WORKSHEETS.expenseInvoiceFiles, EXPENSE_INVOICE_FILE_HEADERS)
+  ]);
+  const target = expenseRows.find(item => item.row[0] === expenseId);
+  const expense = target ? parseExpense(target.row) : null;
+  if (!target || !expense) return null;
+  const linked = fileRows.filter(item => item.row[1] === expenseId);
+  const files = linked.map(item => parseExpenseInvoiceFile(item.row)).filter((file): file is FinanceExpenseInvoiceFile => Boolean(file));
+  const sheets = await getSheetsClient();
+  // Clear all linked records together without shifting other record row numbers.
+  await withGoogleApiRetry(() => sheets.spreadsheets.values.batchClear({
+    spreadsheetId: info.spreadsheetId,
+    requestBody: { ranges: [
+      `'${WORKSHEETS.expenses}'!A${target.rowNumber}:${indexToA1Column(EXPENSE_HEADERS.length - 1)}${target.rowNumber}`,
+      ...linked.map(item => `'${WORKSHEETS.expenseInvoiceFiles}'!A${item.rowNumber}:${indexToA1Column(EXPENSE_INVOICE_FILE_HEADERS.length - 1)}${item.rowNumber}`)
+    ] }
+  }));
+  invalidateFinanceDatasetCache();
+  return { expense, files };
+}
+
 export async function deleteFinanceExpenseInvoiceFile(
   expenseInvoiceFileId: string
 ): Promise<FinanceExpenseInvoiceFile | null> {
@@ -1428,6 +1493,7 @@ export async function createFinanceContractWithPayments(
     renewalDueDate: contractDates.renewalDueDate,
     totalAmountCents: Math.max(1, Math.trunc(input.totalAmountCents)),
     reservationAmountCents: input.reservationAmountCents ?? 0,
+    paymentMethod: input.paymentMethod,
     currency: input.currency.trim().toUpperCase() || "EUR",
     financed: input.financed,
     paymentCount,
@@ -1463,6 +1529,7 @@ export async function updateFinancePayment(
   const shouldDefaultPaidFields = nextStatus === "paid" && current.status !== "paid";
   const updated: FinancePayment = {
     ...current,
+    paymentMethod: input.paymentMethod ?? current.paymentMethod,
     status: nextStatus,
     dueDate: input.dueDate ?? current.dueDate,
     expectedAmountCents: input.expectedAmountCents ?? current.expectedAmountCents,
