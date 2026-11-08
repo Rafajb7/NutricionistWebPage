@@ -22,6 +22,7 @@ import { MotionPage } from "@/components/ui/motion-page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { parseHeightCmInput, type AthleteSex } from "@/lib/athlete-profile";
 import { DEFAULT_FINANCE_PLAN_OPTIONS } from "@/lib/finance/types";
+import { parseCurrencyToCents } from "@/lib/finance/calculations";
 import type { FinancePaymentMethod } from "@/lib/finance/types";
 import { FinancePaymentMethodSelect } from "@/components/admin/finance-payment-method-select";
 import type { NutritionChangeRequest } from "@/lib/nutrition/types";
@@ -156,8 +157,13 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
   const [newUserFinanceFinanced, setNewUserFinanceFinanced] = useState(false);
   const [newUserFinancePaymentCount, setNewUserFinancePaymentCount] =
     useState("1");
-  const [newUserFinancePaymentAmount, setNewUserFinancePaymentAmount] =
-    useState("");
+  const newUserFinanceTotalCents = parseCurrencyToCents(newUserFinanceTotalAmount);
+  const newUserFinanceCount = Number(newUserFinancePaymentCount);
+  const newUserFinancePaymentAmount =
+    newUserFinanceTotalCents !== null && newUserFinanceTotalCents > 0 &&
+    Number.isInteger(newUserFinanceCount) && newUserFinanceCount >= 1 && newUserFinanceCount <= 120
+      ? (Math.ceil(newUserFinanceTotalCents / newUserFinanceCount) / 100).toFixed(2).replace(".", ",")
+      : "";
   const [
     newUserFinancePaymentIntervalMonths,
     setNewUserFinancePaymentIntervalMonths,
@@ -426,7 +432,6 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                 currency: "EUR",
                 financed: newUserFinanceFinanced,
                 paymentCount: Number(newUserFinancePaymentCount || 1),
-                paymentAmount: newUserFinancePaymentAmount || undefined,
                 paymentIntervalMonths: Number(
                   newUserFinancePaymentIntervalMonths || 1,
                 ),
@@ -480,7 +485,6 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
       setNewUserFinanceFirstPaymentDate(toDefaultDate());
       setNewUserFinanceFinanced(false);
       setNewUserFinancePaymentCount("1");
-      setNewUserFinancePaymentAmount("");
       setNewUserFinancePaymentIntervalMonths("1");
       setNewUserFinanceNotes("");
       await loadUsers();
@@ -1007,11 +1011,7 @@ export function AdminToolsShell({ user }: AdminToolsShellProps) {
                               Importe por pago
                               <input
                                 value={newUserFinancePaymentAmount}
-                                onChange={(event) =>
-                                  setNewUserFinancePaymentAmount(
-                                    event.target.value,
-                                  )
-                                }
+                                readOnly
                                 placeholder="Auto"
                                 className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-brand-text outline-none transition focus:border-brand-accent/60"
                               />
