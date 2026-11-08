@@ -445,7 +445,17 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
 
   const today = todayIsoDate();
   const annualReport = buildAnnualCashReport(data.payments, data.contracts, data.expenses, reportYear);
-  const vatReport = buildQuarterlyVatReport(data.invoices, data.expenses, reportYear);
+  const vatReport = buildQuarterlyVatReport(data.invoices, data.expenses, reportYear).map(quarter => {
+    const expenses = data.expenses.filter(expense =>
+      expense.date.startsWith(`${reportYear}-`) &&
+      Math.floor((Number(expense.date.slice(5, 7)) - 1) / 3) + 1 === quarter.quarter,
+    );
+    return {
+      ...quarter,
+      deductibleExpenseCents: expenses.filter(expense => expense.vatDeductible).reduce((sum, expense) => sum + expenseEuroCents(expense), 0),
+      nonDeductibleExpenseCents: expenses.filter(expense => !expense.vatDeductible).reduce((sum, expense) => sum + expenseEuroCents(expense), 0),
+    };
+  });
   const pendingThisMonth = data.payments.filter(payment => payment.status === "pending" && payment.dueDate.startsWith(today.slice(0, 7))).reduce((sum, payment) => sum + payment.expectedAmountCents, 0);
   const pendingThisYear = data.payments.filter(payment => payment.status === "pending" && payment.dueDate.startsWith(`${reportYear}-`)).reduce((sum, payment) => sum + payment.expectedAmountCents, 0);
   const reportYears = Array.from(new Set([...Array.from({ length: 5 }, (_, index) => Number(today.slice(0, 4)) - index), reportYear, ...data.payments.map(item => Number((item.paidAt || item.dueDate).slice(0, 4))), ...data.invoices.map(item => Number(item.issueDate.slice(0, 4))), ...data.expenses.map(item => Number(item.date.slice(0, 4)))])).filter(Number.isFinite).sort((a, b) => b - a);
@@ -1896,9 +1906,10 @@ export function AdminFinanceShell({ user, section = "overview" }: AdminFinanceSh
               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 {vatReport.map(quarter => <article key={quarter.quarter} className="rounded-xl border border-white/10 p-4 text-sm text-brand-muted">
                   <h3 className="font-semibold text-brand-text">Trimestre {quarter.quarter}</h3>
-                  <p className="mt-2">Repercutido: {formatCents(quarter.outputVatCents)}</p>
-                  <p>Deducible: {formatCents(quarter.deductibleVatCents)}</p>
-                  <p className="mt-2 font-semibold text-brand-text">{quarter.balanceCents < 0 ? "Saldo a compensar" : "Saldo a ingresar"}: {formatCents(Math.abs(quarter.balanceCents))}</p>
+                  <p className="mt-2">IVA Repercutido: {formatCents(quarter.outputVatCents)}</p>
+                  <p>IVA Deducible: {formatCents(quarter.deductibleVatCents)}</p>
+                  <p>TOTAL Deducible: {formatCents(quarter.deductibleExpenseCents)}</p>
+                  <p>TOTAL No deducible: {formatCents(quarter.nonDeductibleExpenseCents)}</p>
                 </article>)}
               </div>
             </section>            <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
